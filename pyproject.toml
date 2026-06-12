@@ -1,0 +1,83 @@
+[project]
+name = "finance-tweet-analyzer"
+version = "0.1.0"
+description = "AI-powered finance tweet analysis platform with LangGraph multi-agent pipeline, RAG, and SSE streaming"
+readme = "ARCHITECTURE.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
+    "sse-starlette>=2.0.0",
+
+    # Database
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg[binary,pool]>=3.2.0",
+    "psycopg-pool>=3.3.1",
+
+    # Auth
+    "pyjwt>=2.10.0",
+    "bcrypt>=5.0.0",
+
+    # LangChain / LangGraph
+    "langchain>=1.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=1.1.0",
+    "langchain-chroma>=1.1.0",
+    "langchain-community>=0.4.0",
+    "langchain-text-splitters>=1.1.0",
+    "langgraph>=0.3.0",
+    "langsmith>=0.7.0",
+
+    # Vector store & embeddings
+    "chromadb>=1.0.0",
+    "dashscope>=1.20.0",
+
+    # RAG / retrieval
+    "rank-bm25>=0.2.2",
+    "jieba>=0.42.1",
+    "tiktoken>=0.7.0",
+
+    # Document parsing
+    "pypdf>=6.0.0",
+    "python-docx>=1.2.0",
+    "gne>=0.4.3",
+    "lxml>=5.0.0",
+
+    # HTTP / crawling
+    "curl-cffi>=0.15.0",
+    "httpx>=0.28.0",
+
+    # Async task queue
+    "celery>=5.6.0",
+    "redis>=7.4.0",
+
+    # Utilities
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "loguru>=0.7.0",
+    "cachetools>=6.0.0",
+    "pytz>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
