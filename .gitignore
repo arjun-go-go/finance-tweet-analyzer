@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ChromaDB vector store
+chroma_db/
+
+# Uploaded documents
+uploads/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env
+frontend/.env.local
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic (keep versions, ignore local)
+alembic/versions/__pycache__/
+
+# Coverage / test
+htmlcov/
+.coverage
+.pytest_cache/
