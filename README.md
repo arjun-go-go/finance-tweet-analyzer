@@ -1,112 +1,239 @@
 # Finance Tweet Analyzer
 
-> **Production-grade AI Agent platform** for financial tweet analysis, built from 8 years of enterprise engineering experience and real-world multi-agent system deployment.
+> Enterprise-grade financial tweet analysis platform powered by LangGraph multi-agent orchestration, hybrid RAG retrieval, and real-time SSE streaming.
 
 English | [中文](#中文文档)
 
 ---
 
-## About This Project
+## Overview
 
-This is not a tutorial demo. It is a **production-ready full-stack application** built on real-world experience deploying enterprise AI Agent platforms for intelligence analysis and large-scale data processing pipelines.
+A production-ready full-stack platform for financial intelligence analysis from social media. The system combines **LangGraph stateful agent pipelines**, **hybrid RAG retrieval** (semantic + keyword + rerank), and **async Celery task processing** to deliver structured research reports, conversational Q&A, and automated ticker tracking.
 
-The design decisions, engineering patterns, and architecture choices reflect lessons learned from production systems handling high-volume data ingestion, multi-model LLM orchestration, and fault-tolerant async processing.
-
----
-
-## Production-Grade Features
-
-### Multi-Agent Pipeline (LangGraph StateGraph)
-
-Inspired by production intelligence analysis systems, the architecture uses **three-tier agent orchestration**:
-
-| Agent | Role | Production Pattern |
-|-------|------|-------------------|
-| **Signal Agent** | Detect market signals from tweets | ReAct loop with tool calling |
-| **Report Agent** | Generate structured research reports | Plan-and-Execute with Send fan-out |
-| **Chat Agent** | Conversational Q&A with RAG | Supervisor routing + sub-agent tools |
-
-**Engineering decisions from production:**
-- **Middleware pipeline** for dynamic model routing (signal scoring → DeepSeek, generation → Claude), runtime prompt injection, and tool error interception
-- **Circuit breaker pattern** — Tool failures are caught, retried with exponential backoff, and isolated to prevent cascading failures
-- **Rate limiting per user** — RPM + token-per-day budgets with configurable hard limits
-
-### Agentic RAG Engine
-
-Built on lessons from deploying RAG at scale for intelligence analysis:
-
-- **Hybrid retrieval** — ChromaDB semantic search + BM25 keyword search, merged via Reciprocal Rank Fusion (RRF)
-- **Source-type quota reranking** — Ensures balanced evidence types (tweets, documents, analysis, structured data). Prevents the common production issue where one source type dominates top-K results
-- **Multi-model reranker** — DashScope `qwen3-rerank` for production-quality relevance scoring
-- **Context compression** — Evidence truncation by type (`tweet: 1000`, `document: 1000`, `analysis: 600`, `structured: 500`) to fit within context windows without losing critical information
-
-### SSE Streaming Architecture
-
-Production streaming design learned from real-time intelligence push systems:
-
-- **Node-level streaming** — LangGraph `stream_mode="updates"` emits each node completion (intent parsing → retrieval → reranking → section generation → synthesis)
-- **Incremental persistence** — Each completed section is written to PostgreSQL immediately. If the client disconnects, reconnecting yields a snapshot of current progress
-- **Redis pub/sub bridge** — Celery workers publish progress to `report_stream:{id}` channels; SSE endpoint subscribes and forwards with 15s heartbeat keepalive
-
-### Document Ingestion Pipeline
-
-Production-grade document processing with enterprise deduplication:
-
-- **Rich metadata extraction** — GNE (GeneralNewsExtractor) for news articles, with fallback to custom XPath/JSON-LD extractors for publish time (ISO 8601 normalized) and author names
-- **Soft-delete + partial unique index** — PostgreSQL `WHERE status != 'deleted'` partial index allows failed documents to be re-submitted without unique constraint violations
-- **Quota management** — Per-user document limits (200 docs / 500MB total) enforced at service layer before expensive embedding operations
-- **ChromaDB metadata scrubbing** — Automatic filtering of non-primitive types (lists, dicts, None) before vector store writes, preventing runtime embedding failures
-
-### Enterprise Security & Observability
-
-- **JWT authentication** with refresh tokens, session isolation, and per-user token budgets
-- **Request/response logging** with automatic redaction of sensitive keys (API keys, tokens, passwords)
-- **Access log middleware** — Tracks user ID, latency, and path with proper async propagation (ContextVar + `request.state` fallback)
-- **LangSmith tracing** — Full LangGraph execution traces for debugging production agent behavior
+Built for scenarios requiring high-throughput data ingestion, multi-model LLM orchestration, fault-tolerant async processing, and real-time user-facing streaming.
 
 ---
 
-## Architecture
+## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Next.js Frontend                          │
-│  (Incremental streaming UI / JWT auth / Report viewer)          │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ HTTPS
-┌───────────────────────────▼─────────────────────────────────────┐
-│                        FastAPI API Gateway                       │
-│  (Rate limiting / Access logging / Auth middleware)             │
-└───────────┬───────────────────────┬─────────────────────────────┘
-            │                       │
-┌───────────▼───────────┐  ┌────────▼────────┐
-│   Chat Agent          │  │  Report Agent   │
-│   (Supervisor)        │  │  (Plan-Exec)    │
-└───────┬───────────────┘  └────────┬────────┘
-        │                           │
-        └───────────┬───────────────┘
-                    │
-        ┌───────────▼───────────────┐
-        │      RAG Pipeline         │
-        │  ┌─────────────────────┐  │
-        │  │  Multi-Path Retrieval│  │
-        │  │  ├── Tweet (Chroma) │  │
-        │  │  ├── Document(BM25) │  │
-        │  │  ├── Analysis       │  │
-        │  │  └── Structured     │  │
-        │  └──────────┬──────────┘  │
-        │             │ RRF Fusion   │
-        │  ┌──────────▼──────────┐  │
-        │  │   Qwen Reranker     │  │
-        │  │   (quota-balanced)  │  │
-        │  └──────────┬──────────┘  │
-        └─────────────┼─────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Next.js 14 Frontend                           │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────────┐  │
+│  │Dashboard│ │  Chat   │ │Documents│ │ Reports │ │   Tracking   │  │
+│  │(Overview│ │(SSE     │ │(Upload/ │ │(SSE     │ │(Subscriptions│  │
+│  │+Trigger)│ │ Stream) │ │ Search) │ │ Stream) │ │  + Reports)  │  │
+│  └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └──────┬───────┘  │
+└───────┼───────────┼───────────┼───────────┼─────────────┼──────────┘
+        │           │           │           │             │ HTTPS
+┌───────▼───────────▼───────────▼───────────▼─────────────▼──────────┐
+│                     FastAPI API Gateway                             │
+│  JWT Auth · Rate Limiting · Access Logging · CORS · Health Check    │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+┌───────▼────────┐  ┌──────────▼──────────┐  ┌──────▼──────┐
+│  Chat Agent    │  │   Report Agent      │  │ Supervisor  │
+│  (ReAct +      │  │  (Plan-Execute +    │  │ (Classify   │
+│   ToolNode)    │  │   Send Fan-out)     │  │  → Route)   │
+└───────┬────────┘  └──────────┬──────────┘  └──────┬──────┘
+        │                      │                    │
+        │         ┌────────────┴────────────────────┘
+        │         │
+        │  ┌──────▼──────────────────────────────────┐
+        │  │           RAG Pipeline                   │
+        │  │  ┌────────────────────────────────────┐  │
+        │  │  │     Multi-Path Retrieval            │  │
+        │  │  │  ┌─────────┐ ┌─────────┐          │  │
+        │  │  │  │  Chroma │ │  BM25   │          │  │
+        │  │  │  │(Semantic│ │(Keyword│          │  │
+        │  │  │  │ Tweet   │ │ Tweet   │          │  │
+        │  │  │  │ Document│ │ Document│          │  │
+        │  │  │  │ Analysis│ │         │          │  │
+        │  │  │  │Structured│ │        │          │  │
+        │  │  │  └────┬────┘ └────┬────┘          │  │
+        │  │  │       └─────┬─────┘                │  │
+        │  │  │             ▼ RRF Fusion           │  │
+        │  │  │     ┌───────────────┐              │  │
+        │  │  │     │ Qwen Reranker │              │  │
+        │  │  │     │(quota-balanced│              │  │
+        │  │  │     │ + time-decay) │              │  │
+        │  │  │     └───────┬───────┘              │  │
+        │  │  └─────────────┼──────────────────────┘  │
+        │  └────────────────┼─────────────────────────┘
+        │                   │
+        │  ┌────────────────┼────────────────┐
+        │  │                │                │
+┌───────▼──▼──────┐  ┌─────▼──────┐  ┌─────▼──────┐
+│   PostgreSQL    │  │   Redis    │  │  ChromaDB  │
+│ (Relational +   │  │ (Celery    │  │  (Vector   │
+│  JSONB Reports) │  │  Broker +  │  │   Store)   │
+│                 │  │  Pub/Sub)  │  │            │
+└─────────────────┘  └────────────┘  └────────────┘
+```
+
+---
+
+## Core Subsystems
+
+### 1. Multi-Agent Pipeline (LangGraph StateGraph)
+
+The platform runs multiple specialized LangGraph agents, each designed for a specific workflow:
+
+| Agent | Architecture | Responsibility |
+|-------|-------------|----------------|
+| **Report Agent** | Plan-and-Execute + `Send` fan-out | Generates structured ticker tracking reports with 5 parallel sections |
+| **Chat Agent** | ReAct + ToolNode | Conversational Q&A with tool calling (blogger lookup, tweet search, document RAG, report generation) |
+| **Supervisor** | Classification → conditional routing | Batch tweet classification (investment / market commentary / risk warning / non-financial) |
+| **Analysis Agent** | Batch concurrency + blogger context injection | Extracts tickers, sentiment, horizon, and key points from tweets with credibility feedback loop |
+| **Signal Agent** | Single-call structured output | Lightweight single-tweet analysis for real-time tool calls |
+| **Self-Query Agent** | Intent parsing + query rewriting | Translates natural language into structured retrieval parameters |
+| **SQL Agent** | Text-to-SQL with validation | Safely queries analytical data via structured SQL generation |
+| **Risk Agent** | Structured risk assessment | Evaluates portfolio and market risk factors |
+
+**Key production patterns:**
+- **Middleware pipeline** — Dynamic model routing (fast/cheap for scoring, premium for generation), runtime prompt injection, tool error interception
+- **Circuit breaker** — `@resilient_tool` decorator wraps each tool with exponential backoff retry + three-state circuit breaker (CLOSED → OPEN → HALF_OPEN). Prevents cascading failures when external APIs degrade
+- **Token budget management** — Chat agent estimates context size before LLM calls; auto-trims history when exceeding limits
+- **User isolation** — `user_id` propagated through `RunnableConfig` metadata across the entire agent graph
+
+### 2. Report Generation System
+
+The report agent executes a 7-stage pipeline orchestrated by LangGraph `StateGraph`:
+
+```
+parse_intent ──→ multi_retrieve (4 paths + BM25 in parallel)
                       │
-        ┌─────────────▼─────────────┐
-        │    PostgreSQL + Redis     │
-        │  (state + task queue)     │
-        └───────────────────────────┘
+                      ▼
+              RRF fusion (reciprocal rank fusion, k=60)
+                      │
+                      ▼
+              rerank (Qwen reranker + source_type quota + time decay)
+                      │
+                      ▼
+              generate_section (5 chapters via Send fan-out)
+                      │
+                      ▼
+              synthesize (consensus + recommendation)
 ```
+
+**Report chapters** (each receives relevant evidence filtered by `source_type`):
+1. **KOL Views** — Twitter sentiment and opinions from tracked bloggers
+2. **Research Views** — Document and research paper insights
+3. **News Updates** — Latest news and market developments
+4. **Risk Alerts** — Risk factors and warning signals from analysis and structured data
+5. **Historical Review** — Historical price action and pattern analysis
+
+**Production resilience features:**
+- **Node-level SSE streaming** — Each completed stage publishes to Redis `report_stream:{id}`; frontend subscribes via `EventSourceResponse` with 15s heartbeat
+- **Incremental persistence** — Rerank results → DB citations; each section → DB `sections` JSONB merge; synthesis → final report status. Disconnect and reconnect yields snapshot of current progress
+- **Section fault tolerance** — Failed sections carry `error` metadata instead of crashing the pipeline. Other sections continue normally
+- **Global citation indexing** — Evidence numbered consistently across all sections; UI click scrolls to specific citation row
+- **Source-type quota reranking** — Ensures balanced evidence distribution. Without this, tweets (typically 20+ of 30 fused results) would dominate top-8 reranked slots, starving structured data needed by the "Historical Review" chapter
+
+### 3. RAG Engine
+
+**Hybrid retrieval architecture:**
+
+| Path | Method | Data Source |
+|------|--------|-------------|
+| Semantic (Tweet) | ChromaDB cosine similarity | Embedded tweet content |
+| Semantic (Document) | ChromaDB cosine similarity | Embedded document chunks |
+| Semantic (Analysis) | ChromaDB cosine similarity | Embedded analysis summaries |
+| Structured | SQL query | PostgreSQL analysis results, predictions |
+| Keyword | BM25 (rank-bm25) | Document chunks + tweet content |
+
+**Pipeline flow:**
+1. **Multi-path parallel retrieval** — 4 semantic paths + BM25 execute concurrently via `asyncio.gather`
+2. **RRF fusion** — Reciprocal Rank Fusion (`k=60`) merges heterogeneous ranking scores into a unified sort. Handles the scale mismatch between vector cosine similarity and BM25 scores
+3. **Time decay** — Recent documents receive a boost factor; prevents stale news from dominating
+4. **Quota-balanced reranking** — DashScope `qwen3-rerank` scores all candidates, then `_apply_quota` enforces per-`source_type` minimums (tweet:4, document:3, analysis:2, structured:1) with global-score backfill for unfilled quotas
+5. **Context truncation by type** — Evidence truncated according to type before prompt injection (`tweet:1000`, `document:1000`, `analysis:600`, `structured:500` chars)
+
+**Document ingestion pipeline:**
+- **Multi-format parsers** — PDF (pypdf), DOCX (python-docx), Markdown, Plain text, URL (curl_cffi + GNE news extraction + custom XPath/JSON-LD metadata extractors)
+- **Metadata extraction** — Title, author (name only), publish time (ISO 8601 normalized), keywords. GNE fields take priority; custom extractors fill gaps
+- **Soft-delete + partial unique index** — PostgreSQL `WHERE status != 'deleted'` partial index allows failed documents to be re-submitted without `UniqueViolation`
+- **User quotas** — 200 documents / 500MB total per user, enforced before expensive embedding operations
+- **ChromaDB metadata scrubbing** — `_scrub_meta()` filters non-primitive types (lists, dicts, None) before vector store writes, preventing runtime embedding failures
+
+### 4. Conversational Chat System
+
+Multi-user multi-turn chat with enterprise-grade controls:
+
+- **ReAct + ToolNode** — Agent reasons step-by-step, calling tools: `fetch_blogger_profile`, `fetch_tweets`, `trigger_analysis`, `query_tweets`, `query_analyses`, `search_my_documents`, `generate_tracking_report`
+- **SSE streaming** — Real-time token streaming via `sse-starlette`; supports `Last-Event-ID` reconnection
+- **Conversation isolation** — Per-conversation advisory lock prevents concurrent agent execution on the same thread
+- **Message idempotency** — Client-generated `message_id` deduplicates retries
+- **Personalization** — User profile and preferences injected into system prompt; preferences auto-extracted after each conversation via background LLM call
+- **Content filtering** — Middleware layer filters inappropriate inputs before reaching the agent
+- **Rate limiting** — Per-user sliding window RPM counter (`TTLCache`); configurable token-per-day budgets
+
+### 5. Analysis & Prediction Pipeline
+
+Automated tweet analysis running on Celery workers:
+
+- **Supervisor classification** — Incoming tweets classified into 4 categories: `investment`, `market_commentary`, `risk_warning`, `non_financial`. Non-financial tweets are skipped to save LLM costs
+- **Blogger credibility feedback loop** — `analysis_agent` injects historical blogger context (win rate, sentiment distribution) into the prompt. LLM calibrates confidence based on KOL track record
+- **Batch concurrency** — `asyncio.gather` parallelizes LLM calls across all tweets in a batch; total latency equals the slowest single call
+- **Redis distributed locks** — `auto_analysis_task` acquires per-blogger locks to prevent duplicate analysis across multiple Celery workers
+- **Prediction validation** — Automated prediction generation with scheduled verification against actual market outcomes
+
+### 6. Tracking Subscription System
+
+Users subscribe to stock/crypto tickers for automated report generation:
+
+- **Subscription management** — Create / update / delete subscriptions with `daily` or `weekly` frequency
+- **Quota enforcement** — Max 20 tracked tickers per user
+- **Scheduled reports** — Celery beat triggers report generation at configured intervals (`next_run` computed for daily/weekly schedules)
+- **Report history** — Full CRUD with pagination, ticker filtering
+
+---
+
+## API Endpoints
+
+| Route | Description |
+|-------|-------------|
+| `POST /api/auth/register` | User registration |
+| `POST /api/auth/login` | JWT login (access + refresh tokens) |
+| `POST /api/auth/refresh` | Token refresh |
+| `GET /api/auth/me` | Current user profile |
+| `GET /api/dashboard/overview` | System overview stats |
+| `GET /api/tweets` | Tweet listing |
+| `GET /api/analyses` | Tweet analysis results (filter by blogger/sentiment) |
+| `GET /api/signals` | Investment signal detection results |
+| `GET /api/bloggers` | Blogger profiles and credibility scores |
+| `GET /api/predictions` | Prediction records with verdict status |
+| `POST /api/chat` | Conversational chat (SSE stream) |
+| `GET /api/chat/conversations` | Conversation list with cursor pagination |
+| `POST /api/documents/upload` | File upload (PDF/DOCX/MD/TXT) |
+| `POST /api/documents/url` | URL ingestion |
+| `POST /api/documents/paste` | Text paste ingestion |
+| `GET /api/documents` | Document list |
+| `POST /api/tracking` | Subscribe to ticker tracking |
+| `GET /api/tracking` | List subscriptions |
+| `POST /api/reports/generate` | Generate report (async, returns 202) |
+| `GET /api/reports/{id}/stream` | SSE stream for report progress |
+| `GET /api/reports/{id}` | Report detail |
+| `GET /api/reports` | Report list with pagination |
+| `GET /api/health` | Health check with circuit breaker status |
+
+---
+
+## Database Schema
+
+**Core entities:**
+- `User` / `UserProfile` / `UserPreference` — Authentication, profiles, and personalization
+- `Blogger` — Financial KOL profiles with credibility metrics
+- `Tweet` — Raw tweet content with `pending` / `analyzed` status tracking
+- `AnalysisResult` — Structured analysis output (tweet_analysis, ticker_summary)
+- `Prediction` — Forward-looking predictions with scheduled verification
+- `Conversation` / `Message` — Chat history with compression and pagination
+- `Document` / `DocChunk` — Uploaded documents with content hash deduplication
+- `TrackedTicker` — User subscriptions with frequency and next-run scheduling
+- `Report` — Generated reports with sections (JSONB), citations, and synthesis
+- `AgentTrace` — Execution traces for observability
 
 ---
 
@@ -114,21 +241,21 @@ Production-grade document processing with enterprise deduplication:
 
 | Layer | Technology | Production Rationale |
 |-------|-----------|---------------------|
-| API Framework | FastAPI + Pydantic v2 | Async-native, auto-generated OpenAPI docs |
-| AI Engine | LangGraph + LangChain | StateGraph for complex conditional routing; Checkpointer for recovery |
-| LLM Gateway | OpenRouter | Single endpoint for Claude / GPT / DeepSeek / Qwen with failover |
-| Vector DB | ChromaDB | Zero-ops for single-node deployments; easy migration path to Milvus/Zilliz |
+| API Framework | FastAPI + Pydantic v2 | Async-native, auto OpenAPI docs, request validation |
+| AI Engine | LangGraph + LangChain | StateGraph for conditional routing; Checkpointer for recovery |
+| LLM Gateway | OpenRouter | Single endpoint for Claude / GPT / DeepSeek / Qwen with model failover |
+| Vector DB | ChromaDB | Zero-ops for single-node; migration path to Milvus/Zilliz for scale |
 | Embeddings | DashScope `text-embedding-v4` | 1024-dim, production-grade Chinese/English bilingual |
-| Retrieval | BM25 (rank-bm25) + Chroma semantic | Hybrid beats single-path in all RAGAS benchmarks |
-| Reranker | DashScope `qwen3-rerank` | Cross-encoder precision after initial candidate retrieval |
-| Task Queue | Celery + Redis | Battle-tested for async document ingestion and scheduled reports |
+| Retrieval | BM25 (`rank-bm25`) + Chroma semantic | Hybrid beats single-path in recall benchmarks |
+| Reranker | DashScope `qwen3-rerank` | Cross-encoder precision after initial candidate pool |
+| Task Queue | Celery + Redis | `acks_late=True` for worker crash recovery; exponential backoff retries |
 | Database | PostgreSQL + Alembic | JSONB for flexible report sections; partial indexes for soft-delete |
-| Proxy | curl_cffi | TLS fingerprint impersonation for reliable Twitter API access |
-| Frontend | Next.js 14 + TypeScript | App Router, Server Components, streaming SSR |
+| HTTP Client | curl_cffi | TLS fingerprint impersonation for reliable Twitter API access |
+| Frontend | Next.js 14 + TypeScript | App Router, streaming SSR, real-time SSE consumption |
 
 ---
 
-## Quick Start
+## Deployment
 
 ### Prerequisites
 
@@ -143,21 +270,24 @@ Production-grade document processing with enterprise deduplication:
 git clone https://github.com/arjun-go-go/finance-tweet-analyzer.git
 cd finance-tweet-analyzer
 
-# Install with uv
+# Install dependencies
 uv sync
 
 # Configure environment
 cp .env.example .env
 # Edit .env with your database, OpenRouter, and DashScope keys
 
-# Run migrations
+# Run database migrations
 uv run alembic upgrade head
 
-# Start API
+# Start API server
 uv run uvicorn app.main:app --reload
 
-# Start Celery worker (another terminal)
+# Start Celery worker (separate terminal)
 uv run celery -A app.celery_app worker -l info
+
+# Start Celery beat for scheduled tasks (optional, separate terminal)
+uv run celery -A app.celery_app beat -l info
 ```
 
 ### Frontend
@@ -170,33 +300,18 @@ npm run dev
 
 Open http://localhost:3000
 
-### Environment Variables (Key)
+### Environment Variables
+
+Key variables (see `.env.example` for full list):
 
 ```bash
 DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/finance_tweets
 OPENROUTER_API_KEY=sk-or-...
 DASHSCOPE_API_KEY=sk-...
 REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/1
 FEATURE_RAG_ENABLED=true
 ```
-
-See `.env.example` for the complete list.
-
----
-
-## Engineering Highlights
-
-### From Enterprise Intelligence Platform Experience
-
-1. **Supervisor Dynamic Routing** — Report agent uses `Send` fan-out to parallelize section generation. If one section fails, others continue; failed sections are surfaced with error metadata instead of silently dropped
-
-2. **Context Compaction** — Chat agent implements summarization middleware that triggers at configurable token thresholds, preserving conversation history within budget limits
-
-3. **HITL-Ready Architecture** — LangGraph `interrupt` nodes are reserved for critical decisions; Checkpointer persistence enables breakpoint resume (foundation laid, UI activation straightforward)
-
-4. **Anti-Fragile Document Pipeline** — Failed ingestions are marked `failed` with error detail; user can retry after fixing the source. Partial unique index prevents duplicate re-submissions while allowing genuine retries
-
-5. **Multi-Model Cost Optimization** — Configurable per-node model selection: fast/cheap models for classification and scoring; premium models for final generation
 
 ---
 
@@ -205,18 +320,77 @@ See `.env.example` for the complete list.
 ```
 finance-tweet-analyzer/
 ├── app/
-│   ├── agents/              # LangGraph agents (chat, report, signal, self-query)
-│   ├── api/                 # FastAPI routers (auth, chat, reports, documents, tracking)
-│   ├── core/                # Config, JWT auth, access logging, rate limiting, middleware
-│   ├── models/              # SQLAlchemy ORM models with JSONB support
-│   ├── rag/                 # Full RAG pipeline: chunking, embeddings, retrievers, reranker, fusion
+│   ├── agents/              # LangGraph agents
+│   │   ├── report_agent.py      # Report generation pipeline (7-stage StateGraph)
+│   │   ├── chat_agent.py        # Conversational ReAct agent with tool chain
+│   │   ├── supervisor.py        # Batch tweet classification router
+│   │   ├── analysis_agent.py    # Batch tweet analysis with blogger context
+│   │   ├── signal_agent.py      # Single-tweet structured analysis
+│   │   ├── self_query_agent.py  # Intent parsing and query rewriting
+│   │   ├── sql_agent.py         # Text-to-SQL with validation
+│   │   ├── risk_agent.py        # Risk assessment
+│   │   ├── prediction_agent.py  # Forward prediction generation
+│   │   └── llm.py               # LLM initialization (OpenRouter gateway)
+│   ├── api/                 # FastAPI routers
+│   │   ├── auth.py              # JWT authentication
+│   │   ├── chat.py              # SSE streaming chat
+│   │   ├── reports.py           # Async report generation + SSE
+│   │   ├── documents.py         # Document upload / URL / paste
+│   │   ├── tracking.py          # Ticker subscription CRUD
+│   │   ├── dashboard.py         # Overview statistics
+│   │   ├── tweets.py            # Tweet management
+│   │   ├── analysis.py          # Analysis results
+│   │   ├── signals.py           # Signal detection results
+│   │   ├── bloggers.py          # Blogger profiles
+│   │   ├── predictions.py       # Prediction records
+│   │   └── debug.py             # Debug endpoints
+│   ├── core/                # Infrastructure
+│   │   ├── config.py            # Pydantic Settings (env-driven)
+│   │   ├── auth.py              # JWT encode/decode + dependency
+│   │   ├── deps.py              # DB session + dependency injection
+│   │   ├── logging.py           # Loguru configuration
+│   │   ├── access_log.py        # Request/response middleware with PII redaction
+│   │   ├── resilience.py        # Circuit breaker + retry decorator
+│   │   └── tracing.py           # LangSmith initialization
+│   ├── models/              # SQLAlchemy ORM models
+│   ├── rag/                 # RAG pipeline
+│   │   ├── chunking.py          # Document chunking strategies
+│   │   ├── embeddings.py        # DashScope embedding client
+│   │   ├── vector_store.py      # ChromaDB wrapper with metadata scrubbing
+│   │   ├── retrievers/          # 5 retrieval implementations
+│   │   ├── fusion.py            # RRF multi-path fusion
+│   │   ├── reranker.py          # Qwen reranker + quota + time decay
+│   │   ├── parsers/             # PDF / DOCX / URL / Markdown / Paste
+│   │   ├── storage.py           # Local file storage abstraction
+│   │   └── tokenizer.py         # Token counting utilities
 │   ├── schemas/             # Pydantic request/response schemas
-│   ├── services/            # Business logic: reports, documents, tracking, Twitter
-│   └── scheduler/           # Celery tasks: document ingestion, scheduled reports
-├── frontend/                # Next.js 14 App Router application
-├── alembic/                 # Database migrations (incremental schema evolution)
-├── scripts/                 # Operational utilities (crawlers, eval scripts)
-└── tests/                   # Unit tests for RAG components
+│   ├── services/            # Business logic layer
+│   │   ├── report_service.py    # Report CRUD + sync generation
+│   │   ├── report_streaming.py  # SSE pub/sub + incremental persistence
+│   │   ├── document_service.py  # Document deduplication + quota
+│   │   ├── tracking_service.py  # Subscription scheduling
+│   │   ├── analysis_service.py  # Batch analysis orchestration
+│   │   ├── conversation_service.py  # Chat session management
+│   │   ├── blogger_context.py   # Credibility score aggregation
+│   │   └── twitter_service.py   # Twitter API client (curl_cffi)
+│   ├── scheduler/           # Celery tasks
+│   │   ├── tasks.py             # auto_analysis, report_streaming, prediction
+│   │   └── locks.py             # Redis distributed locks
+│   └── middleware/          # Content filter, compression
+├── frontend/                # Next.js 14 application
+│   ├── src/app/             # App Router pages
+│   │   ├── page.tsx             # Dashboard
+│   │   ├── chat/page.tsx        # Conversational chat
+│   │   ├── documents/page.tsx   # Document management
+│   │   ├── reports/page.tsx     # Report list
+│   │   ├── reports/[id]/page.tsx # Report detail (SSE)
+│   │   ├── tracking/page.tsx    # Ticker subscriptions
+│   │   └── retrieval-test/      # RAG retrieval testing
+│   └── src/components/      # Reusable UI components
+├── alembic/                 # Database migrations
+├── scripts/                 # Operational utilities
+├── tests/                   # Unit tests (RAG pipeline)
+└── pyproject.toml           # Python dependencies
 ```
 
 ---
@@ -229,65 +403,131 @@ MIT
 
 ## 中文文档
 
-> **企业级 AI Agent 平台**，用于金融推文分析。基于真实生产环境多智能体系统部署经验构建。
+### 项目概述
 
-### 关于本项目
+企业级金融推文分析平台，基于 LangGraph 多智能体编排、混合 RAG 检索和异步 Celery 任务处理，提供结构化研究报告、对话式问答和自动标的追踪功能。
 
-这不是教程 Demo。这是一个**生产就绪的全栈应用**，基于真实企业 AI Agent 平台部署经验构建，涵盖情报分析和大规模数据处理流水线场景。
+面向高吞吐量数据摄取、多模型 LLM 编排、容错异步处理和实时用户流式推送等生产场景构建。
 
-项目中的设计决策、工程模式和架构选择反映了在高吞吐量数据摄取、多模型 LLM 编排和容错异步处理等生产系统中积累的实践经验。
+### 系统架构
 
-### 生产级特性
+详见上方架构图。系统分层：
+- **前端层**：Next.js 14 应用（Dashboard、Chat、Documents、Reports、Tracking）
+- **API 网关层**：FastAPI（JWT 认证、速率限制、访问日志、CORS）
+- **Agent 层**：多个 LangGraph StateGraph 智能体，分别负责报告生成、对话问答、批量分类、批量分析等
+- **RAG 层**：多路并行检索 → RRF 融合 → Qwen 重排序 → 上下文截断
+- **数据层**：PostgreSQL（关系数据 + JSONB 报告）+ Redis（Celery + Pub/Sub）+ ChromaDB（向量存储）
 
-#### 多智能体流水线（LangGraph StateGraph）
+### 核心子系统
 
-借鉴生产情报分析系统架构，采用**三级智能体编排**：
+#### 1. 多智能体流水线
 
-| Agent | 职责 | 生产模式 |
-|-------|------|---------|
-| **信号 Agent** | 从推文检测市场信号 | ReAct 工具调用循环 |
-| **报告 Agent** | 生成结构化研究报告 | Plan-and-Execute + Send 扇出 |
-| **聊天 Agent** | 对话式问答 | Supervisor 路由 + 子智能体工具 |
+| 智能体 | 架构 | 职责 |
+|--------|------|------|
+| **报告 Agent** | Plan-and-Execute + Send 扇出 | 生成结构化标的追踪报告，5 章节并行生成 |
+| **聊天 Agent** | ReAct + ToolNode | 对话式问答，支持博主查询、推文搜索、文档 RAG、报告生成等工具 |
+| **Supervisor** | 分类 → 条件路由 | 批量推文四分类（投资信号/市场评论/风险预警/非金融），跳过非金融节省成本 |
+| **分析 Agent** | 批量并发 + 博主画像注入 | 提取标的、情绪、周期、核心观点，可信度反馈闭环 |
+| **信号 Agent** | 单条结构化输出 | 轻量级单条推文实时分析 |
 
-**生产工程实践：**
-- **Middleware 管线** — 动态模型路由（评分→DeepSeek，生成→Claude）、运行时 Prompt 注入、工具调用错误拦截
-- **熔断器模式** — 工具失败自动捕获、指数退避重试、故障隔离防止级联失败
-- **用户级速率限制** — RPM + 日 Token 预算，支持硬上限配置
+**生产级模式：**
+- **Middleware 管线** — 动态模型路由（评分用快模型，生成用强模型）、运行时 Prompt 注入、工具错误拦截
+- **熔断器** — `@resilient_tool` 装饰器提供指数退避重试 + 三态熔断（CLOSED→OPEN→HALF_OPEN），防止外部 API 降级时级联故障
+- **Token 预算管理** — 聊天 Agent 调用 LLM 前估算上下文大小，超限自动裁剪历史
+- **用户隔离** — `user_id` 通过 `RunnableConfig` 元数据全链路透传
 
-#### Agentic RAG 引擎
+#### 2. 报告生成系统
 
-基于大规模情报分析 RAG 部署经验：
+报告 Agent 执行 7 阶段流水线：
 
-- **混合检索** — ChromaDB 语义搜索 + BM25 关键词搜索，RRF 融合排序
-- **source_type 配额重排序** — 保证证据类型均衡（推文、文档、分析、结构化数据），解决生产环境常见的一类源主导 Top-K 的问题
-- **多模型重排序器** — DashScope `qwen3-rerank` 生产级相关性打分
-- **上下文压缩** — 按类型截断（`tweet:1000`、`document:1000`、`analysis:600`、`structured:500`），在上下文窗口限制内保留关键信息
+```
+意图解析 → 多路并行检索（4 路语义 + BM25）
+              │
+              ▼
+        RRF 融合（k=60）
+              │
+              ▼
+        重排序（Qwen + source_type 配额 + 时间衰减）
+              │
+              ▼
+        章节生成（5 章节 Send 扇出并行）
+              │
+              ▼
+        综合（共识判断 + 投资建议）
+```
 
-#### SSE 流式架构
+**5 个报告章节：**
+1. **KOL 观点** — 博主推文情绪与观点
+2. **研报观点** — 文档和研究资料洞察
+3. **新闻动态** — 最新新闻和市场发展
+4. **风险提示** — 风险因素和预警信号
+5. **历史回顾** — 历史价格走势和模式分析
 
-来自实时情报推送系统的生产流式设计：
+**生产级韧性设计：**
+- **节点级 SSE 流式** — 每完成一个阶段通过 Redis `report_stream:{id}` 发布事件；前端通过 `EventSourceResponse` 订阅，15 秒心跳保活
+- **增量持久化** — 重排序结果 → DB citations；每个章节 → DB `sections` JSONB 合并；综合 → 最终报告状态。断线重连返回当前进度快照
+- **章节容错** — 失败章节携带 `error` 元数据，不阻塞整体流水线
+- **全局引用编号** — 所有章节使用统一证据编号，UI 点击可滚动到具体引用行
+- **source_type 配额重排序** — 保证证据类型均衡，避免推文（通常占 30 条中的 20+）独占 Top-8，导致结构化数据无法进入历史回顾章节
 
-- **节点级流式** — LangGraph `stream_mode="updates"` 逐节点推送（意图解析→检索→重排序→章节生成→综合）
-- **增量持久化** — 每个完成的章节立即写入 PostgreSQL。客户端断线重连后返回当前进度快照
-- **Redis 发布订阅桥接** — Celery Worker 发布到 `report_stream:{id}` 频道；SSE 端点订阅并转发，15 秒心跳保活
+#### 3. RAG 引擎
 
-#### 文档摄取流水线
+**混合检索架构：**
 
-企业级文档处理，含去重机制：
+| 路径 | 方法 | 数据源 |
+|------|------|--------|
+| 语义（推文） | ChromaDB 余弦相似度 | 嵌入后的推文内容 |
+| 语义（文档） | ChromaDB 余弦相似度 | 嵌入后的文档分块 |
+| 语义（分析） | ChromaDB 余弦相似度 | 嵌入后的分析摘要 |
+| 结构化 | SQL 查询 | PostgreSQL 分析结果、预测记录 |
+| 关键词 | BM25 | 文档分块 + 推文内容 |
 
-- **丰富元数据提取** — GNE 新闻正文提取，XPath/JSON-LD 后备提取发布时间（ISO 8601 标准化）和作者名
-- **软删除 + 部分唯一索引** — PostgreSQL `WHERE status != 'deleted'` 部分索引，失败文档可重新提交而不违反唯一约束
-- **配额管理** — 服务层强制用户级文档限制（200 文档 / 500MB 总量），避免昂贵的嵌入操作滥用
-- **ChromaDB 元数据清洗** — 写入向量库前自动过滤非原始类型（列表、字典、None），防止运行时嵌入失败
+**流水线：**
+1. **多路并行检索** — 4 路语义 + BM25 通过 `asyncio.gather` 并发执行
+2. **RRF 融合** — 倒数排名融合（`k=60`）将异构排序分数统一为单一排序
+3. **时间衰减** — 近期文档获得 boost，防止过时新闻主导结果
+4. **配额平衡重排序** — DashScope `qwen3-rerank` 全量打分后，按 source_type 配额分配（tweet:4, document:3, analysis:2, structured:1），未填满名额按全局分数补齐
+5. **按类型上下文截断** — 证据按类型截断后注入 Prompt（tweet:1000, document:1000, analysis:600, structured:500 字符）
 
-#### 企业安全与可观测性
+**文档摄取流水线：**
+- **多格式解析器** — PDF（pypdf）、DOCX（python-docx）、Markdown、纯文本、URL（curl_cffi + GNE 新闻提取 + 自定义 XPath/JSON-LD 元数据提取）
+- **元数据提取** — 标题、作者（仅名称）、发布时间（ISO 8601 标准化）、关键词。GNE 字段优先，自定义提取器补全
+- **软删除 + 部分唯一索引** — PostgreSQL `WHERE status != 'deleted'` 部分索引，失败文档可重新提交
+- **用户配额** — 每人 200 文档 / 500MB 总量，在昂贵嵌入操作前强制校验
+- **ChromaDB 元数据清洗** — `_scrub_meta()` 过滤非原始类型（列表、字典、None），防止向量库写入失败
 
-- **JWT 认证** — 支持刷新令牌、会话隔离、用户级 Token 预算
-- **请求/响应日志** — 自动脱敏敏感字段（API key、token、密码）
-- **访问日志中间件** — 追踪用户 ID、延迟、路径，支持异步传播（ContextVar + `request.state` 后备）
-- **LangSmith 追踪** — 完整的 LangGraph 执行链路，便于生产环境 Agent 行为调试
+#### 4. 对话聊天系统
 
-### 快速开始
+多用户多轮对话，企业级控制：
+
+- **ReAct + ToolNode** — Agent 逐步推理，调用工具：`fetch_blogger_profile`、`fetch_tweets`、`trigger_analysis`、`query_tweets`、`query_analyses`、`search_my_documents`、`generate_tracking_report`
+- **SSE 流式** — 通过 `sse-starlette` 实时推送 Token；支持 `Last-Event-ID` 断线重连
+- **会话隔离** — 每会话咨询锁防止并发 Agent 执行
+- **消息幂等性** — 客户端生成的 `message_id` 去重重试
+- **个性化** — 用户档案和偏好注入系统 Prompt；每次对话后后台异步提取偏好更新
+- **内容过滤** — 中间件层在 Agent 之前过滤不当输入
+- **速率限制** — 每用户滑动窗口 RPM 计数器；可配置日 Token 预算
+
+#### 5. 分析与预测流水线
+
+Celery Worker 上运行的自动推文分析：
+
+- **Supervisor 分类** — 推文分为 investment/market_commentary/risk_warning/non_financial 四类，非金融直接跳过节省 LLM 成本
+- **博主可信度反馈闭环** — 分析 Agent 将博主历史画像（胜率、情绪分布）注入 Prompt，LLM 根据 KOL 历史表现校准置信度
+- **批量并发** — `asyncio.gather` 并行化一批推文的所有 LLM 调用；总延迟等于最慢单条
+- **Redis 分布式锁** — `auto_analysis_task` 按博主加锁，防止多 Worker 重复分析
+- **预测验证** — 自动生成前瞻预测，定时验证与实际市场走势的吻合度
+
+#### 6. 追踪订阅系统
+
+用户订阅股票/加密货币标的，自动生成追踪报告：
+
+- **订阅管理** — 创建/更新/删除，支持 daily/weekly 频率
+- **配额限制** — 每用户最多 20 个追踪标的
+- **定时报告** — Celery beat 按配置间隔触发报告生成
+- **报告历史** — 完整 CRUD，支持分页和标的过滤
+
+### 部署指南
 
 ```bash
 git clone https://github.com/arjun-go-go/finance-tweet-analyzer.git
@@ -299,6 +539,12 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
+Celery Worker：
+```bash
+uv run celery -A app.celery_app worker -l info
+uv run celery -A app.celery_app beat -l info
+```
+
 前端：
 ```bash
 cd frontend
@@ -307,15 +553,3 @@ npm run dev
 ```
 
 访问 http://localhost:3000
-
-### 工程亮点
-
-1. **Supervisor 动态路由** — 报告 Agent 使用 `Send` 扇出并行生成章节。单章节失败不影响其他章节；失败章节带错误元数据展示
-
-2. **上下文压缩** — 聊天 Agent 实现可配置 Token 阈值触发的 SummarizationMiddleware，在预算限制内保留对话历史
-
-3. **HITL 就绪架构** — LangGraph `interrupt` 节点预留关键决策人工审核；Checkpointer 持久化支持断点续行
-
-4. **抗脆弱文档流水线** — 摄取失败标记为 `failed` 并记录错误详情；用户修复源后可重试。部分唯一索引防止重复提交同时允许合法重试
-
-5. **多模型成本优化** — 支持按节点配置模型选择：快速/廉价模型用于分类评分； premium 模型用于最终生成
