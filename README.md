@@ -8,17 +8,9 @@ English | [中文](#中文文档)
 
 ## About This Project
 
-This is not a tutorial demo. It is a **production-ready full-stack application** that distills my hands-on experience building enterprise AI Agent platforms for intelligence analysis and large-scale data processing pipelines.
+This is not a tutorial demo. It is a **production-ready full-stack application** built on real-world experience deploying enterprise AI Agent platforms for intelligence analysis and large-scale data processing pipelines.
 
-### Author Background
-
-**曹俊 (Cao Jun)** — Senior Python Engineer with 8 years of experience, specializing in:
-- **LangGraph / LangChain** multi-agent system architecture (production deployments since 2024)
-- **Agentic RAG** hybrid retrieval (Milvus + Elasticsearch + Reranker) — Faithfulness 0.91, Context Precision 0.85
-- **Distributed data pipelines** — Scrapy-Redis + Kafka + Spark, 1M+ daily data ingestion
-- **Anti-detection engineering** — Cloudflare / Akamai / TLS fingerprint bypass, 95%+ success rate
-
-Previously built production-grade multi-agent intelligence analysis platforms at Hangzhou Sitake Information Security Technology Co., Ltd., handling 6 social platforms + 500+ overseas media sources.
+The design decisions, engineering patterns, and architecture choices reflect lessons learned from production systems handling high-volume data ingestion, multi-model LLM orchestration, and fault-tolerant async processing.
 
 ---
 
@@ -237,21 +229,13 @@ MIT
 
 ## 中文文档
 
-> **企业级 AI Agent 平台**，用于金融推文分析。基于 8 年企业工程经验和真实多智能体系统部署沉淀。
+> **企业级 AI Agent 平台**，用于金融推文分析。基于真实生产环境多智能体系统部署经验构建。
 
 ### 关于本项目
 
-这不是教程 Demo。这是一个**生产就绪的全栈应用**，凝结了我在企业情报分析和大规模数据处理流水线中的实战经验。
+这不是教程 Demo。这是一个**生产就绪的全栈应用**，基于真实企业 AI Agent 平台部署经验构建，涵盖情报分析和大规模数据处理流水线场景。
 
-### 作者背景
-
-**曹俊** — 高级 Python 工程师，8 年开发经验，专长领域：
-- **LangGraph / LangChain** 多智能体系统架构（2024 年起生产环境部署）
-- **Agentic RAG** 混合检索（Milvus + ES + Reranker）— Faithfulness 0.91，Context Precision 0.85
-- **分布式数据流水线** — Scrapy-Redis + Kafka + Spark，日均百万级数据采集
-- **反爬对抗** — Cloudflare / Akamai / TLS 指纹突破，成功率 95%+
-
-曾在杭州司塔科信息安全技术有限公司主导企业级多智能体情报分析平台建设，覆盖 6 大社交平台 + 500+ 境外媒体源。
+项目中的设计决策、工程模式和架构选择反映了在高吞吐量数据摄取、多模型 LLM 编排和容错异步处理等生产系统中积累的实践经验。
 
 ### 生产级特性
 
