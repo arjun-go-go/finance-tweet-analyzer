@@ -87,8 +87,10 @@ class PreferenceUpdate(BaseModel):
 
     @field_validator("watch_bloggers", "unwatch_bloggers", "interested_tickers", mode="before")
     @classmethod
-    def none_to_empty_list(cls, v):
-        return v if v is not None else []
+    def empty_to_empty_list(cls, v):
+        if v is None or v == "":
+            return []
+        return v
 
     def get_investment_style(self) -> str:
         v = self.investment_style

@@ -35,7 +35,7 @@ def get_report_llm() -> ChatOpenAI:
         model=settings.report_model,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
-        temperature=0.3,
+        temperature=0.1,
         timeout=120,
         http_client=httpx.Client(proxy=settings.http_proxy),
     )
