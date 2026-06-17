@@ -21,37 +21,29 @@ export default function DashboardStats({
 }: StatsProps) {
   const router = useRouter();
   const stats = [
-    { label: "总推文数", value: totalTweets, color: "bg-blue-500", href: "/tweets" },
-    { label: "待分析", value: pendingTweets, color: "bg-yellow-500", href: "/tweets?status=pending" },
-    { label: "已分析", value: analyzedTweets, color: "bg-green-500", href: "/tweets?status=analyzed" },
-    { label: "分析结果", value: totalAnalyses, color: "bg-purple-500", href: "/results" },
-    { label: "关注博主", value: totalBloggers, color: "bg-pink-500", href: "/bloggers" },
-    {
-      label: "待标注预测",
-      value: pendingPredictions,
-      color: "bg-orange-500",
-      href: "/bloggers?sort=pending_count",
-    },
+    { label: "总推文", value: totalTweets, dot: "bg-blue-500", href: "/tweets" },
+    { label: "待分析", value: pendingTweets, dot: "bg-yellow-500", href: "/tweets?tab=pending" },
+    { label: "已分析", value: analyzedTweets, dot: "bg-green-500", href: "/tweets?tab=analyzed" },
+    { label: "分析结果", value: totalAnalyses, dot: "bg-purple-500", href: "/tweets?tab=analyzed" },
+    { label: "博主", value: totalBloggers, dot: "bg-pink-500", href: "/bloggers" },
+    { label: "待标注", value: pendingPredictions, dot: "bg-orange-500", href: "/bloggers?sort=pending_count" },
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-      {stats.map((stat) => {
-        const clickable = stat.href !== null;
-        return (
-          <div
-            key={stat.label}
-            onClick={clickable ? () => router.push(stat.href!) : undefined}
-            className={`bg-white rounded-lg shadow p-4 ${
-              clickable ? "cursor-pointer hover:shadow-md transition" : ""
-            }`}
-          >
-            <div className={`w-2 h-2 rounded-full ${stat.color} mb-2`} />
-            <p className="text-2xl font-bold">{stat.value}</p>
-            <p className="text-sm text-gray-500">{stat.label}</p>
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      {stats.map((stat) => (
+        <button
+          key={stat.label}
+          onClick={() => router.push(stat.href)}
+          className="bg-white rounded-lg shadow p-4 text-left hover:shadow-md transition-shadow"
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <span className={`w-2.5 h-2.5 rounded-full ${stat.dot}`} />
+            <span className="text-sm text-gray-500">{stat.label}</span>
           </div>
-        );
-      })}
+          <p className="text-2xl font-bold text-gray-800">{stat.value}</p>
+        </button>
+      ))}
     </div>
   );
 }

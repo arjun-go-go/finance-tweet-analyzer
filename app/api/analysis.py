@@ -7,6 +7,7 @@ from app.scheduler.locks import try_acquire, release
 from app.services.analysis_service import (
     analyze_by_blogger,
     analyze_by_bloggers,
+    analyze_single_tweet,
     trigger_analysis,
 )
 
@@ -28,6 +29,18 @@ class MultiBloggerRequest(BaseModel):
 def trigger_analysis_endpoint(db: Session = Depends(get_db)):
     """分析所有 pending 推文"""
     return trigger_analysis(db)
+
+
+@router.post("/tweet/{tweet_id}", response_model=AnalysisResponse)
+def analyze_single_tweet_endpoint(tweet_id: str, db: Session = Depends(get_db)):
+    """分析单条推文（支持重新分析已分析过的推文）"""
+    lock_key = f"tweet_analysis:{tweet_id}"
+    if not try_acquire(lock_key):
+        raise HTTPException(status_code=409, detail="该推文正在分析中，请稍后再试")
+    try:
+        return analyze_single_tweet(db, tweet_id)
+    finally:
+        release(lock_key)
 
 
 @router.post("/blogger/{blogger_handle}", response_model=AnalysisResponse)

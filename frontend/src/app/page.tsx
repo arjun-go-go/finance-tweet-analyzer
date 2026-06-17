@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import DashboardStats from "@/components/DashboardStats";
 import TickerCard from "@/components/TickerCard";
-import { fetchDashboard, triggerAnalysis } from "@/lib/api";
+import SkeletonCard from "@/components/SkeletonCard";
+import { fetchDashboard, fetchTickerSummaries } from "@/lib/api";
 
 interface DashboardData {
   total_tweets: number;
@@ -12,22 +13,39 @@ interface DashboardData {
   total_analyses: number;
   total_bloggers: number;
   pending_predictions?: number;
-  top_tickers: Array<{
-    id: string;
-    result: Record<string, any>;
-    confidence: number;
-  }>;
+}
+
+interface TickerItem {
+  id: string;
+  result: {
+    ticker: string;
+    mention_count: number;
+    bloggers: string[];
+    consensus: string;
+    bullish_count: number;
+    bearish_count: number;
+    recommendation_score: number;
+    summary: string;
+  };
+  created_at: string;
 }
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [tickers, setTickers] = useState<TickerItem[]>([]);
+  const [tickerTotal, setTickerTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [analyzing, setAnalyzing] = useState(false);
 
   const loadData = async () => {
+    setLoading(true);
     try {
-      const result = await fetchDashboard();
-      setData(result);
+      const [dashRes, tickersRes] = await Promise.all([
+        fetchDashboard(),
+        fetchTickerSummaries(),
+      ]);
+      setData(dashRes);
+      setTickers(tickersRes.items || []);
+      setTickerTotal(tickersRes.total || 0);
     } catch (e) {
       console.error("Failed to load dashboard:", e);
     } finally {
@@ -39,35 +57,38 @@ export default function DashboardPage() {
     loadData();
   }, []);
 
-  const handleTrigger = async () => {
-    setAnalyzing(true);
-    try {
-      const result = await triggerAnalysis();
-      alert(`分析完成！处理了 ${result.analyzed} 条推文，发现 ${result.ticker_summaries.length} 个标的`);
-      loadData();
-    } catch (e) {
-      alert("分析触发失败");
-    } finally {
-      setAnalyzing(false);
-    }
-  };
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="h-8 w-32 bg-gray-200 rounded animate-pulse" />
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-white rounded-lg shadow p-4 animate-pulse">
+              <div className="h-4 w-16 bg-gray-200 rounded mb-2" />
+              <div className="h-8 w-12 bg-gray-200 rounded" />
+            </div>
+          ))}
+        </div>
+        <div className="grid md:grid-cols-2 gap-4">
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+      </div>
+    );
+  }
 
-  if (loading) return <p className="text-center py-10">加载中...</p>;
-  if (!data) return <p className="text-center py-10 text-red-500">加载失败</p>;
+  if (!data) {
+    return <p className="text-center py-10 text-red-500">加载失败</p>;
+  }
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <button
-          onClick={handleTrigger}
-          disabled={analyzing}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-        >
-          {analyzing ? "分析中..." : "分析待处理推文"}
-        </button>
-      </div>
+    <div className="space-y-6">
+      {/* Header */}
+      <h1 className="text-2xl font-bold">Dashboard</h1>
 
+      {/* Stats */}
       <DashboardStats
         totalTweets={data.total_tweets}
         pendingTweets={data.pending_tweets}
@@ -77,13 +98,24 @@ export default function DashboardPage() {
         pendingPredictions={data.pending_predictions ?? 0}
       />
 
+      {/* Ticker recommendations */}
       <div>
-        <h2 className="text-lg font-semibold mb-4">标的推荐排行</h2>
-        {data.top_tickers.length === 0 ? (
-          <p className="text-gray-500">暂无分析数据，请先导入推文并触发分析</p>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">标的推荐排行</h2>
+          <span className="text-sm text-gray-500">共 {tickerTotal} 个</span>
+        </div>
+
+        {tickers.length === 0 ? (
+          <div className="text-center py-14 bg-white rounded-lg shadow">
+            <div className="text-5xl mb-3">📊</div>
+            <p className="text-gray-500 text-lg font-medium mb-1">暂无分析数据</p>
+            <p className="text-gray-400 text-sm">
+              请先导入推文并在「推文 & 分析」页面触发分析以生成标的推荐
+            </p>
+          </div>
         ) : (
           <div className="grid md:grid-cols-2 gap-4">
-            {data.top_tickers.map((item) => (
+            {tickers.map((item) => (
               <TickerCard
                 key={item.id}
                 ticker={item.result.ticker}

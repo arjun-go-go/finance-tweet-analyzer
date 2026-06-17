@@ -246,7 +246,42 @@ export default function DocumentsPage() {
       ? "bg-blue-600 text-white px-4 py-2 rounded-lg text-sm"
       : "bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-200";
 
-  if (loading) return <p className="text-center py-10">加载中...</p>;
+  if (loading) {
+    return (
+      <div className="space-y-6 animate-pulse">
+        <h1 className="text-2xl font-bold">文档管理</h1>
+        <div className="bg-white rounded-lg shadow p-4 space-y-3">
+          <div className="flex gap-2 mb-4">
+            <div className="h-8 w-20 bg-gray-200 rounded-lg" />
+            <div className="h-8 w-20 bg-gray-200 rounded-lg" />
+            <div className="h-8 w-20 bg-gray-200 rounded-lg" />
+          </div>
+          <div className="h-24 bg-gray-200 rounded-lg" />
+          <div className="h-10 w-full bg-gray-200 rounded-lg" />
+          <div className="h-10 w-full bg-gray-200 rounded-lg" />
+          <div className="h-10 w-24 bg-gray-200 rounded-lg" />
+        </div>
+        <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="grid grid-cols-7 gap-4 px-4 py-3 border-b border-gray-200 bg-gray-50">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} className="h-4 bg-gray-200 rounded w-16" />
+            ))}
+          </div>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="grid grid-cols-7 gap-4 px-4 py-4 border-b border-gray-100">
+              <div className="h-4 bg-gray-200 rounded w-24" />
+              <div className="h-4 bg-gray-200 rounded w-12" />
+              <div className="h-4 bg-gray-200 rounded w-14" />
+              <div className="h-4 bg-gray-200 rounded w-8" />
+              <div className="h-4 bg-gray-200 rounded w-16" />
+              <div className="h-4 bg-gray-200 rounded w-20" />
+              <div className="h-4 bg-gray-200 rounded w-8" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -382,7 +417,11 @@ export default function DocumentsPage() {
       {/* Document List */}
       <div className="bg-white rounded-lg shadow p-4">
         {documents.length === 0 ? (
-          <p className="text-center py-10 text-gray-500">暂无文档</p>
+          <div className="text-center py-14">
+            <div className="text-5xl mb-3">📁</div>
+            <p className="text-gray-500 text-lg font-medium mb-1">暂无文档</p>
+            <p className="text-gray-400 text-sm">通过上方上传、URL 或粘贴方式添加文档</p>
+          </div>
         ) : (
           <>
             <div className="overflow-x-auto">

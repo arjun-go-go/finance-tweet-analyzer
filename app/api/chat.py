@@ -575,7 +575,10 @@ def chat_endpoint(
             except Exception:
                 pass
             finally:
-                lock_session.close()
+                try:
+                    lock_session.close()
+                except Exception:
+                    pass
 
     return EventSourceResponse(event_generator())
 

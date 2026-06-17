@@ -15,6 +15,30 @@ from app.services.trace_service import write_trace_immediate
 BATCH_SIZE = 10
 
 
+def analyze_single_tweet(db: Session, tweet_id: str) -> dict:
+    """分析单条推文（支持重新分析已分析过的推文）。"""
+    batch_id = uuid.uuid4()
+
+    tweet = db.execute(
+        select(Tweet).where(Tweet.id == uuid.UUID(tweet_id))
+    ).scalar_one_or_none()
+
+    if not tweet:
+        return {
+            "batch_id": str(batch_id),
+            "analyzed": 0,
+            "analyses": [],
+            "ticker_summaries": [],
+            "error": f"Tweet {tweet_id} not found",
+        }
+
+    # Allow re-analysis: reset status to pending so _run_analysis picks it up
+    tweet.status = "pending"
+    db.commit()
+
+    return _run_analysis(db, [tweet], batch_id)
+
+
 def analyze_by_blogger(db: Session, blogger_handle: str) -> dict:
     batch_id = uuid.uuid4()
 

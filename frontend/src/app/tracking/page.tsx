@@ -50,6 +50,17 @@ export default function TrackingPage() {
   // Delete dialog state
   const [deleteTarget, setDeleteTarget] = useState<TrackingItem | null>(null);
 
+  // Dropdown menu state
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!openMenuId) return;
+    const handler = () => setOpenMenuId(null);
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [openMenuId]);
+
   // Load tracking list
   const loadList = async () => {
     try {
@@ -148,7 +159,33 @@ export default function TrackingPage() {
     }
   };
 
-  if (loading) return <p className="text-center py-10">加载中...</p>;
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold">标的追踪</h1>
+          <p className="text-sm text-gray-500 mt-1">订阅标的，自动生成分析报告</p>
+        </div>
+        <div className="bg-white rounded-lg shadow overflow-hidden animate-pulse">
+          <div className="grid grid-cols-6 gap-4 px-4 py-3 border-b border-gray-200 bg-gray-50">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-4 bg-gray-200 rounded w-16" />
+            ))}
+          </div>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="grid grid-cols-6 gap-4 px-4 py-4 border-b border-gray-100">
+              <div className="h-4 bg-gray-200 rounded w-12" />
+              <div className="h-4 bg-gray-200 rounded w-16" />
+              <div className="h-4 bg-gray-200 rounded w-14" />
+              <div className="h-4 bg-gray-200 rounded w-20" />
+              <div className="h-4 bg-gray-200 rounded w-20" />
+              <div className="h-4 bg-gray-200 rounded w-24" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -228,8 +265,10 @@ export default function TrackingPage() {
 
       {/* Subscription Table */}
       {items.length === 0 ? (
-        <div className="text-center py-10 text-gray-500">
-          暂无订阅，点击上方添加
+        <div className="text-center py-14 bg-white rounded-lg shadow">
+          <div className="text-5xl mb-3">📡</div>
+          <p className="text-gray-500 text-lg font-medium mb-1">暂无追踪订阅</p>
+          <p className="text-gray-400 text-sm">点击上方「添加订阅」按钮，开启自动报告生成</p>
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -261,9 +300,12 @@ export default function TrackingPage() {
                 <tr key={item.id} className="hover:bg-gray-50">
                   {/* 标的 */}
                   <td className="px-4 py-3">
-                    <span className="font-bold text-gray-900">
+                    <button
+                      onClick={() => router.push(`/reports?ticker=${item.ticker}`)}
+                      className="font-bold text-gray-900 hover:text-blue-600 transition-colors"
+                    >
                       {item.ticker}
-                    </span>
+                    </button>
                   </td>
 
                   {/* 频率 */}
@@ -297,51 +339,59 @@ export default function TrackingPage() {
                   {/* 操作 */}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      {/* Pause/Resume toggle */}
-                      {item.status === "active" ? (
-                        <button
-                          onClick={() => handleToggleStatus(item)}
-                          className="border border-yellow-300 text-yellow-600 hover:bg-yellow-50 px-3 py-1 rounded text-sm"
-                        >
-                          暂停
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleToggleStatus(item)}
-                          className="border border-green-300 text-green-600 hover:bg-green-50 px-3 py-1 rounded text-sm"
-                        >
-                          恢复
-                        </button>
-                      )}
-
-                      {/* Trigger report */}
                       <button
                         onClick={() => handleTrigger(item)}
                         disabled={triggerLoading === item.id}
-                        className="border border-blue-300 text-blue-600 hover:bg-blue-50 px-3 py-1 rounded text-sm disabled:opacity-50"
+                        className="border border-blue-300 text-blue-600 hover:bg-blue-50 px-3 py-1 rounded text-sm disabled:opacity-50 whitespace-nowrap"
                       >
                         {triggerLoading === item.id
                           ? "触发中..."
                           : "触发报告"}
                       </button>
 
-                      {/* View reports */}
-                      <button
-                        onClick={() =>
-                          router.push(`/reports?ticker=${item.ticker}`)
-                        }
-                        className="border border-blue-300 text-blue-600 hover:bg-blue-50 px-3 py-1 rounded text-sm"
-                      >
-                        查看报告
-                      </button>
+                      <div className="relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenMenuId(openMenuId === item.id ? null : item.id);
+                          }}
+                          className="border border-gray-300 text-gray-600 hover:bg-gray-50 px-2 py-1 rounded text-sm"
+                        >
+                          更多 ▼
+                        </button>
 
-                      {/* Delete */}
-                      <button
-                        onClick={() => setDeleteTarget(item)}
-                        className="border border-red-300 text-red-600 hover:bg-red-50 px-3 py-1 rounded text-sm"
-                      >
-                        删除
-                      </button>
+                        {openMenuId === item.id && (
+                          <div className="absolute right-0 mt-1 w-32 bg-white rounded-lg shadow-lg border border-gray-200 z-10 py-1">
+                            <button
+                              onClick={() => {
+                                setOpenMenuId(null);
+                                handleToggleStatus(item);
+                              }}
+                              className="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 text-gray-700"
+                            >
+                              {item.status === "active" ? "暂停追踪" : "恢复追踪"}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setOpenMenuId(null);
+                                router.push(`/reports?ticker=${item.ticker}`);
+                              }}
+                              className="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 text-gray-700"
+                            >
+                              查看报告
+                            </button>
+                            <button
+                              onClick={() => {
+                                setOpenMenuId(null);
+                                setDeleteTarget(item);
+                              }}
+                              className="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 text-red-600"
+                            >
+                              删除
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </td>
                 </tr>

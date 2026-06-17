@@ -11,12 +11,14 @@ export async function fetchDashboard() {
 export async function fetchTweets(params?: {
   status?: string;
   blogger?: string;
+  include_analysis?: boolean;
   limit?: number;
   offset?: number;
 }) {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.blogger) sp.set("blogger", params.blogger);
+  if (params?.include_analysis) sp.set("include_analysis", "true");
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.offset) sp.set("offset", String(params.offset));
   const res = await fetch(`${API_BASE}/api/tweets?${sp.toString()}`, {
@@ -44,8 +46,11 @@ export async function fetchAnalyses(params?: {
   return res.json();
 }
 
-export async function fetchTickerSummaries() {
-  const res = await fetch(`${API_BASE}/api/ticker-summaries`, {
+export async function fetchTickerSummaries(params?: { limit?: number; offset?: number }) {
+  const sp = new URLSearchParams();
+  sp.set("limit", String(params?.limit ?? 100));
+  if (params?.offset) sp.set("offset", String(params.offset));
+  const res = await fetch(`${API_BASE}/api/ticker-summaries?${sp.toString()}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch ticker summaries");
@@ -139,6 +144,15 @@ export async function triggerAnalysis() {
     method: "POST",
   });
   if (!res.ok) throw new Error("Failed to trigger analysis");
+  return res.json();
+}
+
+export async function analyzeSingleTweet(tweetId: string) {
+  const res = await fetch(
+    `${API_BASE}/api/analysis/tweet/${encodeURIComponent(tweetId)}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error("Failed to analyze tweet");
   return res.json();
 }
 
@@ -281,7 +295,7 @@ export interface DocumentItem {
   id: string;
   title: string;
   source_type: "upload" | "url" | "paste";
-  status: "pending" | "processing" | "ready" | "error";
+  status: "pending" | "processing" | "ready" | "indexed" | "error";
   char_count: number;
   chunk_count: number;
   tickers: string[];

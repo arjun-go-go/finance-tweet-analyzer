@@ -54,3 +54,17 @@ alembic/versions/__pycache__/
 htmlcov/
 .coverage
 .pytest_cache/
+
+# mem0 data
+chroma_mem0_db/
+mem0_history.db
+
+# Celery
+celerybeat-schedule*
+
+# Qoder agent skills (local only)
+.agents/
+skills-lock.json
+
+# Windows
+nul

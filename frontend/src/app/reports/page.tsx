@@ -234,7 +234,30 @@ function ReportsPageInner() {
 
   const totalPages = Math.ceil(total / pageSize);
 
-  if (loading) return <p className="text-center py-10">加载中...</p>;
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold">分析报告</h1>
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-white rounded-lg shadow p-4 animate-pulse">
+              <div className="flex items-center justify-between mb-3">
+                <div className="h-6 w-16 bg-gray-200 rounded" />
+                <div className="h-4 w-10 bg-gray-200 rounded-full" />
+              </div>
+              <div className="h-4 w-3/4 bg-gray-200 rounded mb-3" />
+              <div className="h-5 w-14 bg-gray-200 rounded-full mb-3" />
+              <div className="h-3 w-24 bg-gray-200 rounded mb-2" />
+              <div className="flex justify-between">
+                <div className="h-3 w-16 bg-gray-200 rounded" />
+                <div className="h-3 w-8 bg-gray-200 rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -327,7 +350,11 @@ function ReportsPageInner() {
 
       {/* Report Card Grid */}
       {reports.length === 0 ? (
-        <div className="text-center py-10 text-gray-500">暂无报告</div>
+        <div className="text-center py-14 bg-white rounded-lg shadow">
+          <div className="text-5xl mb-3">📄</div>
+          <p className="text-gray-500 text-lg font-medium mb-1">暂无分析报告</p>
+          <p className="text-gray-400 text-sm">点击上方「生成报告」按钮创建第一份标的分析报告</p>
+        </div>
       ) : (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {reports.map((report) => (
@@ -339,14 +366,24 @@ function ReportsPageInner() {
                 }
               }}
               className={`bg-white rounded-lg shadow p-4 cursor-pointer hover:shadow-md transition-shadow ${
-                report.status === "generating" ? "animate-pulse" : ""
+                report.status === "generating"
+                  ? "animate-pulse border-t-4 border-blue-400"
+                  : ""
               }`}
             >
               {/* Header: Ticker + Trigger Type */}
               <div className="flex items-center justify-between mb-2">
-                <span className="text-lg font-bold text-blue-600">
-                  {report.ticker}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg font-bold text-blue-600">
+                    {report.ticker}
+                  </span>
+                  {report.status === "generating" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                      <span className="inline-block w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                      生成中...
+                    </span>
+                  )}
+                </div>
                 <span
                   className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                     TRIGGER_CONFIG[report.trigger_type]?.color ||
@@ -361,7 +398,7 @@ function ReportsPageInner() {
               {/* Title */}
               <p className="text-sm text-gray-800 font-medium truncate mb-2">
                 {report.status === "generating"
-                  ? "生成中..."
+                  ? "正在生成分析报告，请稍候..."
                   : report.title || "分析报告"}
               </p>
 

@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   createConversation,
   listConversations,
@@ -296,7 +298,7 @@ export default function ChatPage() {
   return (
     <div className="flex h-[calc(100vh-120px)] -mx-6 -my-8">
       {/* Sidebar */}
-      <div className="w-72 bg-gray-900 text-white flex flex-col">
+      <div className="w-72 bg-gray-900 text-white flex flex-col border-r border-gray-700">
         <div className="p-4 border-b border-gray-700">
           <button
             onClick={handleNewConversation}
@@ -384,13 +386,42 @@ export default function ChatPage() {
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`px-4 py-2 rounded-lg max-w-[80%] whitespace-pre-wrap ${
+                className={`px-4 py-2 rounded-lg max-w-[80%] ${
                   msg.role === "user"
-                    ? "bg-blue-600 text-white"
+                    ? "bg-blue-600 text-white whitespace-pre-wrap"
                     : "bg-gray-100 text-gray-800"
                 }`}
               >
-                {msg.content || "思考中..."}
+                {msg.role === "user" ? (
+                  msg.content || "思考中..."
+                ) : (
+                  <div className="markdown-body prose prose-sm max-w-none
+                    [&_table]:border-collapse [&_table]:w-full [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-gray-200 [&_th]:text-left [&_th]:text-xs
+                    [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_td]:text-xs
+                    [&_tr:hover]:bg-blue-50
+                    [&_strong]:font-semibold
+                    [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1
+                    [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:my-1
+                    [&_li]:my-0.5
+                    [&_p]:my-1
+                    [&_code]:bg-gray-200 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
+                    [&_pre]:bg-gray-800 [&_pre]:text-gray-100 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:my-2
+                    [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-xs
+                    [&_blockquote]:border-l-4 [&_blockquote]:border-blue-400 [&_blockquote]:pl-3 [&_blockquote]:text-gray-600
+                    [&_h1]:text-lg [&_h1]:font-bold [&_h1]:mt-3 [&_h1]:mb-1
+                    [&_h2]:text-base [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1
+                    [&_h3]:text-sm [&_h3]:font-bold [&_h3]:mt-2 [&_h3]:mb-1
+                    [&_hr]:border-gray-300 [&_hr]:my-2
+                  ">
+                    {msg.content ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    ) : (
+                      "思考中..."
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ))}

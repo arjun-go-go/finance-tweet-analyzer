@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     twitter_ct0: str = ""
     twitter_bearer_token: str = ""
 
+    # ----- mem0 long-term memory (self-hosted OSS mode) -----
+    mem0_enabled: bool = True
+    mem0_chroma_path: str = "./chroma_mem0_db"
+    mem0_history_db_path: str = "./mem0_history.db"
+    mem0_top_k: int = 5
+
     # ----- Debug -----
     debug_mode: bool = False
 

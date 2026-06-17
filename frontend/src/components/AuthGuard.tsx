@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { isAuthenticated, fetchMe } from "@/lib/auth";
 import Navbar from "@/components/Navbar";
+import Breadcrumb from "@/components/Breadcrumb";
 
 const PUBLIC_PATHS = ["/login", "/register"];
 
@@ -47,6 +48,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   return (
     <>
       <Navbar />
+      <Breadcrumb />
       <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
     </>
   );
