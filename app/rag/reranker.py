@@ -88,9 +88,11 @@ def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[t
         return [(i, 1.0) for i in range(len(documents))]
 
     result = _rerank_with_circuit(query, documents, top_n)
-    # 熔断降级：保持 RRF 原始排序，用递减分数标记
+    # 熔断/重试失败降级：保持 RRF 原始排序，用递减分数标记
     if isinstance(result, str) and "RERANK_FALLBACK" in result:
         return [(i, 1.0 - i * 0.01) for i in range(min(top_n, len(documents)))]
+    # 最低相关性阈值过滤：丢弃低于阈值的无关文档
+    result = [(idx, score) for idx, score in result if score >= settings.reranker_min_score]
     return result
 
 

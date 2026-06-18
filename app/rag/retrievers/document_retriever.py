@@ -33,6 +33,13 @@ def retrieve_documents(
     # ChromaDB 不支持字符串字段 $contains，tickers 存为逗号分隔大写字符串
     # 无法做子串过滤，暂不加 ticker filter，由 reranker 处理相关性
     extra_filter: dict = {}
+    if intent.time_range_start or intent.time_range_end:
+        ts_filter: dict = {}
+        if intent.time_range_start:
+            ts_filter["$gte"] = intent.time_range_start.isoformat()
+        if intent.time_range_end:
+            ts_filter["$lte"] = intent.time_range_end.isoformat()
+        extra_filter["published_at"] = ts_filter
 
     hits = repo.search(
         user_id=user_id,

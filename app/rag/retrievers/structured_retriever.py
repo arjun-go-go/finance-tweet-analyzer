@@ -61,6 +61,10 @@ def retrieve_structured(intent: QueryIntent) -> list[dict]:
             pred_stmt = pred_stmt.where(
                 Prediction.blogger_handle.in_(intent.blogger_filter)
             )
+        if intent.time_range_start:
+            pred_stmt = pred_stmt.where(Prediction.created_at >= intent.time_range_start)
+        if intent.time_range_end:
+            pred_stmt = pred_stmt.where(Prediction.created_at <= intent.time_range_end)
 
         predictions = db.execute(pred_stmt).scalars().all()
 

@@ -149,7 +149,7 @@ def resilient_tool(
                         )
 
             breaker.record_failure()
-            return f"[重试失败] 操作 {name} 失败（共尝试 {retries} 次）: {str(last_exc)[:200]}"
+            return f"[重试失败] {fallback_message} — {name}（共尝试 {retries} 次）: {str(last_exc)[:200]}"
 
         return wrapper
     return decorator

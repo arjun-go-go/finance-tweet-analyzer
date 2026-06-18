@@ -62,7 +62,8 @@ def auto_analysis_task(self) -> dict:
         logger.info("[Celery] Found %d bloggers with pending tweets", len(handles))
 
         for handle in handles:
-            if not try_acquire(handle):
+            acquired, lock_token = try_acquire(handle)
+            if not acquired:
                 logger.info("[Celery] Skipping %s — locked by another worker", handle)
                 stats["skipped"] += 1
                 continue
@@ -78,7 +79,7 @@ def auto_analysis_task(self) -> dict:
                 logger.error("[Celery] Error analyzing %s: %s", handle, e)
                 stats["errors"] += 1
             finally:
-                release(handle)
+                release(handle, lock_token)
 
     except Exception as e:
         logger.error("[Celery] Unexpected error in auto_analysis: %s", e)
@@ -128,7 +129,8 @@ def manual_analysis_task(
         statuses = ["pending", "analyzed"] if reanalyze else ["pending"]
 
         for handle in blogger_handles:
-            if not try_acquire(handle):
+            acquired, lock_token = try_acquire(handle)
+            if not acquired:
                 logger.info("[Celery] Skipping %s — locked", handle)
                 stats["skipped"] += 1
                 continue
@@ -159,7 +161,7 @@ def manual_analysis_task(
                 logger.error("[Celery] Manual error %s: %s", handle, e)
                 stats["errors"] += 1
             finally:
-                release(handle)
+                release(handle, lock_token)
 
         stats["total_bloggers"] = len(blogger_handles)
     except Exception as e:
@@ -188,7 +190,8 @@ def prediction_batch_task(self) -> dict:
     """
     logger.info("[Celery] Prediction batch task started")
 
-    if not try_acquire_prediction_lock():
+    acquired, pred_token = try_acquire_prediction_lock()
+    if not acquired:
         logger.info("[Celery] Prediction lock held by another worker, skipping")
         return {"status": "skipped"}
 
@@ -315,7 +318,7 @@ def prediction_batch_task(self) -> dict:
         raise
     finally:
         db.close()
-        release_prediction_lock()
+        release_prediction_lock(pred_token)
 
     logger.info("[Celery] Prediction batch completed: %s", stats)
     return stats

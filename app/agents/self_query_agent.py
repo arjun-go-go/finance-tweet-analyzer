@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 
 from app.agents.llm import get_signal_llm
+from app.prompts import get_prompt
 
 
 class QueryIntent(BaseModel):
@@ -50,20 +51,8 @@ class QueryIntent(BaseModel):
 _TICKER_RE = re.compile(r"\b([A-Z]{1,5})\b|([A-Z]+/[A-Z]+)")
 _BLOGGER_RE = re.compile(r"@(\w+)")
 
-# LLM System Prompt：注入当前时间锚点，确保相对时间（"本周""最近3天"）正确解析
-_SYSTEM_PROMPT = """你是一个金融查询意图解析器。从用户的自然语言请求中提取结构化查询参数。
-
-时间锚点：
-- 今天: {today}
-- "本周" = {week_start} ~ {today}
-- "本月" = {month_start} ~ {today}
-- "最近N天" = 从今天往前推N天
-
-如果用户没有明确指定时间范围，默认使用最近7天。
-如果用户没有明确指定 ticker，从文本中提取最可能的金融标的代码。
-如果用户提到特定博主（如 @xxx、"qinbafrank 的观点"、"LinQingV 怎么看"），提取博主 handle 到 blogger_filter 列表中（不含 @ 符号）。
-
-请返回结构化的 JSON 格式结果。"""
+# LLM System Prompt 从 YAML 注册表加载
+# get_prompt("self_query/system", today=..., week_start=..., month_start=...)
 
 
 def _fallback_parse(query: str) -> QueryIntent:
@@ -104,11 +93,7 @@ def parse_intent(user_query: str) -> QueryIntent:
     try:
         llm = get_signal_llm()
         structured_llm = llm.with_structured_output(QueryIntent)
-        prompt = _SYSTEM_PROMPT.format(
-            today=today_str,
-            week_start=week_start,
-            month_start=month_start,
-        )
+        prompt = get_prompt("self_query/system", today=today_str, week_start=week_start, month_start=month_start)
         result = structured_llm.invoke([
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_query},

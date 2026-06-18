@@ -36,6 +36,7 @@ from sqlalchemy import text
 from app.agents.llm import get_report_llm, get_signal_llm
 from app.core.config import settings
 from app.core.deps import SessionLocal
+from app.prompts import get_prompt
 from app.services.trace_service import traced_node
 
 
@@ -202,21 +203,11 @@ def generate_sql_node(state: SQLState) -> dict:
     tz = pytz.timezone("Asia/Shanghai")
     current_time = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
-    system_prompt = f"""你是一个 PostgreSQL 数据分析专家，以 json 格式输出结果。当前系统时间: {current_time} (时区: Asia/Shanghai)。
-
-数据库 Schema:
-{DB_SCHEMA_DDL}
-
-规则：
-1. 只能生成 SELECT 语句。涉及相对时间（昨天、上周、最近7天）必须基于当前系统时间计算。
-2. 严格使用 Schema 中的表名和字段名，不要编造不存在的字段。
-3. 日期格式化用 TO_CHAR(col, 'YYYY-MM-DD HH24:MI')。
-4. 用中文列别名方便用户理解。
-5. 如果无法映射到有效 SQL，将 sql 字段留空。"""
+    system_prompt = get_prompt("sql/system", current_time=current_time, db_schema_ddl=DB_SCHEMA_DDL)
 
     user_ctx = _get_user_context(user_id)
     if user_ctx:
-        system_prompt += "\n\n当前用户信息（当用户说'我的'、'我关注的'时使用）：\n" + user_ctx
+        system_prompt += get_prompt("sql/user_context", user_ctx=user_ctx)
 
     messages = [SystemMessage(content=system_prompt)]
 

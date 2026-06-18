@@ -68,6 +68,14 @@ def retrieve_bm25(intent: QueryIntent, user_id: UUID | None = None) -> list[dict
             stmt = stmt.where(
                 DocChunk.metadata_["blogger_handle"].astext.in_(intent.blogger_filter)
             )
+        if intent.time_range_start:
+            stmt = stmt.where(
+                DocChunk.metadata_["published_at"].astext >= intent.time_range_start.isoformat()
+            )
+        if intent.time_range_end:
+            stmt = stmt.where(
+                DocChunk.metadata_["published_at"].astext <= intent.time_range_end.isoformat()
+            )
 
         rows = db.execute(stmt).all()
 

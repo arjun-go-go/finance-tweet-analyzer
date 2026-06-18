@@ -1,9 +1,13 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # ----- Database -----
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/finance_tweets"
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_recycle: int = 1800
 
     # ----- OpenRouter LLM -----
     openrouter_api_key: str = ""
@@ -89,6 +93,7 @@ class Settings(BaseSettings):
     # ----- Reranker -----
     reranker_model: str = "qwen3-rerank"
     reranker_top_n: int = 10
+    reranker_min_score: float = 0.3
     report_rerank_quota: dict[str, int] = {
         "tweet": 4,
         "document": 3,
@@ -169,6 +174,27 @@ class Settings(BaseSettings):
     log_skip_paths: list[str] = ["/health", "/api/health", "/docs", "/openapi.json", "/favicon.ico"]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def _validate_jwt_secret(cls, v: str) -> str:
+        if not v:
+            raise ValueError("JWT_SECRET_KEY must be set (non-empty) in .env")
+        return v
+
+    @field_validator("openrouter_api_key")
+    @classmethod
+    def _validate_openrouter_key(cls, v: str) -> str:
+        if not v:
+            raise ValueError("OPENROUTER_API_KEY must be set (non-empty) in .env")
+        return v
+
+    @field_validator("dashscope_api_key")
+    @classmethod
+    def _validate_dashscope_key(cls, v: str) -> str:
+        if not v:
+            raise ValueError("DASHSCOPE_API_KEY must be set (non-empty) in .env")
+        return v
 
 
 settings = Settings()

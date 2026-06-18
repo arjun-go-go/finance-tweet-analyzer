@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 from app.agents.llm import get_report_llm, get_signal_llm
 from app.agents.self_query_agent import QueryIntent, parse_intent
 from app.core.config import settings
+from app.prompts import get_prompt
 from app.rag.fusion import reciprocal_rank_fusion
 from app.rag.reranker import rerank, apply_time_decay
 from app.rag.retrievers.analysis_retriever import retrieve_analyses
@@ -101,59 +102,9 @@ SECTION_DEFINITIONS = [
     {"name": "historical_review", "title": "历史预测回顾", "source_types": ["structured"]},
 ]
 
-# 章节生成 Prompt：要求基于参考材料撰写，强制引用标注
-_SECTION_PROMPT = """你是一个金融分析报告的章节撰写专家。
-
-## 任务
-根据以下检索到的参考材料，撰写报告的「{title}」章节。
-
-## 参考材料格式说明
-每条参考材料以 `[N]` 开头，**N 是全局唯一的引用编号**（可能不连续，如 [3]、[7]、[1]）。
-紧随其后的 `(...)` 中包含 metadata，字段可能包括：
-  - 来源类型（tweet / document / analysis / structured）
-  - @博主账号
-  - 发布日期 (YYYY-MM-DD)
-  - sentiment（bullish / bearish / neutral 等）
-  - horizon（投资周期）
-  - cred（博主可信度，0-1）
-  - 涉及标的 ticker
-
-## 要求
-1. 仅基于提供的参考材料撰写，不要编造信息
-2. **必须使用材料中给出的原始编号** [N]，不要重新编号或合并编号
-3. 引用观点时**必须落实到具体博主、日期或来源类型**，例如：
-   "@qinbafrank 在 6 月 8 日表示...[3]"、"近期某研报指出...[7]"
-4. 当多条来源观点冲突时，**优先采纳 cred 较高、日期较近的观点**，并指出分歧
-5. 语言简洁专业，300-500 字
-6. 如果参考材料不足，说明"相关数据有限"
-
-## 参考材料
-{sources}
-
-## 输出
-直接输出章节内容，无需标题。"""
-
-# 综合 Prompt：将各章节草稿 + 原始证据合并为最终报告（含 consensus 评级）
-_SYNTHESIS_PROMPT = """你是一个资深金融分析师。请根据以下「章节草稿」与「原始证据」生成一份完整的跟踪报告。
-
-## 标的: {ticker}
-## 时间范围: {time_range}
-
-## 各章节草稿
-{sections_text}
-
-## 原始证据（已按相关性排序，metadata 含来源类型/博主/日期/sentiment/horizon/cred/ticker）
-{evidence_text}
-
-## 评级原则
-- 综合参考章节草稿中的归纳和原始证据中的具体数据
-- consensus 应反映原始证据中的情感分布，**优先按 cred 与日期加权**
-- 当章节草稿与原始证据矛盾时，以原始证据为准
-- 如果证据不足或观点严重分歧，consensus 取 neutral
-
-## 输出
-请严格按 JSON schema 输出（summary ≤300字，recommendation ≤150字）。recommendation 中如引用观点请简述来源类别（如"多位 KOL"、"近期研报"），不必出现编号。
-根据各方观点的一致性程度、情感倾向与可信度判断 consensus 评级。"""
+# 章节生成 & 综合 Prompt 从 YAML 注册表加载
+# _SECTION_PROMPT → get_prompt("report/section", title=..., sources=...)
+# _SYNTHESIS_PROMPT → get_prompt("report/synthesis", ticker=..., time_range=..., sections_text=..., evidence_text=...)
 
 
 # ============================================================
@@ -406,10 +357,7 @@ def generate_section_node(state: SectionSubState) -> dict:
         idx = item.get("global_index", 0) or 0
         sources_lines.append(_format_evidence_line(idx, item, limit))
     sources_text = "\n".join(sources_lines)
-    prompt = _SECTION_PROMPT.format(
-        title=section_def["title"],
-        sources=sources_text,
-    )
+    prompt = get_prompt("report/section", title=section_def["title"], sources=sources_text)
 
     content = ""
     error_msg: str | None = None
@@ -474,12 +422,7 @@ def synthesize_node(state: ReportState) -> dict:
         evidence_lines.append(_format_evidence_line(idx, item, evidence_limit))
     evidence_text = "\n".join(evidence_lines) if evidence_lines else "(无原始证据)"
 
-    prompt = _SYNTHESIS_PROMPT.format(
-        ticker=ticker,
-        time_range=time_range or "最近7天",
-        sections_text=sections_text,
-        evidence_text=evidence_text,
-    )
+    prompt = get_prompt("report/synthesis", ticker=ticker, time_range=time_range or "最近7天", sections_text=sections_text, evidence_text=evidence_text)
 
     try:
         llm = get_report_llm().with_structured_output(ReportSynthesis, method="json_mode")

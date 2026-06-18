@@ -19,6 +19,7 @@ mem0 长期记忆客户端单例（自托管 OSS 模式）
 """
 from __future__ import annotations
 
+import os
 import threading
 
 from loguru import logger
@@ -86,6 +87,7 @@ def get_mem0_client():
             return None
 
         try:
+            os.environ["MEM0_TELEMETRY_ENABLED"] = "0"
             cfg = _build_config()
             _mem0_client_singleton = Memory.from_config(cfg)
             logger.info(

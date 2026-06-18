@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.user_preference import UserPreference
+from app.prompts import get_prompt
 
 
 # ============================================================
@@ -106,23 +107,8 @@ class MemoryExtraction(BaseModel):
     preferences: PreferenceUpdate = PreferenceUpdate()
 
 
-PREF_EXTRACT_PROMPT = SystemMessage(content="""根据用户最新消息，提取客观事实和主观偏好。请以 json 格式输出。
-
-【profile - 客观事实，基本不变】
-- name: 真实姓名（如"张三"、"曹俊"）
-- nickname: 昵称/网名
-- occupation: 职业/身份（"量化交易员"、"散户"、"基金经理"、"研究员"、"程序员"）
-- birthday: 生日 (ISO 日期 YYYY-MM-DD)
-- location: 所在地（"北京"、"上海"、"杭州"）
-
-【preferences - 主观偏好，可变动】
-- watch_bloggers: 新关注的博主 Twitter handle（不含@）
-- unwatch_bloggers: 取消关注的博主
-- interested_tickers: 新关注的标的/代币（大写如 BTC, ETH, MRVL）
-- reply_style: "concise" 或 "detailed"
-- investment_style: 投资风格（"短线激进"、"长线价值"、"偏好半导体"、"保守型"）
-
-如果消息中没有任何相关表达，所有字段返回空。""")
+# LLM 提取 Prompt 从 YAML 注册表加载
+# SystemMessage(content=get_prompt("memory/preference_extraction"))
 
 
 def _llm_extract(text: str, llm) -> tuple[dict | None, dict | None]:
@@ -130,7 +116,7 @@ def _llm_extract(text: str, llm) -> tuple[dict | None, dict | None]:
     try:
         structured_llm = llm.with_structured_output(MemoryExtraction)
         result = structured_llm.invoke([
-            PREF_EXTRACT_PROMPT,
+            SystemMessage(content=get_prompt("memory/preference_extraction")),
             HumanMessage(content=text),
         ])
         if result is None:

@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/bloggers", tags=["bloggers"])
 def list_bloggers(
     sort: str = Query(
         "credibility",
-        regex="^(credibility|verified_count|followers|pending_count)$",
+        pattern="^(credibility|verified_count|followers|pending_count)$",
     ),
     db: Session = Depends(get_db),
 ):
@@ -61,7 +61,7 @@ def upsert_blogger_endpoint(
 @router.get("/{handle:path}/predictions")
 def get_blogger_predictions(
     handle: str,
-    status: str = Query("all", regex="^(pending|verified|all)$"),
+    status: str = Query("all", pattern="^(pending|verified|all)$"),
     ticker: str | None = Query(None),
     limit: int = Query(20, le=100),
     offset: int = Query(0, ge=0),

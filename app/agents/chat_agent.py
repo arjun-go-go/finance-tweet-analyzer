@@ -33,6 +33,7 @@ from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
 from app.memory.mem0_client import get_mem0_client
+from app.prompts import get_prompt
 
 
 # ============================================================
@@ -718,75 +719,12 @@ def tools_node(state: AgentState):
 
 
 # ============================================================
-# System Prompt + 个性化注入
+# System Prompt —— 从 Prompt Registry 加载
 # ------------------------------------------------------------
-# 基础 prompt 定义 Agent 身份和工具使用原则；
+# 基础 prompt 从 YAML 注册表加载，运行时由 get_prompt("chat/system") 获取；
 # _get_personalized_prompt() 在运行时追加用户档案与偏好，
 # 实现"千人千面"：不同用户看到不同的关注博主/标的提示。
 # ============================================================
-
-SYSTEM_PROMPT = """你是一个专业的 Twitter 金融数据助手，用中文回复。
-
-<core_principles>
-1. 数据驱动：绝不编造数据。所有金融数据、博主信息必须来自工具返回。
-2. 简明扼要：用专业、友好的中文回复，避免冗长解释。
-3. 工具调用纪律（关键，违反会导致执行被强制终止）：
-   - 计数范围：仅指"本次回答"——即从用户最近一条消息到你给出最终答复之间，与历史轮次无关
-   - 本次回答内总工具调用次数不要超过 6 次
-   - 本次回答内同一工具用相同参数不要重复调用，结果已在历史里
-   - 工具失败或返回为空，直接告知用户并停止；不要换参数反复尝试
-   - 一旦拿到足够信息能回答用户，立刻给出最终答复，不要再追加工具调用
-4. 闲聊或通用问题直接回复，无需调用工具。
-</core_principles>
-
-<tool_routing_strategy>
-按用户意图选择工具：
-- 【实时抓取推文】用户要看"最新推文""刚刚发的"→ fetch_and_save_tweets
-- 【博主资料】仅询问"主页信息""粉丝数""简介"→ fetch_and_save_profile（需先确保博主已入库）
-- 【历史查询】"有哪些博主""粉丝排名""历史预测""分析结果"→ query_database
-- 【向量语义检索】用户想了解某标的的"分析观点""市场情绪""博主怎么看"，或 search_my_documents / query_database 已返回无结果时 → search_public_signals（query 建议包含标的代码）
-- 【私有文档】用户问"我上传的文档里怎么说"→ search_my_documents
-- 【深度分析】"分析推文""重新分析"→ preview_tweet_analysis → 等待确认 → confirm_tweet_analysis
-</tool_routing_strategy>
-
-<workflow_guardrails>
-分析任务状态机（极其重要）：
-1. 用户要求分析时，只能先调用 preview_tweet_analysis 获取统计信息
-2. 将统计结果展示给用户，明确询问"是否确认提交后台分析？"
-3. 立即停止调用任何工具，等待用户回复
-4. 仅当用户明确回复"确认""好的""执行"等肯定意图后，才调用 confirm_tweet_analysis（传入 preview 返回的 task_id）
-5. 绝对禁止单轮内自动连续调用 preview 和 confirm！这是硬约束，违反会导致分析任务失败
-
-参数规范：
-- blogger_handle 必须是英文/数字 Handle（不含 @），禁止传中文
-- since 参数必须严格匹配格式：'3d'(3天)、'1w'(1周)、'12h'(12小时)，禁止传"三天内"等自然语言
-</workflow_guardrails>
-
-<examples>
-【示例 1：抓取推文】
-用户：看看马斯克最近发了什么
-→ 意图：查看最新推文
-→ 参数：blogger_handle="elonmusk"（纯英文，不含 @）
-→ 工具：fetch_and_save_tweets(blogger_handle="elonmusk", pages=1)
-
-【示例 2：分析推文】
-用户：分析一下最近三天的推文
-→ 意图：深度分析
-→ 参数：since="3d"（严格格式，不是"三天"或"3天"）
-→ 工具：preview_tweet_analysis(since="3d")
-→ 输出：向用户展示统计结果并询问"是否确认提交后台分析？"
-→ 等待用户回复"确认"后：confirm_tweet_analysis(task_id="xxx")
-</examples>
-
-<preference_management>
-用户偏好由系统自动监听并更新，无需调用工具。识别以下意图并直接确认操作：
-- "关注/追踪 @xxx" / "取消关注 @xxx" → 关注博主列表
-- "看好 BTC/ETH" / "关注 AAPL" → 关注标的
-- "简洁/详细回复" → 回复风格
-
-回复示例："好的，已为您关注 @xxx""已将 BTC 加入您的关注标的"。
-不要说"没有权限"或"无法修改偏好"，这些操作是自动完成的。
-</preference_management>"""
 
 
 def _build_prompt_from_state(base_prompt: str, profile: dict, prefs: dict, memories: list | None = None) -> str:
@@ -872,27 +810,39 @@ def agent_node(state: AgentState, config: RunnableConfig):
         fallback_msg = AIMessage(content="抱歉，系统当前处理您的请求时遇到连续错误，请稍后再试或换一种方式提问。")
         return {"messages": [fallback_msg], "consecutive_tool_failures": 0}
 
+    # Build system prompt first to account for its token cost in the budget
+    profile = state.get("user_profile") or {}
+    prefs = state.get("user_prefs") or {}
+    memories = state.get("memories") or []
+    system_prompt = _build_prompt_from_state(get_prompt("chat/system"), profile, prefs, memories=memories)
+
+    # System prompt tokens must be reserved from the total budget
+    system_tokens = _estimate_tokens([SystemMessage(content=system_prompt)])
+    available_budget = settings.agent_max_tokens_per_turn - system_tokens
+
+    # If system prompt alone exceeds budget, reduce memories and rebuild
+    if available_budget < 0 and memories:
+        memories = memories[:2]
+        system_prompt = _build_prompt_from_state(get_prompt("chat/system"), profile, prefs, memories=memories)
+        system_tokens = _estimate_tokens([SystemMessage(content=system_prompt)])
+        available_budget = settings.agent_max_tokens_per_turn - system_tokens
+
     # Token budget: trim safely (preserve system, start on human, keep tool_call pairs intact)
     token_estimate = _estimate_tokens(messages)
-    if token_estimate > settings.agent_max_tokens_per_turn:
+    if token_estimate > available_budget:
         logger.warning(
             "[Agent] Token budget exceeded ({} > {}), trimming messages",
-            token_estimate, settings.agent_max_tokens_per_turn,
+            token_estimate, available_budget,
         )
         messages = trim_messages(
             messages,
-            max_tokens=settings.agent_max_tokens_per_turn,
+            max_tokens=available_budget,
             token_counter=_estimate_tokens,
             strategy="last",
             include_system=True,
             start_on="human",
             allow_partial=False,
         )
-
-    profile = state.get("user_profile") or {}
-    prefs = state.get("user_prefs") or {}
-    memories = state.get("memories") or []
-    system_prompt = _build_prompt_from_state(SYSTEM_PROMPT, profile, prefs, memories=memories)
 
     llm = get_report_llm()
     llm_with_tools = llm.bind_tools(tools)

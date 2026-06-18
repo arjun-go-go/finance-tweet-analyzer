@@ -2,22 +2,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 
 from app.core.config import settings
-
-COMPRESSION_THRESHOLD = 40
-KEEP_RECENT = 10
-
-SUMMARY_PROMPT = """请将以下对话历史压缩为一段简洁的中文摘要（不超过500字），保留关键信息：
-- 用户关注的博主和标的
-- 已执行的操作（获取资料、采集推文、分析等）
-- 重要的分析结论
-- 用户表达的偏好
-
-{existing_summary}
-
-对话内容:
-{conversation}
-
-请输出摘要："""
+from app.prompts import get_prompt
 
 
 def should_compress(messages: list) -> bool:
@@ -49,10 +34,7 @@ def compress_messages(messages: list, llm) -> list:
 
     conversation_text = _format_messages(older)
 
-    prompt = SUMMARY_PROMPT.format(
-        existing_summary=existing_summary,
-        conversation=conversation_text,
-    )
+    prompt = get_prompt("memory/compression", existing_summary=existing_summary, conversation=conversation_text)
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])

@@ -23,110 +23,28 @@ import asyncio
 import time
 from typing import Literal
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.llm import get_signal_llm
+from app.prompts import get_chat_prompt
 from app.services.blogger_context import fetch_blogger_contexts, build_blogger_context_block
 
 
 # ============================================================
-# 风险评估 Prompt —— 企业级量化风控
+# 风险评估 Prompt —— 已迁移至 prompts/risk.yaml
 # ------------------------------------------------------------
-# 6大类风险分类 + 4档量化标准 + 黑话映射 + 反讽过滤 + CoT
+# Prompt 模板通过 get_chat_prompt("risk/system_prompt") 加载，
+# 运行时变量 blogger_context / classification_hint / author_handle / content
+# 由 Jinja2 渲染。
 # ============================================================
-RISK_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一位精通系统性风险、事件性风险、流动性风险与监管政策风险的量化风控分析师。你擅长从社交媒体短文本中精准识别风险信号，区分真实风险预警与反讽/标题党，并给出结构化风险评估。请以 json 格式输出结果。
 
-### 风险分类体系（6大类）
 
-**1. 市场风险 (market)**
-- 价格剧烈波动、趋势反转信号、技术面破位、量价背离
-- 关键词: 暴跌/崩盘/腰斩/回调/破位/跳水/闪崩
-
-**2. 流动性风险 (liquidity)**
-- 成交量萎缩、买卖价差扩大、流动性陷阱、资金出逃
-- 关键词: 插针/没人接盘/流动性枯竭/深度不够/砸盘
-
-**3. 监管政策风险 (regulatory)**
-- 政策收紧、禁令、罚款、牌照吊销、合规变化
-- 关键词: 监管/叫停/罚款/清退/封禁/整改/约谈
-
-**4. 技术面风险 (technical)**
-- 系统故障、智能合约漏洞、网络攻击、协议升级失败
-- 关键词: 被黑/漏洞/宕机/分叉失败/MEV攻击
-
-**5. 事件驱动风险 (event)**
-- 黑天鹅事件、地缘冲突、自然灾害、重大人事变动
-- 关键词: 黑天鹅/战争/制裁/暴雷/跑路/失联
-
-**6. 信用违约风险 (credit)**
-- 项目方违约、资金链断裂、庞氏暴雷、信用降级
-- 关键词: 暴雷/跑路/资不抵债/挤兑/清算/归零
-
-### 风险黑话映射
-- 暴雷/爆雷 → 信用违约
-- 腰斩 → 跌幅50%+，市场风险
-- 矿难 → 算力暴跌/矿工抛售
-- 黑天鹅 → 极端不可预测事件
-- 插针 → 流动性陷阱，瞬间价格异动
-- 归零 → 项目彻底失败
-- 跑路 → 项目方携款潜逃
-- 接飞刀 → 下跌中抄底，高亏损风险
-- 埋人 → 诱多后暴跌，庄家出货
-
-### 反讽与标题党过滤
-- "要完了"可能是反讽调侃而非真实风险预警 → 结合上下文语气判断
-- "核弹级利空"可能是标题党 → 看是否有具体事实支撑
-- 纯情绪宣泄（"完蛋了""药丸"）若无具体风险因素 → 降级为 low
-
-### 风险等级量化标准
-
-**critical（紧急）**：已发生重大事件，需立即行动
-- 交易所暴雷/跑路、监管明令禁止、智能合约被盗、项目清算中
-
-**high（高风险）**：高概率近期影响投资本金
-- 明确政策收紧信号、大额资金异常流出、技术面关键支撑破位
-
-**medium（中等风险）**：存在不确定性，需密切关注
-- 市场波动加剧、传闻级消息、尚未证实的负面信号
-
-**low（低风险）**：无明显风险或纯情绪化表达
-- 无具体风险因素、仅为市场正常波动讨论
-
-### 博主背景
-{blogger_context}
-（要求：高信誉博主发出风险预警 → risk_level 权重提升，更可能是真实风险信号；标题党/营销号/新博主 → 谨慎判断，倾向降级为 medium 或 low。）
-
-### 分类提示
-{classification_hint}
-
-### reasoning（思维链）
-简要写出：1.识别了哪些风险信号/黑话 2.风险分类依据 3.时间紧迫性判断 4.是否反讽/标题党 5.博主信誉如何影响判定 6.最终等级判定
-
-### 输出格式
-
-严格按以下 JSON 结构输出（risk_factors 必须为对象数组，非字符串数组）：
-```json
-{{
-  "reasoning": "风险分析思维链...",
-  "risk_factors": [
-    {{
-      "category": "market|liquidity|regulatory|technical|event|credit",
-      "description": "风险描述（中文）",
-      "severity": "critical|high|medium|low",
-      "urgency": "imminent|near_term|long_term",
-      "related_tickers": ["BTC", "ETH"]
-    }}
-  ],
-  "risk_level": "critical|high|medium|low",
-  "risk_summary": "一句话风险概述"
-}}
-```
-注意：risk_factors 不是字符串数组，是对象数组。每个对象必须包含 category/description/severity/urgency/related_tickers 五个字段。无风险时 risk_factors 为空数组 []，risk_level 为 "low"。"""),
-    ("human", "博主: @{author_handle}\n推文内容: {content}")
-])
+def _to_lc_messages(msg_dicts: list[dict]) -> list:
+    """将 get_chat_prompt 返回的 dict 列表转换为 LangChain Message 对象。"""
+    _ROLE_MAP = {"system": SystemMessage, "human": HumanMessage}
+    return [_ROLE_MAP[m["role"]](content=m["content"]) for m in msg_dicts]
 
 
 # ============================================================
@@ -237,16 +155,18 @@ class TweetRiskAssessment(BaseModel):
 # ============================================================
 # 单条推文风险评估 —— 异步 LLM 调用
 # ============================================================
-async def _assess_one(chain, tweet: dict, blogger_context: str, classification_hint: str) -> dict | None:
+async def _assess_one(structured_llm, tweet: dict, blogger_context: str, classification_hint: str) -> dict | None:
     """对单条推文执行风险评估，返回结构化结果或 None（失败时）。"""
     start = time.perf_counter()
     try:
-        result = await chain.ainvoke({
-            "content": tweet["content"],
-            "author_handle": tweet["author_handle"],
-            "blogger_context": blogger_context,
-            "classification_hint": classification_hint,
-        })
+        messages = _to_lc_messages(get_chat_prompt(
+            "risk/system_prompt",
+            blogger_context=blogger_context,
+            classification_hint=classification_hint,
+            author_handle=tweet["author_handle"],
+            content=tweet["content"],
+        ))
+        result = await structured_llm.ainvoke(messages)
         latency_ms = int((time.perf_counter() - start) * 1000)
         data = result.model_dump()
         data["tweet_id"] = tweet["id"]
@@ -288,13 +208,12 @@ async def _run_risk(state: dict) -> dict:
 
     llm = get_signal_llm()
     structured_llm = llm.with_structured_output(TweetRiskAssessment)
-    chain = RISK_PROMPT | structured_llm
 
     tasks = []
     for tweet in tweets:
         cat = category_map.get(tweet["id"], "")
         hint = category_hints.get(cat, "无特殊分类提示。")
-        tasks.append(_assess_one(chain, tweet, context_block, hint))
+        tasks.append(_assess_one(structured_llm, tweet, context_block, hint))
 
     results = await asyncio.gather(*tasks)
     risk_assessments = [r for r in results if r is not None]

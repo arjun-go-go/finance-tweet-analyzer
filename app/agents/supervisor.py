@@ -1,13 +1,14 @@
 import operator
 from typing import Annotated, TypedDict
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 from loguru import logger
 
 from app.agents.analysis_agent import analysis_agent_node
 from app.agents.llm import get_report_llm
+from app.prompts import get_chat_prompt
 from app.agents.risk_agent import risk_agent_node
 from app.schemas.routing import BatchClassificationResult
 from app.services.trace_service import traced_node
@@ -41,83 +42,14 @@ class SupervisorState(TypedDict):
 # Supervisor 的核心职责：先对一批推文做轻量分类，决定后续走哪条
 # 处理路径，避免对 non_financial 推文浪费昂贵的分析 / 风险模型调用。
 # 输出结构由 BatchClassificationResult 强约束（json_schema）。
+# Prompt 模板已迁移至 prompts/supervisor.yaml，通过 get_chat_prompt 加载。
 # ============================================================
-CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是金融内容智能路由分类引擎。你的唯一职责是对一批推文做快速精准分类，决定后续处理路由（分析/风险/跳过）。不做深度分析，只做分类决策。请以 json 格式输出分类结果。
 
-### 分类类别（4类）
 
-**investment — 投资信号类**
-明确的投资建议、标的推荐、买卖信号、仓位操作
-- 典型案例: "BTC突破10万，建议加仓", "茅台财报超预期，强烈推荐", "ETH技术面看多，目标4000"
-- 黑话触发: 梭哈/all in/加仓/抄底/做多/满仓/建仓/开多/开空/止盈/止损
-
-**market_commentary — 市场评论类**
-行情分析、趋势讨论、数据解读，但无明确买卖建议
-- 典型案例: "今天大盘缩量反弹", "美联储会议纪要解读", "链上数据显示巨鲸在积累"
-- 注意: 纯技术面描述无操作建议 → market_commentary（非 investment）
-
-**risk_warning — 风险预警类**
-主要内容是风险提示、避险警告、负面事件预警
-- 典型案例: "某交易所疑似暴雷", "监管新规可能影响DeFi", "注意流动性风险，谨慎操作"
-- 黑话触发: 暴雷/跑路/归零/黑天鹅/矿难/插针/腰斩/崩盘/爆仓/清算
-
-**non_financial — 非金融类**
-闲聊、生活、娱乐、与投资完全无关的内容
-- 典型案例: "今天天气真好", "周末去哪吃饭", "新出的电影不错"
-- 注意: 即使博主是金融KOL，其生活类推文仍为 non_financial
-
-### 边界判定与优先级
-
-**多类信号冲突时的优先级:** risk_warning > investment > market_commentary
-- 既有投资建议又提到重大风险 → risk_warning（风险优先原则）
-- 既有市场评论又有明确操作建议 → investment
-- 模棱两可/无法确定 → market_commentary（保守分类）
-
-**反讽/标题党判定:**
-- 纯情绪宣泄无具体标的或逻辑（"要完了""药丸"）→ 降低 confidence，倾向 market_commentary
-- 明显反讽调侃（"跌得好开心"） → 降低 confidence
-
-### needs_risk_analysis 规则
-
-以下情况设为 true:
-1. category = risk_warning（必定 true）
-2. category = investment（需评估建议中隐含风险）
-3. category = market_commentary 且内容包含风险关键词（暴跌/监管/暴雷/崩盘/清算/黑天鹅）
-
-以下情况设为 false:
-- category = non_financial
-- category = market_commentary 且无风险信号
-
-### confidence 校准标准
-
-- >0.8: 明确无歧义，关键词/标的/意图清晰
-- 0.6~0.8: 较明确，但有少量模糊性
-- 0.4~0.6: 有歧义，可能属于多个类别
-- <0.4: 高度不确定，难以判断
-
-### has_investment_content
-
-批次级字段：只要有一条推文不是 non_financial 就设为 true。
-
-### 输出格式
-
-严格按以下 JSON 结构输出：
-```json
-{{
-  "classifications": [
-    {{
-      "tweet_id": "原样复制推文ID",
-      "category": "investment|market_commentary|risk_warning|non_financial",
-      "needs_risk_analysis": true,
-      "confidence": 0.85
-    }}
-  ],
-  "has_investment_content": true
-}}
-```"""),
-    ("human", "请对以下推文进行分类：\n\n{tweets_text}")
-])
+def _to_lc_messages(msg_dicts: list[dict]) -> list:
+    """将 get_chat_prompt 返回的 dict 列表转换为 LangChain Message 对象。"""
+    _ROLE_MAP = {"system": SystemMessage, "human": HumanMessage}
+    return [_ROLE_MAP[m["role"]](content=m["content"]) for m in msg_dicts]
 
 
 # ============================================================
@@ -157,8 +89,8 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
         # json_mode + 手动解析，兼容不严格遵循 schema 的模型
         llm = get_report_llm()
         structured_llm = llm.with_structured_output(BatchClassificationResult)
-        chain = CLASSIFY_PROMPT | structured_llm
-        result = chain.invoke({"tweets_text": tweets_text})
+        messages = _to_lc_messages(get_chat_prompt("supervisor/classify", tweets_text=tweets_text))
+        result = structured_llm.invoke(messages)
         if result is None:
             raise ValueError("LLM returned None for classification")
         classification = result.model_dump()
@@ -168,8 +100,8 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
             from app.agents.llm import get_report_llm as _get_llm
             import json
             _llm = _get_llm().bind(response_format={"type": "json_object"})
-            _chain = CLASSIFY_PROMPT | _llm
-            raw_result = _chain.invoke({"tweets_text": tweets_text})
+            _messages = _to_lc_messages(get_chat_prompt("supervisor/classify", tweets_text=tweets_text))
+            raw_result = _llm.invoke(_messages)
             raw_json = json.loads(raw_result.content)
             # 兼容模型将列表放在 tweets / classifications / items 等不同键名
             cls_list = (

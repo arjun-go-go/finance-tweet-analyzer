@@ -43,6 +43,13 @@ def retrieve_tweets(
     flt: dict = {"source_type": "tweet"}
     if intent.blogger_filter:
         flt["blogger_handle"] = {"$in": intent.blogger_filter}
+    if intent.time_range_start or intent.time_range_end:
+        ts_filter: dict = {}
+        if intent.time_range_start:
+            ts_filter["$gte"] = intent.time_range_start.isoformat()
+        if intent.time_range_end:
+            ts_filter["$lte"] = intent.time_range_end.isoformat()
+        flt["published_at"] = ts_filter
 
     hits = vs.query(
         "public_signals",

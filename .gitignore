@@ -65,6 +65,20 @@ celerybeat-schedule*
 # Qoder agent skills (local only)
 .agents/
 skills-lock.json
+.qoder/
+
+# Debug / test scratch files
+main.py
+test_output.txt
+AGENTS.md
+
+# Documentation (local only)
+docs/
+
+# Data files (local DB, not for git)
+
+# Python version pin
+.python-version
 
 # Windows
 nul
