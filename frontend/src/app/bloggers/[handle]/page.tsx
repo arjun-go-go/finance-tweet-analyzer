@@ -7,6 +7,7 @@ import PredictionCard, { PredictionItem } from "@/components/PredictionCard";
 import {
   fetchBloggerDetail,
   fetchBloggerPredictions,
+  toggleBloggerFetch,
 } from "@/lib/api";
 import { formatDate } from "@/lib/datetime";
 
@@ -29,6 +30,8 @@ interface BloggerDetail {
   };
   top_tickers: Array<{ ticker: string; verified: number; hit_rate: number }>;
   recent_verified: PredictionItem[];
+  fetch_enabled: boolean;
+  last_fetched_at: string | null;
 }
 
 type TabKey = "pending" | "verified" | "all";
@@ -49,6 +52,7 @@ export default function BloggerDetailPage({
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [predictionsLoading, setPredictionsLoading] = useState(false);
+  const [fetchToggling, setFetchToggling] = useState(false);
 
   const loadDetail = async () => {
     try {
@@ -97,6 +101,19 @@ export default function BloggerDetailPage({
     loadDetail();
   };
 
+  const handleToggleFetch = async () => {
+    if (!detail) return;
+    setFetchToggling(true);
+    try {
+      await toggleBloggerFetch(decodedHandle, !detail.fetch_enabled);
+      setDetail((d) => d ? { ...d, fetch_enabled: !d.fetch_enabled } : d);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setFetchToggling(false);
+    }
+  };
+
   if (loading) return <p className="text-center py-10">加载中...</p>;
   if (!detail)
     return (
@@ -119,7 +136,29 @@ export default function BloggerDetailPage({
           </div>
         )}
         <div className="flex-1">
-          <h1 className="text-2xl font-bold">{detail.handle}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold">{detail.handle}</h1>
+            <button
+              onClick={handleToggleFetch}
+              disabled={fetchToggling}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                detail.fetch_enabled
+                  ? "bg-green-100 text-green-700 hover:bg-green-200"
+                  : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  detail.fetch_enabled ? "bg-green-500" : "bg-gray-400"
+                }`}
+              />
+              {fetchToggling
+                ? "..."
+                : detail.fetch_enabled
+                  ? "定时抓取已启用"
+                  : "定时抓取"}
+            </button>
+          </div>
           <p className="text-sm text-gray-600">{detail.name}</p>
           {detail.bio && (
             <p className="text-sm text-gray-500 mt-1">{detail.bio}</p>
@@ -137,6 +176,11 @@ export default function BloggerDetailPage({
             {detail.profile_updated_at && (
               <span>
                 资料更新于 {formatDate(detail.profile_updated_at)}
+              </span>
+            )}
+            {detail.last_fetched_at && (
+              <span className="text-blue-500">
+                推文抓取于 {formatDate(detail.last_fetched_at)}
               </span>
             )}
           </div>

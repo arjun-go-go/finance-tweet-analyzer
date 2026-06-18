@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.models.blogger import Blogger
 from app.schemas.blogger import (
     BloggerDetail,
     BloggerListItem,
@@ -54,6 +57,23 @@ def upsert_blogger_endpoint(
         protected=blogger.protected,
         profile_url=blogger.profile_url,
     )
+
+
+class FetchToggleRequest(BaseModel):
+    fetch_enabled: bool
+
+
+@router.patch("/{handle:path}/fetch-toggle")
+def toggle_fetch(handle: str, body: FetchToggleRequest, db: Session = Depends(get_db)):
+    """启用或禁用博主的定时推文抓取。"""
+    blogger = db.execute(
+        select(Blogger).where(Blogger.handle == handle)
+    ).scalar_one_or_none()
+    if not blogger:
+        raise HTTPException(status_code=404, detail="Blogger not found")
+    blogger.fetch_enabled = body.fetch_enabled
+    db.commit()
+    return {"handle": handle, "fetch_enabled": blogger.fetch_enabled}
 
 
 # Order matters: /{handle:path}/predictions must be declared BEFORE /{handle:path}

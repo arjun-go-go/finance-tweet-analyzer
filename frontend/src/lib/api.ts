@@ -175,6 +175,19 @@ export async function analyzeBloggers(handles: string[]) {
   return res.json();
 }
 
+export async function toggleBloggerFetch(handle: string, fetch_enabled: boolean) {
+  const res = await fetch(
+    `${API_BASE}/api/bloggers/${encodeURIComponent(handle)}/fetch-toggle`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fetch_enabled }),
+    },
+  );
+  if (!res.ok) throw new Error("Failed to toggle blogger fetch");
+  return res.json();
+}
+
 // ============================================================
 // Chat Conversations API
 // ============================================================

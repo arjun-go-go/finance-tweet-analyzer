@@ -45,6 +45,8 @@ celery.conf.update(
         "app.scheduler.tasks.scan_due_tracking_task": {"queue": "default"},
         "app.scheduler.tasks.gc_vector_task": {"queue": "default"},
         "app.scheduler.tasks.backfill_search_vector_task": {"queue": "default"},
+        "app.scheduler.tasks.scan_blogger_tweets_task": {"queue": "ingest"},
+        "app.scheduler.tasks.fetch_blogger_tweets_task": {"queue": "ingest"},
     },
     task_default_queue="default",
 )
@@ -94,6 +96,12 @@ celery.conf.beat_schedule = {
         "task": "app.scheduler.tasks.backfill_search_vector_task",
         "schedule": 300,
         "kwargs": {"batch_size": 200},
+    },
+    # 定时抓取博主最新推文
+    "scan-blogger-tweets": {
+        "task": "app.scheduler.tasks.scan_blogger_tweets_task",
+        "schedule": settings.twitter_fetch_interval_minutes * 60,
+        "options": {"queue": "ingest"},
     },
 }
 

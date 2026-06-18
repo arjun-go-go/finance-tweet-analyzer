@@ -76,3 +76,30 @@ def release_prediction_lock(token: str) -> None:
     result = _get_redis().eval(_RELEASE_SCRIPT, 1, key, token)
     if result == 0:
         logger.warning("Prediction lock release skipped (token mismatch or lock expired)")
+
+
+def try_acquire_fetch_lock(handle: str, ttl: int = 300) -> tuple[bool, str]:
+    """获取指定博主的推文抓取锁。
+
+    Args:
+        handle: blogger handle 作为锁标识
+        ttl: 锁自动过期时间(秒)
+
+    Returns:
+        (acquired, token): acquired=True 表示成功获取，token 用于释放时校验所有权
+    """
+    key = f"lock:fetch:{handle}"
+    token = uuid.uuid4().hex
+    acquired = _get_redis().set(key, token, nx=True, ex=ttl)
+    if not acquired:
+        logger.debug("Fetch lock exists for {}, skipping", handle)
+        return False, ""
+    return True, token
+
+
+def release_fetch_lock(handle: str, token: str) -> None:
+    """释放指定博主的推文抓取锁（仅当 token 匹配时才删除）。"""
+    key = f"lock:fetch:{handle}"
+    result = _get_redis().eval(_RELEASE_SCRIPT, 1, key, token)
+    if result == 0:
+        logger.warning("Fetch lock release skipped for {} (token mismatch or lock expired)", handle)

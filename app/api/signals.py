@@ -51,7 +51,7 @@ def list_tweet_analyses(
         select(AnalysisResult, Tweet)
         .join(Tweet, AnalysisResult.tweet_id == Tweet.id)
         .where(AnalysisResult.analysis_type == "tweet_analysis")
-        .order_by(AnalysisResult.created_at.desc())
+        .order_by(Tweet.published_at.desc())
     )
 
     if blogger:

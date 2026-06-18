@@ -67,6 +67,8 @@ class BloggerDetail(BaseModel):
     verified: bool = False
     protected: bool = False
     profile_url: str | None = None
+    fetch_enabled: bool = False
+    last_fetched_at: datetime | None = None
 
 
 class BloggerRow(BaseModel):

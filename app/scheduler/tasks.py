@@ -19,6 +19,8 @@ from app.scheduler.locks import (
     release,
     try_acquire_prediction_lock,
     release_prediction_lock,
+    try_acquire_fetch_lock,
+    release_fetch_lock,
 )
 from app.services.analysis_service import analyze_by_blogger
 
@@ -1021,4 +1023,161 @@ def rebuild_tweet_chunks_task(self) -> dict:
         db.close()
 
     logger.info("[Celery] rebuild_tweet_chunks: %s", stats)
+    return stats
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.scan_blogger_tweets_task",
+    acks_late=True,
+)
+def scan_blogger_tweets_task(self) -> dict:
+    """扫描启用定时抓取且已到期的博主，分发逐博主抓取任务。
+
+    由 Celery Beat 按 twitter_fetch_interval_minutes 间隔触发。
+    只负责调度，不做实际网络请求，保证快速返回。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.core.config import settings as cfg
+    from app.models.blogger import Blogger
+
+    if not cfg.twitter_fetch_enabled:
+        return {"status": "disabled"}
+
+    db = SessionLocal()
+    stats = {"dispatched": 0, "skipped": 0}
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=cfg.twitter_fetch_interval_minutes)
+        due_bloggers = db.execute(
+            select(Blogger)
+            .where(
+                Blogger.fetch_enabled == True,
+                sa.or_(Blogger.last_fetched_at == None, Blogger.last_fetched_at <= cutoff),
+            )
+            .order_by(Blogger.last_fetched_at.asc().nullsfirst())
+            .limit(cfg.twitter_fetch_batch_size)
+        ).scalars().all()
+
+        for blogger in due_bloggers:
+            fetch_blogger_tweets_task.delay(blogger.handle)
+            stats["dispatched"] += 1
+
+        if not due_bloggers:
+            stats["skipped"] = 0
+
+    finally:
+        db.close()
+
+    logger.info("[Celery] scan_blogger_tweets: %s", stats)
+    return stats
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.fetch_blogger_tweets_task",
+    acks_late=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=2,
+)
+def fetch_blogger_tweets_task(self, handle: str) -> dict:
+    """抓取单个博主的最新推文，入库并触发分析。
+
+    流程：
+      1. 获取 per-handle Redis 锁
+      2. 确保 blogger 有 twitter_user_id（缺失则先获取 profile）
+      3. 调用 Twitter GraphQL 爬取推文
+      4. 通过 import_tweets 去重入库
+      5. 更新 Blogger.last_fetched_at
+      6. 如有新推文，触发 manual_analysis_task
+    """
+    from datetime import datetime, timezone
+
+    from app.core.config import settings as cfg
+    from app.models.blogger import Blogger
+    from app.schemas.blogger import BloggerProfile
+    from app.schemas.tweet import TweetImportItem
+    from app.services.twitter_service import (
+        convert_profile_to_upsert,
+        convert_tweets_to_import,
+        fetch_user_profile,
+        fetch_user_tweets,
+    )
+    from app.services.tweet_service import import_tweets
+
+    acquired, lock_token = try_acquire_fetch_lock(handle)
+    if not acquired:
+        logger.info("[Celery] Fetch lock held for %s, skipping", handle)
+        return {"handle": handle, "status": "locked"}
+
+    db = SessionLocal()
+    stats = {"handle": handle, "imported": 0, "skipped": 0, "status": "ok"}
+    try:
+        blogger = db.execute(
+            select(Blogger).where(Blogger.handle == handle)
+        ).scalar_one_or_none()
+
+        if not blogger:
+            logger.warning("[Celery] Blogger %s not found in DB", handle)
+            stats["status"] = "not_found"
+            return stats
+
+        # 确保 twitter_user_id 存在，缺失则先获取 profile
+        if not blogger.twitter_user_id:
+            logger.info("[Celery] Fetching profile for %s to get twitter_user_id", handle)
+            raw_profile = fetch_user_profile(handle)
+            if raw_profile is None:
+                logger.warning("[Celery] Failed to fetch profile for %s", handle)
+                stats["status"] = "profile_failed"
+                return stats
+
+            profile_data = convert_profile_to_upsert(raw_profile)
+            blogger.twitter_user_id = profile_data.get("twitter_user_id")
+            if not blogger.twitter_user_id:
+                logger.warning("[Celery] No twitter_user_id in profile for %s", handle)
+                stats["status"] = "no_user_id"
+                return stats
+            db.commit()
+
+        # 抓取推文
+        raw_tweets = fetch_user_tweets(
+            blogger.twitter_user_id,
+            max_pages=cfg.twitter_fetch_max_pages,
+        )
+        if not raw_tweets:
+            logger.info("[Celery] No tweets fetched for %s", handle)
+            blogger.last_fetched_at = datetime.now(timezone.utc)
+            db.commit()
+            stats["status"] = "no_tweets"
+            return stats
+
+        # 转换并入库
+        import_items_raw = convert_tweets_to_import(raw_tweets)
+        items = [TweetImportItem(**item) for item in import_items_raw]
+
+        imported, skipped = import_tweets(db, items)
+        stats["imported"] = imported
+        stats["skipped"] = skipped
+
+        # 更新抓取时间
+        blogger.last_fetched_at = datetime.now(timezone.utc)
+        db.commit()
+
+        # 有新推文则触发分析
+        if imported > 0:
+            logger.info("[Celery] %d new tweets for %s, triggering analysis", imported, handle)
+            manual_analysis_task.delay([handle])
+
+        logger.info("[Celery] Fetch %s done: imported=%d skipped=%d", handle, imported, skipped)
+
+    except Exception as e:
+        db.rollback()
+        logger.error("[Celery] Fetch error for %s: %s", handle, e)
+        raise
+    finally:
+        db.close()
+        release_fetch_lock(handle, lock_token)
+
     return stats

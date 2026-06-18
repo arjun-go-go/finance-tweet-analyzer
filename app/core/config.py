@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     twitter_ct0: str = ""
     twitter_bearer_token: str = ""
 
+    # ----- Twitter scheduled fetch -----
+    twitter_fetch_enabled: bool = False
+    twitter_fetch_interval_minutes: int = 60
+    twitter_fetch_max_pages: int = 2
+    twitter_fetch_batch_size: int = 5
+
     # ----- mem0 long-term memory (self-hosted OSS mode) -----
     mem0_enabled: bool = True
     mem0_chroma_path: str = "./chroma_mem0_db"

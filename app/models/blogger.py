@@ -40,3 +40,7 @@ class Blogger(Base, TimestampMixin):
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
     protected: Mapped[bool] = mapped_column(Boolean, default=False)
     profile_url: Mapped[str | None] = mapped_column(String(512), default=None)
+    last_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    fetch_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

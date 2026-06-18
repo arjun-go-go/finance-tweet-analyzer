@@ -238,6 +238,8 @@ def get_blogger_detail(db: Session, handle: str) -> dict | None:
         "verified": bool(blogger.verified),
         "protected": bool(blogger.protected),
         "profile_url": blogger.profile_url,
+        "fetch_enabled": bool(blogger.fetch_enabled),
+        "last_fetched_at": blogger.last_fetched_at,
     }
 
 
