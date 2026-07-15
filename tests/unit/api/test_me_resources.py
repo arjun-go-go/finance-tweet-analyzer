@@ -12,7 +12,15 @@ from app.api.me import router as me_router
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.deps import get_db
-from app.models import Blogger, Tweet, User, UserBloggerFollow, UserTweetBookmark
+from app.models import (
+    AnalysisResult,
+    Blogger,
+    Prediction,
+    Tweet,
+    User,
+    UserBloggerFollow,
+    UserTweetBookmark,
+)
 from app.schemas.blogger import BloggerDetail, BloggerListItem
 from app.services.auth_service import create_access_token
 
@@ -68,6 +76,33 @@ def _real_jwt_user(db_session, alias: str) -> tuple[User, dict[str, str]]:
     db_session.flush()
     token = create_access_token(str(user.id))
     return user, {"Authorization": f"Bearer {token}"}
+
+
+def _prediction(db_session, blogger: Blogger, alias: str, verdict: str | None):
+    tweet = _tweet(alias)
+    db_session.add(tweet)
+    db_session.flush()
+    analysis = AnalysisResult(
+        tweet_id=tweet.id,
+        analysis_type="tweet_analysis",
+        result={},
+        model_used="test-model",
+    )
+    db_session.add(analysis)
+    db_session.flush()
+    db_session.add(
+        Prediction(
+            analysis_id=analysis.id,
+            tweet_id=tweet.id,
+            blogger_handle=blogger.handle,
+            ticker=f"{alias.upper()}-{uuid4()}",
+            sentiment="bullish",
+            investment_horizon="short",
+            published_at=tweet.published_at,
+            verifiable_at=tweet.published_at,
+            verdict=verdict,
+        )
+    )
 
 
 def test_follow_is_user_scoped_and_delete_hides_ownership(client, db_session, auth):
@@ -222,6 +257,37 @@ def test_lists_paginate_with_total_and_canonical_items(client, db_session, auth)
     assert client.get(
         "/api/me/tweets?offset=-1", headers=auth.headers("alice")
     ).status_code == 422
+
+
+def test_followed_bloggers_report_actual_pending_prediction_counts(
+    client, db_session, auth
+):
+    _persist_user(db_session, auth, "alice")
+    first = _blogger("first-pending")
+    second = _blogger("second-pending")
+    db_session.add_all([first, second])
+    db_session.flush()
+    _prediction(db_session, first, "first-a", verdict=None)
+    _prediction(db_session, first, "first-b", verdict=None)
+    _prediction(db_session, first, "first-verified", verdict="correct")
+    _prediction(db_session, second, "second-a", verdict=None)
+    _prediction(db_session, second, "second-verified", verdict="incorrect")
+    db_session.flush()
+    for blogger in (first, second):
+        response = client.post(
+            f"/api/me/bloggers/{blogger.id}/follow",
+            headers=auth.headers("alice"),
+        )
+        assert response.status_code == 201
+
+    response = client.get("/api/me/bloggers", headers=auth.headers("alice"))
+
+    assert response.status_code == 200
+    counts = {
+        item["handle"]: item["pending_count"]
+        for item in response.json()["items"]
+    }
+    assert counts == {first.handle: 2, second.handle: 1}
 
 
 @pytest.mark.parametrize("kind", ["follow", "bookmark"])

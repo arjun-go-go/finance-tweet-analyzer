@@ -20,6 +20,7 @@ from app.services.user_resource_service import (
     ResourceLimitExceeded,
     ResourceNotFound,
     bookmark_tweet,
+    count_pending_predictions_by_blogger,
     follow_blogger,
     list_bookmarked_tweets,
     list_followed_bloggers,
@@ -31,7 +32,9 @@ from app.services.user_resource_service import (
 router = APIRouter(prefix="/api/me", tags=["me"])
 
 
-def _followed_blogger_item(blogger: Blogger) -> BloggerListItem:
+def _followed_blogger_item(
+    blogger: Blogger, *, pending_count: int
+) -> BloggerListItem:
     verified_count = int(blogger.total_predictions or 0)
     correct_sum = float(blogger.correct_predictions or 0.0)
     return BloggerListItem(
@@ -44,7 +47,7 @@ def _followed_blogger_item(blogger: Blogger) -> BloggerListItem:
         market_focus=blogger.market_focus,
         credibility_score=float(blogger.credibility_score),
         verified_count=verified_count,
-        pending_count=0,
+        pending_count=pending_count,
         hit_rate=(correct_sum / verified_count if verified_count else None),
         verified=bool(blogger.verified),
         location=blogger.location,
@@ -105,8 +108,17 @@ def get_followed_bloggers(
     bloggers, total = list_followed_bloggers(
         db, current_user.id, limit=limit, offset=offset
     )
+    pending_counts = count_pending_predictions_by_blogger(
+        db, [blogger.handle for blogger in bloggers]
+    )
     return FollowedBloggerListResponse(
-        items=[_followed_blogger_item(blogger) for blogger in bloggers],
+        items=[
+            _followed_blogger_item(
+                blogger,
+                pending_count=pending_counts.get(blogger.handle, 0),
+            )
+            for blogger in bloggers
+        ],
         total=total,
     )
 

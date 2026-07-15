@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Blogger,
+    Prediction,
     Tweet,
     User,
     UserBloggerFollow,
@@ -110,6 +111,22 @@ def list_followed_bloggers(
         .offset(offset)
     ).scalars().all()
     return list(bloggers), total
+
+
+def count_pending_predictions_by_blogger(
+    db: Session, blogger_handles: list[str]
+) -> dict[str, int]:
+    if not blogger_handles:
+        return {}
+    rows = db.execute(
+        select(Prediction.blogger_handle, func.count())
+        .where(
+            Prediction.blogger_handle.in_(blogger_handles),
+            Prediction.verdict.is_(None),
+        )
+        .group_by(Prediction.blogger_handle)
+    ).all()
+    return {handle: int(count) for handle, count in rows}
 
 
 def _bookmark_for(
