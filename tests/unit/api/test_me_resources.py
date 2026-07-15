@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import pytest
@@ -224,6 +225,39 @@ def test_client_user_id_inputs_do_not_change_owner(client, db_session, auth, kin
 def test_shared_blogger_schemas_require_canonical_id():
     assert BloggerListItem.model_fields["id"].is_required()
     assert BloggerDetail.model_fields["id"].is_required()
+
+
+def test_public_blogger_list_returns_canonical_id(client, db_session, auth):
+    _persist_user(db_session, auth, "reader")
+    blogger = _blogger("public-list")
+    db_session.add(blogger)
+    db_session.flush()
+
+    response = client.get("/api/bloggers", headers=auth.headers("reader"))
+
+    assert response.status_code == 200
+    item = next(
+        item for item in response.json() if item["handle"] == blogger.handle
+    )
+    assert item["id"] == str(blogger.id)
+
+
+def test_public_blogger_detail_returns_canonical_id(client, db_session, auth):
+    _persist_user(db_session, auth, "reader")
+    blogger = Blogger(
+        handle=f"encoded/analyst-{uuid4()}",
+        name="Encoded Analyst",
+    )
+    db_session.add(blogger)
+    db_session.flush()
+
+    encoded_handle = quote(blogger.handle, safe="")
+    response = client.get(
+        f"/api/bloggers/{encoded_handle}", headers=auth.headers("reader")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(blogger.id)
 
 
 def test_me_routes_require_real_authentication(db_session):
