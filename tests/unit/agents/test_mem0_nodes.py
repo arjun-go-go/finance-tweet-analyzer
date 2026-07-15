@@ -1,11 +1,15 @@
 """Unit tests for mem0_recall_node and mem0_store_node."""
 import time
+import uuid
 from unittest.mock import MagicMock, patch
 
 from langchain_core.messages import HumanMessage, AIMessage
 
 
-def _make_config(user_id="user1"):
+_USER_ID = str(uuid.UUID("10000000-0000-0000-0000-000000000001"))
+
+
+def _make_config(user_id=_USER_ID):
     return {"metadata": {"user_id": user_id}, "configurable": {"thread_id": "t1"}}
 
 
@@ -23,7 +27,7 @@ def test_recall_node_injects_memories():
         state = {"messages": [HumanMessage(content="BTC 现在怎么样？")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": ["用户看好BTC短线", "投资风格：短线"]}
-    mock_client.search.assert_called_once_with("BTC 现在怎么样？", filters={"user_id": "user1"}, top_k=5)
+    mock_client.search.assert_called_once_with("BTC 现在怎么样？", filters={"user_id": _USER_ID}, top_k=5)
 
 
 def test_recall_node_disabled_returns_empty():
@@ -84,7 +88,7 @@ def test_store_node_spawns_background_thread():
     time.sleep(0.1)  # let daemon thread complete
     assert len(stored) == 1
     messages, user_id = stored[0]
-    assert user_id == "user1"
+    assert user_id == _USER_ID
     assert messages == [
         {"role": "user", "content": "看好BTC"},
         {"role": "assistant", "content": "好的，BTC目前..."},

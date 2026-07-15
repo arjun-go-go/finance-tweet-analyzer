@@ -36,6 +36,7 @@ from sqlalchemy import text
 from app.agents.llm import get_report_llm, get_signal_llm
 from app.core.config import settings
 from app.core.deps import SessionLocal
+from app.memory.identity import normalize_user_id
 from app.prompts import get_prompt
 from app.services.trace_service import traced_node
 
@@ -175,6 +176,7 @@ def _get_user_context(user_id: str) -> str:
     from app.memory.preferences import get_preferences
     from app.memory.profile import get_profile
 
+    user_id = normalize_user_id(user_id)
     db = SessionLocal()
     try:
         prefs = get_preferences(db, user_id)
@@ -197,7 +199,7 @@ def _get_user_context(user_id: str) -> str:
 @traced_node("generate_sql")
 def generate_sql_node(state: SQLState) -> dict:
     question = state["question"]
-    user_id = state["user_id"]
+    user_id = normalize_user_id(state["user_id"])
     retry_count = state.get("retry_count", 0)
 
     tz = pytz.timezone("Asia/Shanghai")
@@ -309,13 +311,12 @@ def validate_sql_node(state: SQLState) -> dict:
 @traced_node("execute_sql")
 def execute_sql_node(state: SQLState) -> dict:
     sql = state["generated_sql"]
-    user_id = state.get("user_id", "anonymous")
+    user_id = normalize_user_id(state["user_id"])
     retry_count = state.get("retry_count", 0)
 
     with SessionLocal() as db:
         try:
-            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "_-")[:128] or "anonymous"
-            db.execute(text(f"SET LOCAL app.current_user_id = '{safe_user_id}'"))
+            db.execute(text(f"SET LOCAL app.current_user_id = '{user_id}'"))
             db.execute(text("SET TRANSACTION READ ONLY"))
             db.execute(text(f"SET LOCAL statement_timeout = '{settings.sql_query_timeout}'"))
 
@@ -442,6 +443,7 @@ def run_sql_query(question: str, user_id: str, conversation_id: str = "") -> str
     """chat_agent 调用入口，支持透传 user_id 用于 RLS。"""
     import uuid
 
+    user_id = normalize_user_id(user_id)
     agent = _get_sql_agent()
     thread_id = f"sql_{user_id}_{uuid.uuid4().hex[:8]}"
 

@@ -33,6 +33,7 @@ from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
 from app.memory.mem0_client import get_mem0_client
+from app.memory.identity import normalize_user_id
 from app.prompts import get_prompt
 
 
@@ -62,9 +63,7 @@ _SINCE_RE = re.compile(r"^\d+[dwh]$")
 
 def _get_authenticated_user_id(config: RunnableConfig | None) -> str:
     user_id = ((config or {}).get("metadata") or {}).get("user_id")
-    if not user_id or user_id == "default":
-        raise ValueError("Authenticated user identity is required")
-    return str(user_id)
+    return normalize_user_id(user_id)
 
 
 # ============================================================

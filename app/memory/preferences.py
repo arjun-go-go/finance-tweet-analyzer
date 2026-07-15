@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.user_preference import UserPreference
+from app.memory.identity import normalize_user_id
 from app.prompts import get_prompt
 
 
@@ -157,6 +158,7 @@ def _llm_extract(text: str, llm) -> tuple[dict | None, dict | None]:
 # ============================================================
 
 def get_preferences(db: Session, user_id: str) -> dict:
+    user_id = normalize_user_id(user_id)
     rows = db.execute(
         select(UserPreference).where(UserPreference.user_id == user_id)
     ).scalars().all()
@@ -175,6 +177,7 @@ def get_preferences(db: Session, user_id: str) -> dict:
 
 
 def upsert_preference(db: Session, user_id: str, pref_type: str, value: dict) -> None:
+    user_id = normalize_user_id(user_id)
     stmt = pg_insert(UserPreference).values(
         user_id=user_id,
         preference_type=pref_type,
@@ -219,6 +222,7 @@ def extract_and_save_preferences(
 ) -> None:
     from app.memory.profile import upsert_profile
 
+    user_id = normalize_user_id(user_id)
     rule_updates = _rule_extract(user_message)
     if rule_updates:
         logger.info("[Preferences] Rule extracted: {}", rule_updates)
@@ -243,6 +247,8 @@ def extract_and_save_preferences(
 def extract_preferences_background(user_message: str, user_id: str) -> None:
     from app.agents.llm import get_signal_llm
     from app.core.deps import SessionLocal
+
+    user_id = normalize_user_id(user_id)
 
     def _run():
         db = SessionLocal()

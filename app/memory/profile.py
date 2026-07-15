@@ -7,12 +7,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.user_profile import UserProfile
+from app.memory.identity import normalize_user_id
 
 
 PROFILE_FIELDS = {"name", "nickname", "occupation", "birthday", "location"}
 
 
 def get_profile(db: Session, user_id: str) -> dict:
+    user_id = normalize_user_id(user_id)
     row = db.execute(
         select(UserProfile).where(UserProfile.user_id == user_id)
     ).scalar_one_or_none()
@@ -29,6 +31,7 @@ def get_profile(db: Session, user_id: str) -> dict:
 
 def upsert_profile(db: Session, user_id: str, fields: dict) -> None:
     """只更新非空字段；ON CONFLICT 按 user_id 唯一约束 upsert。"""
+    user_id = normalize_user_id(user_id)
     clean: dict = {}
     for k, v in fields.items():
         if k not in PROFILE_FIELDS:
