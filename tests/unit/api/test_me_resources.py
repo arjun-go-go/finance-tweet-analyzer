@@ -368,7 +368,7 @@ def test_me_routes_require_real_authentication(db_session):
     assert response.status_code == 401
 
     me_routes = list(me_router.routes)
-    assert len(me_routes) == 6
+    assert len(me_routes) == 9
     assert all(
         get_current_user in {dependency.call for dependency in route.dependant.dependencies}
         for route in me_routes
