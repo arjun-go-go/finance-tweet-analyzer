@@ -42,25 +42,24 @@ def follow_blogger(
     max_follows: int,
 ) -> UserBloggerFollow:
     if db.execute(
-        select(Blogger.id).where(Blogger.id == blogger_id)
+        select(User.id).where(User.id == user_id).with_for_update()
     ).scalar_one_or_none() is None:
-        raise ResourceNotFound("Blogger not found")
+        raise ResourceNotFound("user")
+
+    if db.execute(
+        select(Blogger.id).where(Blogger.id == blogger_id).with_for_update()
+    ).scalar_one_or_none() is None:
+        raise ResourceNotFound("blogger")
 
     existing = _follow_for(db, user_id, blogger_id)
     if existing is None:
-        # Serialize limit checks for one user so concurrent requests cannot
-        # both observe a free final slot.
-        db.execute(select(User.id).where(User.id == user_id).with_for_update())
-
-        existing = _follow_for(db, user_id, blogger_id)
-        if existing is None:
-            current_count = db.execute(
-                select(func.count())
-                .select_from(UserBloggerFollow)
-                .where(UserBloggerFollow.user_id == user_id)
-            ).scalar_one()
-            if current_count >= max_follows:
-                raise ResourceLimitExceeded("Follow limit exceeded")
+        current_count = db.execute(
+            select(func.count())
+            .select_from(UserBloggerFollow)
+            .where(UserBloggerFollow.user_id == user_id)
+        ).scalar_one()
+        if current_count >= max_follows:
+            raise ResourceLimitExceeded("Follow limit exceeded")
 
     db.execute(
         insert(UserBloggerFollow)
@@ -103,7 +102,10 @@ def list_followed_bloggers(
             UserBloggerFollow.blogger_id == Blogger.id,
         )
         .where(UserBloggerFollow.user_id == user_id)
-        .order_by(UserBloggerFollow.created_at.desc())
+        .order_by(
+            UserBloggerFollow.created_at.desc(),
+            UserBloggerFollow.id.desc(),
+        )
         .limit(limit)
         .offset(offset)
     ).scalars().all()
@@ -125,9 +127,14 @@ def bookmark_tweet(
     db: Session, user_id: UUID, tweet_id: UUID
 ) -> UserTweetBookmark:
     if db.execute(
-        select(Tweet.id).where(Tweet.id == tweet_id)
+        select(User.id).where(User.id == user_id).with_for_update()
     ).scalar_one_or_none() is None:
-        raise ResourceNotFound("Tweet not found")
+        raise ResourceNotFound("user")
+
+    if db.execute(
+        select(Tweet.id).where(Tweet.id == tweet_id).with_for_update()
+    ).scalar_one_or_none() is None:
+        raise ResourceNotFound("tweet")
 
     db.execute(
         insert(UserTweetBookmark)
@@ -172,7 +179,10 @@ def list_bookmarked_tweets(
             UserTweetBookmark.tweet_id == Tweet.id,
         )
         .where(UserTweetBookmark.user_id == user_id)
-        .order_by(UserTweetBookmark.created_at.desc())
+        .order_by(
+            UserTweetBookmark.created_at.desc(),
+            UserTweetBookmark.id.desc(),
+        )
         .limit(limit)
         .offset(offset)
     ).scalars().all()

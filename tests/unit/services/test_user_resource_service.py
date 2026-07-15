@@ -1,9 +1,19 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from threading import Barrier
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import sessionmaker
 
-from app.models import Blogger, Tweet, User
+from app.models import (
+    Blogger,
+    Tweet,
+    User,
+    UserBloggerFollow,
+    UserTweetBookmark,
+)
 from app.services.user_resource_service import (
     ResourceLimitExceeded,
     ResourceNotFound,
@@ -188,6 +198,132 @@ def test_missing_shared_target_raises_safe_not_found(db_session, resource_kind):
             bookmark_tweet(db_session, user.id, missing_id)
 
     assert str(missing_id) not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("resource_kind", ["blogger", "tweet"])
+def test_missing_user_raises_not_found_without_breaking_transaction(
+    db_session, resource_kind
+):
+    target = _blogger("analyst") if resource_kind == "blogger" else _tweet("analyst")
+    _persist(db_session, target)
+
+    with pytest.raises(ResourceNotFound, match="^user$"):
+        if resource_kind == "blogger":
+            follow_blogger(db_session, uuid4(), target.id, max_follows=3)
+        else:
+            bookmark_tweet(db_session, uuid4(), target.id)
+
+    assert db_session.scalar(select(func.count()).select_from(User)) >= 0
+
+
+def test_same_created_at_uses_relationship_id_as_stable_tiebreaker(db_session):
+    user = _user("reader")
+    first_blogger = _blogger("first")
+    second_blogger = _blogger("second")
+    first_tweet = _tweet("first")
+    second_tweet = _tweet("second")
+    _persist(
+        db_session,
+        user,
+        first_blogger,
+        second_blogger,
+        first_tweet,
+        second_tweet,
+    )
+
+    first_follow = follow_blogger(
+        db_session, user.id, first_blogger.id, max_follows=5
+    )
+    second_follow = follow_blogger(
+        db_session, user.id, second_blogger.id, max_follows=5
+    )
+    first_bookmark = bookmark_tweet(db_session, user.id, first_tweet.id)
+    second_bookmark = bookmark_tweet(db_session, user.id, second_tweet.id)
+    tied_at = datetime.now(timezone.utc)
+    first_follow.id = UUID(int=1)
+    second_follow.id = UUID(int=2)
+    first_bookmark.id = UUID(int=3)
+    second_bookmark.id = UUID(int=4)
+    first_follow.created_at = tied_at
+    second_follow.created_at = tied_at
+    first_bookmark.created_at = tied_at
+    second_bookmark.created_at = tied_at
+    db_session.flush()
+
+    bloggers, _ = list_followed_bloggers(
+        db_session, user.id, limit=10, offset=0
+    )
+    tweets, _ = list_bookmarked_tweets(db_session, user.id, limit=10, offset=0)
+
+    assert [item.id for item in bloggers] == [
+        second_blogger.id,
+        first_blogger.id,
+    ]
+    assert [item.id for item in tweets] == [second_tweet.id, first_tweet.id]
+
+
+def test_concurrent_follows_competing_for_last_slot_enforce_hard_limit(engine):
+    user = _user("concurrent")
+    first_blogger = _blogger("first-concurrent")
+    second_blogger = _blogger("second-concurrent")
+    SessionFactory = sessionmaker(bind=engine, expire_on_commit=False)
+    setup = SessionFactory()
+    setup.add_all([user, first_blogger, second_blogger])
+    setup.commit()
+    setup.close()
+    barrier = Barrier(2)
+
+    def attempt_follow(blogger_id):
+        session = SessionFactory()
+        try:
+            barrier.wait(timeout=10)
+            follow_blogger(session, user.id, blogger_id, max_follows=1)
+            session.commit()
+            return "success"
+        except ResourceLimitExceeded:
+            session.rollback()
+            return "limited"
+        finally:
+            session.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(
+                executor.map(
+                    attempt_follow, [first_blogger.id, second_blogger.id]
+                )
+            )
+
+        verification = SessionFactory()
+        final_count = verification.scalar(
+            select(func.count())
+            .select_from(UserBloggerFollow)
+            .where(UserBloggerFollow.user_id == user.id)
+        )
+        verification.close()
+
+        assert sorted(outcomes) == ["limited", "success"]
+        assert final_count == 1
+    finally:
+        cleanup = SessionFactory()
+        cleanup.execute(
+            delete(UserBloggerFollow).where(
+                UserBloggerFollow.user_id == user.id
+            )
+        )
+        cleanup.execute(
+            delete(UserTweetBookmark).where(
+                UserTweetBookmark.user_id == user.id
+            )
+        )
+        cleanup.execute(
+            delete(Blogger).where(
+                Blogger.id.in_([first_blogger.id, second_blogger.id])
+            )
+        )
+        cleanup.execute(delete(User).where(User.id == user.id))
+        cleanup.commit()
+        cleanup.close()
 
 
 def test_service_does_not_commit_caller_transaction(db_session, monkeypatch):
