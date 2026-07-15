@@ -156,7 +156,7 @@ def _llm_extract(text: str, llm) -> tuple[dict | None, dict | None]:
 # CRUD operations — preferences
 # ============================================================
 
-def get_preferences(db: Session, user_id: str = "default") -> dict:
+def get_preferences(db: Session, user_id: str) -> dict:
     rows = db.execute(
         select(UserPreference).where(UserPreference.user_id == user_id)
     ).scalars().all()
@@ -214,7 +214,7 @@ def _apply_pref_updates(db: Session, user_id: str, updates: dict) -> None:
 def extract_and_save_preferences(
     db: Session,
     user_message: str,
-    user_id: str = "default",
+    user_id: str,
     llm=None,
 ) -> None:
     from app.memory.profile import upsert_profile
@@ -240,7 +240,7 @@ def extract_and_save_preferences(
         db.commit()
 
 
-def extract_preferences_background(user_message: str, user_id: str = "default") -> None:
+def extract_preferences_background(user_message: str, user_id: str) -> None:
     from app.agents.llm import get_signal_llm
     from app.core.deps import SessionLocal
 

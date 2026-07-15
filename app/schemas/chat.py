@@ -12,10 +12,14 @@ class ConversationCreate(BaseModel):
     title: str | None = None
     metadata: dict = Field(default_factory=dict)
 
+    model_config = {"extra": "forbid"}
+
 
 class ConversationUpdate(BaseModel):
     title: str | None = None
     metadata: dict | None = None
+
+    model_config = {"extra": "forbid"}
 
 
 class ConversationResponse(BaseModel):
@@ -79,3 +83,5 @@ class ChatRequest(BaseModel):
     conversation_id: uuid.UUID
     message_id: uuid.UUID
     message: str
+
+    model_config = {"extra": "forbid"}

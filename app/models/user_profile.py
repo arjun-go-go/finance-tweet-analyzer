@@ -16,7 +16,7 @@ class UserProfile(Base, TimestampMixin):
         - user_preferences : 主观偏好，频繁变动（关注谁、看好什么、回复风格）
 
     设计要点：
-        - user_id 作为唯一标识（主键候选键），单用户固定 default
+        - user_id 作为唯一标识（主键候选键），必须来自认证用户 UUID
         - 所有字段可空，逐步收集
         - 列式结构便于 JOIN 与索引；新增稳定字段用 ALTER TABLE
         - 临时性、实验性字段仍走 user_preferences 的 JSONB
@@ -35,7 +35,6 @@ class UserProfile(Base, TimestampMixin):
         String(128),
         unique=True,
         index=True,
-        default="default",
         comment="用户标识，唯一约束保证一行一用户",
     )
     name: Mapped[str | None] = mapped_column(

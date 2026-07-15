@@ -6,7 +6,7 @@ class TestConversationCreate:
         client.headers.update(auth.headers("test_user"))
         resp = client.post(
             "/api/chat/conversations",
-            json={"user_id": "test_user", "title": "测试会话", "metadata": {}},
+            json={"title": "测试会话", "metadata": {}},
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -18,7 +18,7 @@ class TestConversationCreate:
     def test_create_conversation_no_title(self, client, auth):
         client.headers.update(auth.headers("test_user"))
         resp = client.post(
-            "/api/chat/conversations", json={"user_id": "test_user"}
+            "/api/chat/conversations", json={}
         )
         assert resp.status_code == 201
         assert resp.json()["title"] is None
@@ -28,7 +28,7 @@ class TestConversationList:
     def test_list_empty(self, client, auth):
         client.headers.update(auth.headers("nobody"))
         resp = client.get(
-            "/api/chat/conversations", params={"user_id": "nobody"}
+            "/api/chat/conversations"
         )
         assert resp.status_code == 200
         assert resp.json()["items"] == []
@@ -36,17 +36,17 @@ class TestConversationList:
 
     def test_list_returns_user_conversations(self, client, auth):
         client.headers.update(auth.headers("u1"))
-        client.post("/api/chat/conversations", json={"user_id": "u1"})
+        client.post("/api/chat/conversations", json={})
         client.post(
             "/api/chat/conversations",
-            json={"user_id": "u1", "title": "Second"},
+            json={"title": "Second"},
         )
         client.headers.update(auth.headers("u2"))
-        client.post("/api/chat/conversations", json={"user_id": "u2"})
+        client.post("/api/chat/conversations", json={})
 
         client.headers.update(auth.headers("u1"))
         resp = client.get(
-            "/api/chat/conversations", params={"user_id": "u1"}
+            "/api/chat/conversations"
         )
         assert resp.status_code == 200
         items = resp.json()["items"]
@@ -56,11 +56,11 @@ class TestConversationList:
     def test_list_pagination(self, client, auth):
         client.headers.update(auth.headers("pager"))
         for _ in range(5):
-            client.post("/api/chat/conversations", json={"user_id": "pager"})
+            client.post("/api/chat/conversations", json={})
 
         resp = client.get(
             "/api/chat/conversations",
-            params={"user_id": "pager", "limit": 3},
+            params={"limit": 3},
         )
         data = resp.json()
         assert len(data["items"]) == 3
@@ -73,12 +73,12 @@ class TestConversationGetUpdateDelete:
         client.headers.update(auth.headers("u1"))
         create_resp = client.post(
             "/api/chat/conversations",
-            json={"user_id": "u1", "title": "T"},
+            json={"title": "T"},
         )
         conv_id = create_resp.json()["id"]
 
         resp = client.get(
-            f"/api/chat/conversations/{conv_id}", params={"user_id": "u1"}
+            f"/api/chat/conversations/{conv_id}"
         )
         assert resp.status_code == 200
         assert resp.json()["title"] == "T"
@@ -87,35 +87,33 @@ class TestConversationGetUpdateDelete:
         client.headers.update(auth.headers("u1"))
         fake_id = str(uuid.uuid4())
         resp = client.get(
-            f"/api/chat/conversations/{fake_id}", params={"user_id": "u1"}
+            f"/api/chat/conversations/{fake_id}"
         )
         assert resp.status_code == 404
 
     def test_get_wrong_user(self, client, auth):
         client.headers.update(auth.headers("owner"))
         create_resp = client.post(
-            "/api/chat/conversations", json={"user_id": "owner"}
+            "/api/chat/conversations", json={}
         )
         conv_id = create_resp.json()["id"]
 
         client.headers.update(auth.headers("intruder"))
         resp = client.get(
             f"/api/chat/conversations/{conv_id}",
-            params={"user_id": "intruder"},
         )
         assert resp.status_code == 404
 
     def test_update_title(self, client, auth):
         client.headers.update(auth.headers("u1"))
         create_resp = client.post(
-            "/api/chat/conversations", json={"user_id": "u1"}
+            "/api/chat/conversations", json={}
         )
         conv_id = create_resp.json()["id"]
 
         resp = client.patch(
             f"/api/chat/conversations/{conv_id}",
             json={"title": "新标题"},
-            params={"user_id": "u1"},
         )
         assert resp.status_code == 200
         assert resp.json()["title"] == "新标题"
@@ -123,16 +121,16 @@ class TestConversationGetUpdateDelete:
     def test_delete_soft(self, client, auth):
         client.headers.update(auth.headers("u1"))
         create_resp = client.post(
-            "/api/chat/conversations", json={"user_id": "u1"}
+            "/api/chat/conversations", json={}
         )
         conv_id = create_resp.json()["id"]
 
         resp = client.delete(
-            f"/api/chat/conversations/{conv_id}", params={"user_id": "u1"}
+            f"/api/chat/conversations/{conv_id}"
         )
         assert resp.status_code == 204
 
         resp = client.get(
-            f"/api/chat/conversations/{conv_id}", params={"user_id": "u1"}
+            f"/api/chat/conversations/{conv_id}"
         )
         assert resp.status_code == 404

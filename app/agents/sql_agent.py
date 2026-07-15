@@ -171,7 +171,7 @@ class SQLGenResult(BaseModel):
     confidence: float = Field(default=0.8, description="0.0-1.0 之间的置信度", ge=0.0, le=1.0)
 
 
-def _get_user_context(user_id: str = "default") -> str:
+def _get_user_context(user_id: str) -> str:
     from app.memory.preferences import get_preferences
     from app.memory.profile import get_profile
 
@@ -197,7 +197,7 @@ def _get_user_context(user_id: str = "default") -> str:
 @traced_node("generate_sql")
 def generate_sql_node(state: SQLState) -> dict:
     question = state["question"]
-    user_id = state.get("user_id", "default")
+    user_id = state["user_id"]
     retry_count = state.get("retry_count", 0)
 
     tz = pytz.timezone("Asia/Shanghai")
@@ -438,7 +438,7 @@ def _get_sql_agent():
     return _sql_agent
 
 
-def run_sql_query(question: str, user_id: str = "default", conversation_id: str = "") -> str:
+def run_sql_query(question: str, user_id: str, conversation_id: str = "") -> str:
     """chat_agent 调用入口，支持透传 user_id 用于 RLS。"""
     import uuid
 

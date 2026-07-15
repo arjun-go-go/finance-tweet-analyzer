@@ -12,7 +12,7 @@ from app.models.user_profile import UserProfile
 PROFILE_FIELDS = {"name", "nickname", "occupation", "birthday", "location"}
 
 
-def get_profile(db: Session, user_id: str = "default") -> dict:
+def get_profile(db: Session, user_id: str) -> dict:
     row = db.execute(
         select(UserProfile).where(UserProfile.user_id == user_id)
     ).scalar_one_or_none()

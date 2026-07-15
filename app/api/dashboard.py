@@ -3,17 +3,22 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.core.auth import get_current_user
 from app.models.analysis import AnalysisResult
 from app.models.blogger import Blogger
 from app.models.prediction import Prediction
 from app.models.tweet import Tweet
+from app.models.user import User
 from app.schemas.dashboard import DashboardOverview
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 @router.get("/overview", response_model=DashboardOverview)
-def get_overview(db: Session = Depends(get_db)):
+def get_overview(
+    _current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     total_tweets = db.execute(select(func.count(Tweet.id))).scalar() or 0
     pending_tweets = db.execute(
         select(func.count(Tweet.id)).where(Tweet.status == "pending")

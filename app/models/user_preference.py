@@ -37,8 +37,7 @@ class UserPreference(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(
         String(128),
         index=True,
-        default="default",
-        comment="用户标识，单用户模式固定为 default，多用户时填实际 user_id",
+        comment="认证用户 UUID，不允许共享默认身份",
     )
     preference_type: Mapped[str] = mapped_column(
         String(64),

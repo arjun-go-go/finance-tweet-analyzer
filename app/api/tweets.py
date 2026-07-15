@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
-from app.core.auth import get_current_admin
+from app.core.auth import get_current_admin, get_current_user
 from app.models.user import User
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
@@ -38,6 +38,7 @@ def list_tweets(
     include_analysis: bool = Query(False, description="Include latest tweet_analysis result"),
     limit: int = Query(20, le=100),
     offset: int = Query(0),
+    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = select(Tweet).order_by(Tweet.published_at.desc())

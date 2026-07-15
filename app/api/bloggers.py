@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
-from app.core.auth import get_current_admin
+from app.core.auth import get_current_admin, get_current_user
 from app.models.blogger import Blogger
 from app.models.user import User
 from app.schemas.blogger import (
@@ -29,6 +29,7 @@ def list_bloggers(
         "credibility",
         pattern="^(credibility|verified_count|followers|pending_count)$",
     ),
+    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     return list_bloggers_with_stats(db, sort=sort)
@@ -93,6 +94,7 @@ def get_blogger_predictions(
     ticker: str | None = Query(None),
     limit: int = Query(20, le=100),
     offset: int = Query(0, ge=0),
+    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     detail = get_blogger_detail(db, handle)
@@ -104,7 +106,11 @@ def get_blogger_predictions(
 
 
 @router.get("/{handle:path}", response_model=BloggerDetail)
-def get_blogger(handle: str, db: Session = Depends(get_db)):
+def get_blogger(
+    handle: str,
+    _current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     detail = get_blogger_detail(db, handle)
     if detail is None:
         raise HTTPException(status_code=404, detail="Blogger not found")

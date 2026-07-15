@@ -4,8 +4,10 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.core.auth import get_current_user
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
+from app.models.user import User
 
 router = APIRouter(prefix="/api", tags=["analysis-results"])
 
@@ -44,6 +46,7 @@ def list_tweet_analyses(
     sentiment: str | None = Query(None),
     limit: int = Query(20, le=100),
     offset: int = Query(0),
+    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """逐条推文分析结果列表"""
@@ -90,6 +93,7 @@ def list_tweet_analyses(
 def list_ticker_summaries(
     limit: int = Query(20, le=100),
     offset: int = Query(0),
+    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """标的聚合推荐结果列表"""

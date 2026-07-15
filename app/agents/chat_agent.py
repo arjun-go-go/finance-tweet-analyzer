@@ -60,6 +60,13 @@ _HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 _SINCE_RE = re.compile(r"^\d+[dwh]$")
 
 
+def _get_authenticated_user_id(config: RunnableConfig | None) -> str:
+    user_id = ((config or {}).get("metadata") or {}).get("user_id")
+    if not user_id or user_id == "default":
+        raise ValueError("Authenticated user identity is required")
+    return str(user_id)
+
+
 # ============================================================
 # Token 预算工具
 # ------------------------------------------------------------
@@ -499,7 +506,7 @@ def confirm_tweet_analysis(task_id: str) -> str:
     fallback_message="数据库查询服务暂时不可用，请稍后重试。",
     retryable_exceptions=(ConnectionError, TimeoutError, OSError),
 )
-def _query_database_impl(query: str, user_id: str = "default", conversation_id: str = "") -> str:
+def _query_database_impl(query: str, user_id: str, conversation_id: str = "") -> str:
     from app.agents.sql_agent import run_sql_query
     return run_sql_query(query, user_id=user_id, conversation_id=conversation_id)
 
@@ -519,7 +526,7 @@ def query_database(natural_language_query: str, config: RunnableConfig) -> str:
         natural_language_query = natural_language_query[:max_query_len]
         logger.warning("[Tool] query_database: query truncated from {} to {} chars", original_len, max_query_len)
 
-    user_id = (config.get("metadata") or {}).get("user_id", "default")
+    user_id = _get_authenticated_user_id(config)
     thread_id = (config.get("metadata") or {}).get("thread_id", "")
     logger.info("[Tool] query_database: user={} q={}", user_id, natural_language_query[:50])
     result = _query_database_impl(natural_language_query, user_id=user_id, conversation_id=thread_id)
@@ -579,8 +586,8 @@ def search_my_documents(query: str, ticker: str = "", config: RunnableConfig = N
     from app.rag.repository import UserDocumentRepository
     from app.rag.vector_store import get_vector_store
 
-    user_id_str = ((config or {}).get("metadata") or {}).get("user_id", "default")
     try:
+        user_id_str = _get_authenticated_user_id(config)
         user_id = UUID(user_id_str)
     except (ValueError, AttributeError):
         return "文档检索暂时不可用：用户身份无效。"
@@ -796,7 +803,7 @@ def init_context_node(state: AgentState, config: RunnableConfig) -> dict:
     from app.memory.preferences import get_preferences
     from app.memory.profile import get_profile
 
-    user_id = (config.get("metadata") or {}).get("user_id", "default")
+    user_id = _get_authenticated_user_id(config)
     db = SessionLocal()
     try:
         profile = get_profile(db, user_id) or {}
@@ -892,7 +899,7 @@ def mem0_recall_node(state: AgentState, config: RunnableConfig) -> dict:
     if not query:
         return {"memories": []}
 
-    user_id = (config.get("metadata") or {}).get("user_id", "default")
+    user_id = _get_authenticated_user_id(config)
     try:
         results = client.search(query, filters={"user_id": user_id}, top_k=settings.mem0_top_k)
         memories = [r["memory"] for r in (results.get("results") or [])]
@@ -918,7 +925,7 @@ def mem0_store_node(state: AgentState, config: RunnableConfig) -> dict:
         return {}
 
     messages = state.get("messages") or []
-    user_id = (config.get("metadata") or {}).get("user_id", "default")
+    user_id = _get_authenticated_user_id(config)
 
     last_human = next(
         (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
@@ -959,7 +966,7 @@ def extract_preferences_node(state: AgentState, config: RunnableConfig):
     from app.memory.preferences import extract_preferences_background
 
     messages = state["messages"]
-    user_id = (config.get("metadata") or {}).get("user_id", "default")
+    user_id = _get_authenticated_user_id(config)
     for msg in reversed(messages):
         if hasattr(msg, "type") and msg.type == "human":
             extract_preferences_background(msg.content, user_id=user_id)
