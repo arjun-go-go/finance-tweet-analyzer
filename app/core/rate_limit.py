@@ -41,6 +41,15 @@ def allow_request(key: str, *, limit: int, window: int) -> bool:
     return count <= limit
 
 
+def enforce_user_limit(key: str, *, limit: int, window: int) -> None:
+    """Fail closed for user-triggered expensive jobs."""
+    if not allow_request(key, limit=limit, window=window):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Daily analysis request limit exceeded",
+        )
+
+
 def enforce_auth_rate_limit(request: Request) -> None:
     client_ip = request.client.host if request.client else "unknown"
     route_key = request.url.path.rsplit("/", 1)[-1]

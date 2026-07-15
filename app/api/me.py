@@ -3,13 +3,19 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
+from app.celery_app import celery
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.deps import get_db
+from app.core.rate_limit import enforce_user_limit
+from app.models.analysis_job import AnalysisJob
 from app.models.blogger import Blogger
 from app.models.user import User
 from app.schemas.blogger import BloggerListItem
 from app.schemas.me import (
+    AnalysisJobCreateRequest,
+    AnalysisJobListResponse,
+    AnalysisJobResponse,
     BookmarkResponse,
     BookmarkedTweetItem,
     BookmarkedTweetListResponse,
@@ -26,6 +32,16 @@ from app.services.user_resource_service import (
     list_followed_bloggers,
     remove_tweet_bookmark,
     unfollow_blogger,
+)
+from app.services.analysis_job_service import (
+    AnalysisJobForbidden,
+    AnalysisJobNotFound,
+    AnalysisJobTargetNotFound,
+    create_analysis_job,
+    get_analysis_job,
+    list_analysis_jobs,
+    mark_analysis_job_dispatch_failed,
+    mark_analysis_job_dispatched,
 )
 
 
@@ -52,6 +68,32 @@ def _followed_blogger_item(
         verified=bool(blogger.verified),
         location=blogger.location,
     )
+
+
+def _analysis_job_response(job: AnalysisJob) -> AnalysisJobResponse:
+    return AnalysisJobResponse(
+        id=str(job.id),
+        kind=job.kind,
+        target_id=str(job.request_payload.get("target_id", "")),
+        status=job.status,
+        error_code=job.error_code,
+        error_summary=job.error_summary,
+        reused_result=job.reused_result,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+    )
+
+
+def _dispatch_analysis_job(job: AnalysisJob) -> str:
+    task_id = str(job.id)
+    celery.send_task(
+        "app.scheduler.tasks.user_analysis_job_task",
+        args=[task_id],
+        task_id=task_id,
+        queue="analysis",
+    )
+    return task_id
 
 
 @router.post(
@@ -186,3 +228,82 @@ def get_bookmarked_tweets(
         ],
         total=total,
     )
+
+
+@router.post(
+    "/analysis-jobs",
+    response_model=AnalysisJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_analysis_job_endpoint(
+    body: AnalysisJobCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisJobResponse:
+    if not settings.user_analysis_requests_enabled:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    enforce_user_limit(
+        f"user-analysis:{current_user.id}",
+        limit=settings.user_analysis_daily_limit,
+        window=24 * 60 * 60,
+    )
+
+    try:
+        job = create_analysis_job(
+            db,
+            current_user.id,
+            kind=body.kind,
+            target_id=body.target_id,
+            pipeline_version=settings.user_analysis_pipeline_version,
+        )
+        db.commit()
+        db.refresh(job)
+    except AnalysisJobTargetNotFound:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    except AnalysisJobForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        task_id = _dispatch_analysis_job(job)
+    except Exception:
+        mark_analysis_job_dispatch_failed(db, job)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis queue unavailable",
+        )
+
+    mark_analysis_job_dispatched(db, job, celery_task_id=task_id)
+    db.commit()
+    db.refresh(job)
+    return _analysis_job_response(job)
+
+
+@router.get("/analysis-jobs", response_model=AnalysisJobListResponse)
+def get_analysis_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisJobListResponse:
+    jobs, total = list_analysis_jobs(
+        db, current_user.id, limit=limit, offset=offset
+    )
+    return AnalysisJobListResponse(
+        items=[_analysis_job_response(job) for job in jobs],
+        total=total,
+    )
+
+
+@router.get("/analysis-jobs/{job_id}", response_model=AnalysisJobResponse)
+def get_analysis_job_endpoint(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisJobResponse:
+    try:
+        job = get_analysis_job(db, current_user.id, job_id)
+    except AnalysisJobNotFound:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    return _analysis_job_response(job)

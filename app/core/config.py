@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     max_tracked_tickers_per_user: int = 20
     max_followed_bloggers_per_user: int = 20
 
+    # ----- User analysis jobs -----
+    user_analysis_requests_enabled: bool = False
+    user_analysis_daily_limit: int = 10
+    user_analysis_pipeline_version: str = "v1"
+
     # ----- Document quotas -----
     max_documents_per_user: int = 200
     max_document_size_mb: int = 20

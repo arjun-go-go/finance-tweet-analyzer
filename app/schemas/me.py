@@ -1,6 +1,8 @@
 from datetime import datetime
+from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.schemas.blogger import BloggerListItem
 
@@ -35,4 +37,29 @@ class BookmarkedTweetItem(BaseModel):
 
 class BookmarkedTweetListResponse(BaseModel):
     items: list[BookmarkedTweetItem]
+    total: int
+
+
+class AnalysisJobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["tweet_analysis", "blogger_analysis"]
+    target_id: UUID
+
+
+class AnalysisJobResponse(BaseModel):
+    id: str
+    kind: str
+    target_id: str
+    status: str
+    error_code: str | None = None
+    error_summary: str | None = None
+    reused_result: bool
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class AnalysisJobListResponse(BaseModel):
+    items: list[AnalysisJobResponse]
     total: int

@@ -1,3 +1,6 @@
+import pytest
+from fastapi import HTTPException
+
 from app.core import rate_limit
 
 
@@ -24,4 +27,32 @@ def test_fixed_window_rate_limit_rejects_requests_over_limit(monkeypatch):
 
     assert not rate_limit.allow_request(
         "auth:login:127.0.0.1", limit=5, window=60
+    )
+
+
+def test_user_limit_uses_scoped_key_and_fails_closed(monkeypatch):
+    seen = {}
+
+    def allow(key, *, limit, window):
+        seen.update(key=key, limit=limit, window=window)
+        return True
+
+    monkeypatch.setattr(rate_limit, "allow_request", allow)
+    rate_limit.enforce_user_limit(
+        "user-analysis:user-id", limit=10, window=86400
+    )
+    assert seen == {
+        "key": "user-analysis:user-id",
+        "limit": 10,
+        "window": 86400,
+    }
+
+    monkeypatch.setattr(rate_limit, "allow_request", lambda *a, **k: False)
+    with pytest.raises(HTTPException) as exc:
+        rate_limit.enforce_user_limit(
+            "user-analysis:user-id", limit=10, window=86400
+        )
+    assert (exc.value.status_code, exc.value.detail) == (
+        429,
+        "Daily analysis request limit exceeded",
     )
