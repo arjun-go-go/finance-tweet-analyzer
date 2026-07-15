@@ -13,6 +13,9 @@ from app.models.tracked_ticker import TrackedTicker
 from app.models.report import Report
 from app.models.user import User
 from app.models.agent_trace import AgentTrace
+from app.models.user_blogger_follow import UserBloggerFollow
+from app.models.user_tweet_bookmark import UserTweetBookmark
+from app.models.analysis_job import AnalysisJob
 
 __all__ = [
     "Base",
@@ -30,4 +33,7 @@ __all__ = [
     "Report",
     "User",
     "AgentTrace",
+    "UserBloggerFollow",
+    "UserTweetBookmark",
+    "AnalysisJob",
 ]
