@@ -4,7 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.core.auth import get_current_admin
 from app.models.blogger import Blogger
+from app.models.user import User
 from app.schemas.blogger import (
     BloggerDetail,
     BloggerListItem,
@@ -35,6 +37,7 @@ def list_bloggers(
 @router.post("/upsert", response_model=BloggerRow)
 def upsert_blogger_endpoint(
     profile: BloggerProfile,
+    _admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     blogger = upsert_blogger(db, profile)
@@ -64,7 +67,12 @@ class FetchToggleRequest(BaseModel):
 
 
 @router.patch("/{handle:path}/fetch-toggle")
-def toggle_fetch(handle: str, body: FetchToggleRequest, db: Session = Depends(get_db)):
+def toggle_fetch(
+    handle: str,
+    body: FetchToggleRequest,
+    _admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
     """启用或禁用博主的定时推文抓取。"""
     blogger = db.execute(
         select(Blogger).where(Blogger.handle == handle)

@@ -1,4 +1,6 @@
+import re
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
@@ -6,17 +8,33 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.core.auth import get_current_user
+from app.core.rate_limit import enforce_auth_rate_limit
 from app.models.user import User
 from app.services.auth_service import (
     authenticate_user,
     create_access_token,
     create_refresh_token,
+    consume_refresh_token,
     decode_token,
     get_user_by_id,
     register_user,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _validate_password(password: str) -> None:
+    if len(password) < 12:
+        raise HTTPException(status_code=400, detail="密码至少需要12个字符")
+    if not (
+        re.search(r"[a-z]", password)
+        and re.search(r"[A-Z]", password)
+        and re.search(r"\d", password)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="密码必须包含大写字母、小写字母和数字",
+        )
 
 
 class RegisterRequest(BaseModel):
@@ -56,10 +74,14 @@ class LoginResponse(BaseModel):
     user: UserResponse
 
 
-@router.post("/register", response_model=LoginResponse, status_code=201)
+@router.post(
+    "/register",
+    response_model=LoginResponse,
+    status_code=201,
+    dependencies=[Depends(enforce_auth_rate_limit)],
+)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="密码至少6个字符")
+    _validate_password(req.password)
     if len(req.username) < 2:
         raise HTTPException(status_code=400, detail="用户名至少2个字符")
 
@@ -76,7 +98,11 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    dependencies=[Depends(enforce_auth_rate_limit)],
+)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_user(db, req.email, req.password)
     if user is None:
@@ -90,7 +116,11 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    dependencies=[Depends(enforce_auth_rate_limit)],
+)
 def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     payload = decode_token(req.refresh_token)
     if payload is None:
@@ -98,9 +128,20 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Token 类型错误")
 
+    jti = payload.get("jti")
+    if not jti:
+        raise HTTPException(status_code=401, detail="Refresh token 缺少唯一标识")
+
     user = get_user_by_id(db, payload["sub"])
     if user is None or user.status != "active":
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+
+    ttl_seconds = max(
+        1,
+        int(payload["exp"] - datetime.now(timezone.utc).timestamp()),
+    )
+    if not consume_refresh_token(jti, ttl_seconds=ttl_seconds):
+        raise HTTPException(status_code=401, detail="Refresh token 已使用或无法验证")
 
     user_id = str(user.id)
     return TokenResponse(

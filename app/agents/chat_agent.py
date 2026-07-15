@@ -536,17 +536,28 @@ def query_database(natural_language_query: str, config: RunnableConfig) -> str:
 # ============================================================
 
 @tool(args_schema=TrackingReportArgs)
-def generate_tracking_report(ticker: str, time_range: str = "1w") -> str:
+def generate_tracking_report(
+    ticker: str,
+    time_range: str = "1w",
+    config: RunnableConfig = None,
+) -> str:
     """生成指定金融标的的跟踪报告（基于 RAG 多路召回 + Rerank + LLM 合成）。
 
     【触发场景】：用户要求生成报告、分析某个标的的最近动态、周报等。
     【参数】：ticker 为标的代码（如 TSLA、BTC），time_range 为时间范围（1d/1w/1m）。
     """
     from app.services.report_service import create_and_run_report
+    from uuid import UUID
+
+    user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
+    try:
+        user_id = UUID(user_id_value)
+    except (TypeError, ValueError, AttributeError):
+        return "用户身份无效，无法生成私有报告。"
 
     db = SessionLocal()
     try:
-        report = create_and_run_report(db, None, ticker, trigger_type="chat")
+        report = create_and_run_report(db, user_id, ticker, trigger_type="chat")
         if report.status == "done":
             summary = report.summary or "报告生成完成"
             return f"{ticker} 跟踪报告已生成\n\n{summary}\n\n评级: {report.consensus or 'N/A'}\n报告ID: {report.id}"
@@ -657,16 +668,23 @@ def search_public_signals(query: str, source_type: str = "analysis", blogger: st
 
 
 @tool
-def list_my_tracked_tickers() -> str:
+def list_my_tracked_tickers(config: RunnableConfig = None) -> str:
     """查看当前用户订阅的所有标的跟踪列表。
 
     【触发场景】：用户问"我订阅了哪些""我的跟踪列表""关注了什么标的"。
     """
     from app.services.tracking_service import list_subscriptions
+    from uuid import UUID
+
+    user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
+    try:
+        user_id = UUID(user_id_value)
+    except (TypeError, ValueError, AttributeError):
+        return "用户身份无效，无法查询订阅。"
 
     db = SessionLocal()
     try:
-        items = list_subscriptions(db, None)
+        items = list_subscriptions(db, user_id)
         if not items:
             return "当前没有订阅任何标的。可以通过「订阅 TSLA」来添加。"
         lines = [f"- {t.ticker} ({t.frequency}, {t.status})" for t in items]

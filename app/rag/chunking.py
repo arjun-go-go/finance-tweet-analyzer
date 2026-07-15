@@ -238,14 +238,19 @@ def chunk_document(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             length_function=len,
-            keep_separator=False,
+            keep_separator=True,
         )
         raw = splitter.split_text(text)
     else:
         raw = _split_text_recursive(text, _SEPARATORS, chunk_size, chunk_overlap)
 
     # 后置过滤：去除空白块和过短残块
-    return [c.strip() for c in raw if c.strip() and len(c.strip()) > _MIN_CHUNK_LENGTH]
+    minimum_length = min(_MIN_CHUNK_LENGTH, max(1, chunk_size // 2))
+    return [
+        c.strip()
+        for c in raw
+        if c.strip() and len(c.strip()) >= minimum_length
+    ]
 
 
 def _clean_tweet_text(text: str) -> str:

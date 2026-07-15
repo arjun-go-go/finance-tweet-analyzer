@@ -95,6 +95,23 @@ def _empty_result(batch_id: uuid.UUID) -> dict:
     }
 
 
+def _mark_successful_tweets(
+    tweets: list[Tweet], analyses: list[dict]
+) -> list[Tweet]:
+    """Mark only tweets that produced an analysis as completed."""
+    successful_ids = {
+        str(analysis.get("tweet_id"))
+        for analysis in analyses
+        if analysis.get("tweet_id")
+    }
+    successful_tweets = [
+        tweet for tweet in tweets if str(tweet.id) in successful_ids
+    ]
+    for tweet in successful_tweets:
+        tweet.status = "analyzed"
+    return successful_tweets
+
+
 def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict:
     """实时分析链路：classify → analysis ‖ risk → merge → 写DB。
 
@@ -208,8 +225,9 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                     prediction_status="skipped",
                 ))
 
-        for t in batch_tweets:
-            t.status = "analyzed"
+        successful_batch_tweets = _mark_successful_tweets(
+            batch_tweets, state["analyses"]
+        )
 
         try:
             db.commit()
@@ -222,12 +240,12 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
 
         # 分析完成后异步触发向量化，将推文入库到 public_signals collection
         from app.scheduler.tasks import embed_signal_task
-        for t in batch_tweets:
+        for t in successful_batch_tweets:
             embed_signal_task.delay("tweet", str(t.id))
 
         all_analyses.extend(state["analyses"])
         all_summaries.extend(state["ticker_summaries"])
-        analyzed_tweets.extend(batch_tweets)
+        analyzed_tweets.extend(successful_batch_tweets)
 
     write_trace_immediate(
         conversation_id=batch_id,

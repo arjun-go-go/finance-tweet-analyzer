@@ -100,7 +100,6 @@ def fetch_url(
     html = resp.text
     gne = GeneralNewsExtractor()
     result = gne.extract(html, with_body_html=False)
-    print(result)
     text = result.get("content", "").strip()
     if not text:
         raise ParserError("URL extraction returned empty content")
@@ -132,7 +131,6 @@ def fetch_url(
     )
     # site_name: GNE 无此字段，用 custom
     metadata["site_name"] = meta.get("site_name", "")
-    print(metadata)
 
     return ParsedDocument(text=text, metadata=metadata)
 

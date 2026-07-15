@@ -3,11 +3,22 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+import redis
+from loguru import logger
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.user import User
+
+_auth_redis: redis.Redis | None = None
+
+
+def _get_auth_redis() -> redis.Redis:
+    global _auth_redis
+    if _auth_redis is None:
+        _auth_redis = redis.from_url(settings.redis_url, decode_responses=True)
+    return _auth_redis
 
 
 def hash_password(password: str) -> str:
@@ -30,8 +41,29 @@ def create_refresh_token(user_id: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         days=settings.jwt_refresh_token_expire_days
     )
-    payload = {"sub": user_id, "exp": expire, "type": "refresh"}
+    payload = {
+        "sub": user_id,
+        "exp": expire,
+        "type": "refresh",
+        "jti": uuid.uuid4().hex,
+    }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def consume_refresh_token(jti: str, *, ttl_seconds: int) -> bool:
+    """Atomically mark a refresh token ID as used to prevent replay."""
+    try:
+        return bool(
+            _get_auth_redis().set(
+                f"auth:refresh-used:{jti}",
+                "1",
+                nx=True,
+                ex=max(1, ttl_seconds),
+            )
+        )
+    except redis.RedisError as exc:
+        logger.error("Refresh token store unavailable: {}", exc)
+        return False
 
 
 def decode_token(token: str) -> dict | None:

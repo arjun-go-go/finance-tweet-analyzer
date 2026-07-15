@@ -50,8 +50,6 @@ dependencies = [
     "numpy>=2.0.0",
     "openai>=2.0.0",
     "psycopg-pool>=3.3.1",
-    "psycopg2>=2.9.12",
-    "psycopg2-binary>=2.9.0",
     "psycopg[binary,pool]>=3.2.0",
     "pyarrow==22.0.0",
     "pydantic-settings>=2.0.0",
@@ -76,4 +74,9 @@ dependencies = [
     "trafilatura>=1.12.0",
     "unstructured>=0.18.32",
     "uvicorn[standard]>=0.30.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]

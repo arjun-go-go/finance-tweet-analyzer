@@ -32,16 +32,19 @@ def test_rejects_private_ip_after_dns(mock_dns):
         fetch_url("http://evil.example.com/", blocked_hosts=BLOCKED, timeout=5)
 
 
-@patch("app.rag.parsers.url_parser.trafilatura.extract")
-@patch("app.rag.parsers.url_parser.requests.get")
+@patch("app.rag.parsers.url_parser.GeneralNewsExtractor")
+@patch("app.rag.parsers.url_parser.cffi_requests.get")
 @patch("app.rag.parsers.url_parser._is_private_ip", return_value=False)
-def test_happy_path(mock_private, mock_get, mock_extract):
+def test_happy_path(mock_private, mock_get, mock_extractor_cls):
     mock_resp = MagicMock()
     mock_resp.url = "https://example.com/article"
     mock_resp.text = "<html><body>Content</body></html>"
     mock_resp.raise_for_status = MagicMock()
     mock_get.return_value = mock_resp
-    mock_extract.return_value = "Extracted content"
+    mock_extractor_cls.return_value.extract.return_value = {
+        "content": "Extracted content",
+        "title": "Example",
+    }
     result = fetch_url("https://example.com/article", blocked_hosts=BLOCKED, timeout=5)
     assert result.text == "Extracted content"
     assert result.metadata["source_uri"] == "https://example.com/article"

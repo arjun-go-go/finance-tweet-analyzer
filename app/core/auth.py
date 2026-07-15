@@ -3,6 +3,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.core.config import settings
 from app.core.logging import user_id_var
 from app.models.user import User
 from app.services.auth_service import decode_token, get_user_by_id
@@ -62,3 +63,15 @@ def get_optional_user(
         user_id_var.set(str(user.id))
         request.state.uid = str(user.id)
     return user
+
+
+def get_current_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Require an authenticated user explicitly listed as an administrator."""
+    if str(current_user.id) not in settings.admin_user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+    return current_user

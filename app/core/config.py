@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     # ----- Rate limiting (per user) -----
     rate_limit_rpm: int = 30
     rate_limit_tpd: int = 500000
+    auth_rate_limit_attempts: int = 10
+    auth_rate_limit_window_seconds: int = 60
 
     # ----- Multi-session limits -----
     max_sessions_per_user: int = 50
@@ -71,6 +73,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60
     jwt_refresh_token_expire_days: int = 7
+    admin_user_ids: list[str] = []
+
+    # ----- HTTP security -----
+    cors_allowed_origins: list[str] = ["http://localhost:3000"]
 
     # ----- RAG / Vector store -----
     vector_backend: str = "chroma"
@@ -169,8 +175,8 @@ class Settings(BaseSettings):
     # ----- Logging -----
     log_level: str = "INFO"
     log_json: bool = False
-    log_request_body: bool = True
-    log_response_body: bool = True
+    log_request_body: bool = False
+    log_response_body: bool = False
     log_body_max_bytes: int = 4096
     log_sensitive_keys: list[str] = [
         "password", "passwd", "token", "access_token", "refresh_token",
@@ -201,6 +207,23 @@ class Settings(BaseSettings):
         if not v:
             raise ValueError("DASHSCOPE_API_KEY must be set (non-empty) in .env")
         return v
+
+    def __repr_args__(self):
+        sensitive_fields = {
+            "database_url",
+            "redis_url",
+            "celery_broker_url",
+            "celery_result_backend",
+            "openrouter_api_key",
+            "dashscope_api_key",
+            "langsmith_api_key",
+            "jwt_secret_key",
+            "twitter_auth_token",
+            "twitter_ct0",
+            "twitter_bearer_token",
+        }
+        for name, value in super().__repr_args__():
+            yield name, "**********" if name in sensitive_fields else value
 
 
 settings = Settings()

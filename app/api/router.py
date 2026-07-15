@@ -12,21 +12,30 @@ from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.tracking import router as tracking_router
 from app.api.reports import router as reports_router
-from app.api.debug import router as debug_router
+from app.core.config import settings
 
-api_router = APIRouter()
-api_router.include_router(auth_router)
-api_router.include_router(tweets_router)
-api_router.include_router(analysis_router)
-api_router.include_router(signals_router)
-api_router.include_router(dashboard_router)
-api_router.include_router(bloggers_router)
-api_router.include_router(predictions_router)
-api_router.include_router(chat_router)
-api_router.include_router(documents_router)
-api_router.include_router(tracking_router)
-api_router.include_router(reports_router)
-api_router.include_router(debug_router)
+
+def build_api_router() -> APIRouter:
+    router = APIRouter()
+    router.include_router(auth_router)
+    router.include_router(tweets_router)
+    router.include_router(analysis_router)
+    router.include_router(signals_router)
+    router.include_router(dashboard_router)
+    router.include_router(bloggers_router)
+    router.include_router(predictions_router)
+    router.include_router(chat_router)
+    router.include_router(documents_router)
+    router.include_router(tracking_router)
+    router.include_router(reports_router)
+    if settings.debug_mode:
+        from app.api.debug import router as debug_router
+
+        router.include_router(debug_router)
+    return router
+
+
+api_router = build_api_router()
 
 
 @api_router.get("/api/health")

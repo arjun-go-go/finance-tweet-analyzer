@@ -4,6 +4,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.core.auth import get_current_admin
+from app.models.user import User
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
 from app.schemas.tweet import TweetImportRequest, TweetImportResponse
@@ -91,6 +93,7 @@ def list_tweets(
 @router.post("/import", response_model=TweetImportResponse)
 def import_tweets_endpoint(
     request: TweetImportRequest,
+    _admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     imported, skipped = import_tweets(db, request.tweets, request.blogger)
