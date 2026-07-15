@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.deps import get_db
 from app.models import Blogger, Tweet, User, UserBloggerFollow, UserTweetBookmark
 from app.schemas.blogger import BloggerDetail, BloggerListItem
+from app.services.auth_service import create_access_token
 
 
 def _persist_user(db_session, auth, alias: str) -> User:
@@ -42,6 +43,31 @@ def _tweet(alias: str) -> Tweet:
         published_at=datetime.now(timezone.utc),
         metrics={"likes": 3},
     )
+
+
+def _focused_app(db_session) -> FastAPI:
+    focused_app = FastAPI()
+    focused_app.include_router(api_router)
+
+    def override_get_db():
+        yield db_session
+
+    focused_app.dependency_overrides[get_db] = override_get_db
+    return focused_app
+
+
+def _real_jwt_user(db_session, alias: str) -> tuple[User, dict[str, str]]:
+    user = User(
+        id=uuid4(),
+        email=f"{alias}-{uuid4()}@example.test",
+        username=f"{alias}-{uuid4()}",
+        password_hash="unused",
+        status="active",
+    )
+    db_session.add(user)
+    db_session.flush()
+    token = create_access_token(str(user.id))
+    return user, {"Authorization": f"Bearer {token}"}
 
 
 def test_follow_is_user_scoped_and_delete_hides_ownership(client, db_session, auth):
@@ -227,13 +253,18 @@ def test_shared_blogger_schemas_require_canonical_id():
     assert BloggerDetail.model_fields["id"].is_required()
 
 
-def test_public_blogger_list_returns_canonical_id(client, db_session, auth):
-    _persist_user(db_session, auth, "reader")
+def test_public_blogger_list_returns_canonical_id(db_session):
+    user, headers = _real_jwt_user(db_session, "list-reader")
     blogger = _blogger("public-list")
     db_session.add(blogger)
     db_session.flush()
 
-    response = client.get("/api/bloggers", headers=auth.headers("reader"))
+    with TestClient(_focused_app(db_session)) as focused_client:
+        assert focused_client.get("/api/auth/me").status_code == 401
+        auth_probe = focused_client.get("/api/auth/me", headers=headers)
+        assert auth_probe.status_code == 200
+        assert auth_probe.json()["id"] == str(user.id)
+        response = focused_client.get("/api/bloggers", headers=headers)
 
     assert response.status_code == 200
     item = next(
@@ -242,8 +273,8 @@ def test_public_blogger_list_returns_canonical_id(client, db_session, auth):
     assert item["id"] == str(blogger.id)
 
 
-def test_public_blogger_detail_returns_canonical_id(client, db_session, auth):
-    _persist_user(db_session, auth, "reader")
+def test_public_blogger_detail_returns_canonical_id(db_session):
+    user, headers = _real_jwt_user(db_session, "detail-reader")
     blogger = Blogger(
         handle=f"encoded/analyst-{uuid4()}",
         name="Encoded Analyst",
@@ -252,23 +283,21 @@ def test_public_blogger_detail_returns_canonical_id(client, db_session, auth):
     db_session.flush()
 
     encoded_handle = quote(blogger.handle, safe="")
-    response = client.get(
-        f"/api/bloggers/{encoded_handle}", headers=auth.headers("reader")
-    )
+    with TestClient(_focused_app(db_session)) as focused_client:
+        assert focused_client.get("/api/auth/me").status_code == 401
+        auth_probe = focused_client.get("/api/auth/me", headers=headers)
+        assert auth_probe.status_code == 200
+        assert auth_probe.json()["id"] == str(user.id)
+        response = focused_client.get(
+            f"/api/bloggers/{encoded_handle}", headers=headers
+        )
 
     assert response.status_code == 200
     assert response.json()["id"] == str(blogger.id)
 
 
 def test_me_routes_require_real_authentication(db_session):
-    focused_app = FastAPI()
-    focused_app.include_router(api_router)
-
-    def override_get_db():
-        yield db_session
-
-    focused_app.dependency_overrides[get_db] = override_get_db
-    with TestClient(focused_app) as unauthenticated:
+    with TestClient(_focused_app(db_session)) as unauthenticated:
         response = unauthenticated.get("/api/me/bloggers")
     assert response.status_code == 401
 
