@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.models import Blogger, Tweet, User, UserBloggerFollow
+from app.models import AnalysisResult, Blogger, Tweet, User, UserBloggerFollow
 from app.services.analysis_job_service import (
     AnalysisJobForbidden,
     AnalysisJobNotFound,
@@ -12,6 +12,7 @@ from app.services.analysis_job_service import (
     get_analysis_job,
     list_analysis_jobs,
     mark_analysis_job_dispatch_failed,
+    run_user_analysis_job,
 )
 
 
@@ -148,3 +149,136 @@ def test_owner_scoped_get_list_and_safe_dispatch_failure(db_session):
     assert failed.error_summary == (
         "Analysis job could not be queued. Please retry later."
     )
+
+
+def test_run_tweet_job_reuses_cached_analysis_without_llm(db_session):
+    owner = _user(db_session, "owner")
+    target = _tweet(db_session)
+    cached = AnalysisResult(
+        tweet_id=target.id,
+        analysis_type="tweet_analysis",
+        result={"signal": "cached"},
+        model_used="test",
+        confidence=0.9,
+        pipeline_version="v1",
+    )
+    db_session.add(cached)
+    db_session.flush()
+    job = create_analysis_job(
+        db_session,
+        owner.id,
+        kind="tweet_analysis",
+        target_id=target.id,
+        pipeline_version="v1",
+    )
+    db_session.commit()
+    calls = []
+
+    result = run_user_analysis_job(
+        db_session,
+        job.id,
+        pipeline_version="v1",
+        analyze_single_tweet=lambda *args: calls.append(args),
+        analyze_by_blogger=lambda *args: calls.append(args),
+    )
+
+    db_session.refresh(job)
+    db_session.refresh(cached)
+    assert result["reused_result"] is True
+    assert calls == []
+    assert job.status == "completed"
+    assert job.reused_result is True
+    assert cached.cache_key is not None
+
+
+def test_run_tweet_job_analyzes_cache_miss_and_completes(db_session):
+    owner = _user(db_session, "owner")
+    target = _tweet(db_session)
+    job = create_analysis_job(
+        db_session,
+        owner.id,
+        kind="tweet_analysis",
+        target_id=target.id,
+        pipeline_version="v1",
+    )
+    db_session.commit()
+
+    def analyze_single_tweet(db, tweet_id):
+        db.add(
+            AnalysisResult(
+                tweet_id=target.id,
+                analysis_type="tweet_analysis",
+                result={"signal": "fresh"},
+                model_used="test",
+                confidence=0.8,
+                pipeline_version="v1",
+            )
+        )
+        db.flush()
+        return {"batch_id": str(uuid4()), "analyzed": 1}
+
+    result = run_user_analysis_job(
+        db_session,
+        job.id,
+        pipeline_version="v1",
+        analyze_single_tweet=analyze_single_tweet,
+        analyze_by_blogger=lambda *args: {"batch_id": str(uuid4())},
+    )
+
+    db_session.refresh(job)
+    assert result["reused_result"] is False
+    assert result["analyzed"] == 1
+    assert job.status == "completed"
+    assert job.reused_result is False
+    assert job.batch_id is not None
+
+
+def test_run_blogger_job_reuses_cache_when_no_pending_tweets(db_session):
+    owner = _user(db_session, "owner")
+    blogger = Blogger(handle=f"analyst-{uuid4()}", name="Analyst")
+    db_session.add(blogger)
+    db_session.flush()
+    db_session.add(UserBloggerFollow(user_id=owner.id, blogger_id=blogger.id))
+    target = Tweet(
+        tweet_id=str(uuid4()),
+        author_handle=blogger.handle,
+        content="market update",
+        published_at=datetime.now(timezone.utc),
+        status="analyzed",
+    )
+    db_session.add(target)
+    db_session.flush()
+    db_session.add(
+        AnalysisResult(
+            tweet_id=target.id,
+            analysis_type="tweet_analysis",
+            result={"signal": "cached"},
+            model_used="test",
+            confidence=0.8,
+            pipeline_version="v1",
+        )
+    )
+    db_session.flush()
+    job = create_analysis_job(
+        db_session,
+        owner.id,
+        kind="blogger_analysis",
+        target_id=blogger.id,
+        pipeline_version="v1",
+    )
+    db_session.commit()
+    calls = []
+
+    result = run_user_analysis_job(
+        db_session,
+        job.id,
+        pipeline_version="v1",
+        analyze_single_tweet=lambda *args: calls.append(args),
+        analyze_by_blogger=lambda *args: calls.append(args),
+    )
+
+    db_session.refresh(job)
+    assert result["reused_result"] is True
+    assert result["cached_count"] == 1
+    assert calls == []
+    assert job.status == "completed"

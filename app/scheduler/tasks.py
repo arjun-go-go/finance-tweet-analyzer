@@ -22,7 +22,8 @@ from app.scheduler.locks import (
     try_acquire_fetch_lock,
     release_fetch_lock,
 )
-from app.services.analysis_service import analyze_by_blogger
+from app.services.analysis_job_service import run_user_analysis_job
+from app.services.analysis_service import analyze_by_blogger, analyze_single_tweet
 
 logger = get_task_logger(__name__)
 
@@ -174,6 +175,36 @@ def manual_analysis_task(
 
     logger.info("[Celery] Manual analysis completed: %s", stats)
     return stats
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.user_analysis_job_task",
+    acks_late=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=2,
+)
+def user_analysis_job_task(self, job_id: str) -> dict:
+    """Run a durable user-requested analysis job by id."""
+    from uuid import UUID
+
+    from app.core.config import settings as cfg
+
+    db = SessionLocal()
+    try:
+        result = run_user_analysis_job(
+            db,
+            UUID(job_id),
+            pipeline_version=cfg.user_analysis_pipeline_version,
+            analyze_single_tweet=analyze_single_tweet,
+            analyze_by_blogger=analyze_by_blogger,
+        )
+        logger.info("[Celery] User analysis job %s: %s", job_id, result)
+        return result
+    finally:
+        db.close()
 
 
 @shared_task(
