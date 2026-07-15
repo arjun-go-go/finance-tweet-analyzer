@@ -23,6 +23,7 @@ class BloggerProfile(BaseModel):
 
 
 class BloggerListItem(BaseModel):
+    id: str
     handle: str
     name: str
     bio: str | None = None
@@ -44,6 +45,7 @@ class TopTickerItem(BaseModel):
 
 
 class BloggerDetail(BaseModel):
+    id: str
     handle: str
     name: str
     bio: str | None = None

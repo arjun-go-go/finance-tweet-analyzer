@@ -106,6 +106,7 @@ def list_bloggers_with_stats(db: Session, sort: str = "credibility") -> list[dic
         score = compute_score(float(correct_sum), int(verified))
         hit_rate = float(correct_sum) / verified if verified else None
         items.append({
+            "id": str(blogger.id),
             "handle": blogger.handle,
             "name": blogger.name,
             "bio": blogger.bio,
@@ -215,6 +216,7 @@ def get_blogger_detail(db: Session, handle: str) -> dict | None:
     )
 
     return {
+        "id": str(blogger.id),
         "handle": blogger.handle,
         "name": blogger.name,
         "bio": blogger.bio,

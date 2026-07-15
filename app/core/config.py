@@ -132,6 +132,7 @@ class Settings(BaseSettings):
 
     # ----- Tracking subscriptions -----
     max_tracked_tickers_per_user: int = 20
+    max_followed_bloggers_per_user: int = 20
 
     # ----- Document quotas -----
     max_documents_per_user: int = 200
