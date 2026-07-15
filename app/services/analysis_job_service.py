@@ -40,7 +40,12 @@ def create_analysis_job(
     kind: str,
     target_id: UUID,
     pipeline_version: str,
+    status: str = "queued",
+    batch_id: UUID | None = None,
 ) -> AnalysisJob:
+    if status not in {"queued", "awaiting_confirmation"}:
+        raise ValueError(f"Unsupported initial analysis job status: {status}")
+
     if kind == "tweet_analysis":
         if db.execute(select(Tweet.id).where(Tweet.id == target_id)).scalar_one_or_none() is None:
             raise AnalysisJobTargetNotFound("tweet")
@@ -65,7 +70,8 @@ def create_analysis_job(
             "target_id": str(target_id),
             "pipeline_version": pipeline_version,
         },
-        status="queued",
+        status=status,
+        batch_id=batch_id,
     )
     db.add(job)
     db.flush()
