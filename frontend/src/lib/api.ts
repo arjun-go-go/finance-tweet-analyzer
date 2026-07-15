@@ -194,6 +194,95 @@ export async function toggleBloggerFetch(handle: string, fetch_enabled: boolean)
 
 import { authFetch, getAccessToken } from "./auth";
 
+export interface FollowedBloggerListResponse {
+  items: Array<{
+    id: string;
+    handle: string;
+    name: string;
+    bio: string | null;
+    avatar_url: string | null;
+    followers_count: number;
+    market_focus: string[] | null;
+    credibility_score: number;
+    verified_count: number;
+    pending_count: number;
+    hit_rate: number | null;
+  }>;
+  total: number;
+}
+
+export interface BookmarkedTweetListResponse {
+  items: Array<{
+    id: string;
+    tweet_id: string;
+    author_handle: string;
+    author_name: string;
+    content: string;
+    published_at: string;
+    status: string;
+    metrics: Record<string, unknown> | null;
+  }>;
+  total: number;
+}
+
+export interface AnalysisJobItem {
+  id: string;
+  kind: string;
+  target_id: string;
+  status: string;
+  error_code: string | null;
+  error_summary: string | null;
+  reused_result: boolean;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface AnalysisJobListResponse {
+  items: AnalysisJobItem[];
+  total: number;
+}
+
+export async function listMyBloggers(): Promise<FollowedBloggerListResponse> {
+  const res = await authFetch(`${API_BASE}/api/me/bloggers`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error("Failed to list followed bloggers");
+  return res.json() as Promise<FollowedBloggerListResponse>;
+}
+
+export async function listMyTweets(): Promise<BookmarkedTweetListResponse> {
+  const res = await authFetch(`${API_BASE}/api/me/tweets`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error("Failed to list bookmarked tweets");
+  return res.json() as Promise<BookmarkedTweetListResponse>;
+}
+
+export async function listMyAnalysisJobs(): Promise<AnalysisJobListResponse> {
+  const res = await authFetch(`${API_BASE}/api/me/analysis-jobs`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error("Failed to list analysis jobs");
+  return res.json() as Promise<AnalysisJobListResponse>;
+}
+
+export async function createAnalysisJob(body: {
+  kind: "tweet_analysis" | "blogger_analysis";
+  target_id: string;
+}): Promise<AnalysisJobItem> {
+  const res = await authFetch(`${API_BASE}/api/me/analysis-jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || "Failed to create analysis job");
+  }
+  return res.json() as Promise<AnalysisJobItem>;
+}
+
 export interface Conversation {
   id: string;
   user_id: string;
