@@ -1,10 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from threading import Barrier
+from threading import Event, Thread
+from time import monotonic
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
@@ -12,7 +12,6 @@ from app.models import (
     Tweet,
     User,
     UserBloggerFollow,
-    UserTweetBookmark,
 )
 from app.services.user_resource_service import (
     ResourceLimitExceeded,
@@ -271,28 +270,63 @@ def test_concurrent_follows_competing_for_last_slot_enforce_hard_limit(engine):
     setup.add_all([user, first_blogger, second_blogger])
     setup.commit()
     setup.close()
-    barrier = Barrier(2)
 
-    def attempt_follow(blogger_id):
-        session = SessionFactory()
+    session_a = SessionFactory()
+    b_started = Event()
+    b_done = Event()
+    b_state = {}
+
+    def attempt_second_follow():
+        session_b = SessionFactory()
         try:
-            barrier.wait(timeout=10)
-            follow_blogger(session, user.id, blogger_id, max_follows=1)
-            session.commit()
-            return "success"
-        except ResourceLimitExceeded:
-            session.rollback()
-            return "limited"
-        finally:
-            session.close()
-
-    try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            outcomes = list(
-                executor.map(
-                    attempt_follow, [first_blogger.id, second_blogger.id]
-                )
+            b_state["pid"] = session_b.scalar(text("select pg_backend_pid()"))
+            b_started.set()
+            follow_blogger(
+                session_b, user.id, second_blogger.id, max_follows=1
             )
+            session_b.commit()
+            b_state["outcome"] = "success"
+        except ResourceLimitExceeded:
+            session_b.rollback()
+            b_state["outcome"] = "limited"
+        except BaseException as exc:
+            session_b.rollback()
+            b_state["error"] = exc
+        finally:
+            session_b.close()
+            b_done.set()
+
+    worker = Thread(target=attempt_second_follow)
+    try:
+        follow_blogger(
+            session_a, user.id, first_blogger.id, max_follows=1
+        )
+        worker.start()
+        assert b_started.wait(timeout=10), "session B did not start"
+
+        lock_observed = False
+        deadline = monotonic() + 10
+        with engine.connect() as observer:
+            while monotonic() < deadline and not b_done.is_set():
+                wait_event_type = observer.scalar(
+                    text(
+                        "select wait_event_type from pg_stat_activity "
+                        "where pid = :pid"
+                    ),
+                    {"pid": b_state["pid"]},
+                )
+                if wait_event_type == "Lock":
+                    lock_observed = True
+                    break
+                b_done.wait(timeout=0.05)
+
+        assert lock_observed, "session B never waited on the user row lock"
+        assert not b_done.is_set()
+
+        session_a.commit()
+        assert b_done.wait(timeout=10), "session B stayed blocked after commit"
+        assert "error" not in b_state
+        assert b_state["outcome"] == "limited"
 
         verification = SessionFactory()
         final_count = verification.scalar(
@@ -302,18 +336,18 @@ def test_concurrent_follows_competing_for_last_slot_enforce_hard_limit(engine):
         )
         verification.close()
 
-        assert sorted(outcomes) == ["limited", "success"]
         assert final_count == 1
     finally:
+        session_a.rollback()
+        session_a.close()
+        if worker.ident is not None:
+            worker.join(timeout=10)
+        assert not worker.is_alive(), "session B thread did not terminate"
+
         cleanup = SessionFactory()
         cleanup.execute(
             delete(UserBloggerFollow).where(
                 UserBloggerFollow.user_id == user.id
-            )
-        )
-        cleanup.execute(
-            delete(UserTweetBookmark).where(
-                UserTweetBookmark.user_id == user.id
             )
         )
         cleanup.execute(
