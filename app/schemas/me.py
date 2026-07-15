@@ -63,3 +63,14 @@ class AnalysisJobResponse(BaseModel):
 class AnalysisJobListResponse(BaseModel):
     items: list[AnalysisJobResponse]
     total: int
+
+
+class AnalysisJobConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_ids: list[UUID]
+
+
+class AnalysisJobConfirmResponse(BaseModel):
+    confirmed: list[str]
+    skipped: list[str]

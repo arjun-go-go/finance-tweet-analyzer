@@ -6,6 +6,7 @@ import {
   AnalysisJobItem,
   BookmarkedTweetListResponse,
   FollowedBloggerListResponse,
+  confirmAnalysisJobs,
   createAnalysisJob,
   listMyAnalysisJobs,
   listMyBloggers,
@@ -32,12 +33,24 @@ export default function MePage() {
   const [jobs, setJobs] = useState<AnalysisJobItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const runningCount = useMemo(
     () => jobs.filter((job) => ["queued", "running"].includes(job.status)).length,
     [jobs],
   );
+  const confirmableJobIds = useMemo(
+    () =>
+      jobs
+        .filter((job) => job.status === "awaiting_confirmation")
+        .map((job) => job.id),
+    [jobs],
+  );
+  const selectedConfirmableCount = selectedJobIds.filter((id) =>
+    confirmableJobIds.includes(id),
+  ).length;
 
   async function refresh() {
     setError(null);
@@ -49,6 +62,9 @@ export default function MePage() {
     setBloggers(bloggerData);
     setTweets(tweetData);
     setJobs(jobData.items);
+    setSelectedJobIds((current) =>
+      current.filter((id) => jobData.items.some((job) => job.id === id)),
+    );
   }
 
   useEffect(() => {
@@ -79,6 +95,35 @@ export default function MePage() {
       setError((err as Error).message || "提交失败");
     } finally {
       setSubmittingId(null);
+    }
+  }
+
+  function toggleJobSelection(jobId: string) {
+    setSelectedJobIds((current) =>
+      current.includes(jobId)
+        ? current.filter((id) => id !== jobId)
+        : [...current, jobId],
+    );
+  }
+
+  function selectAllConfirmableJobs() {
+    setSelectedJobIds(confirmableJobIds);
+  }
+
+  async function confirmSelectedJobs() {
+    const jobIds = selectedJobIds.filter((id) => confirmableJobIds.includes(id));
+    if (jobIds.length === 0) return;
+
+    setConfirming(true);
+    setError(null);
+    try {
+      await confirmAnalysisJobs(jobIds);
+      setSelectedJobIds([]);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message || "确认失败");
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -192,15 +237,49 @@ export default function MePage() {
 
           <section className="rounded-lg bg-white shadow">
             <div className="border-b border-gray-100 px-4 py-3">
-              <h2 className="font-semibold text-gray-900">分析任务</h2>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-gray-900">分析任务</h2>
+                  <p className="mt-1 text-xs text-gray-500">
+                    待确认 {confirmableJobIds.length} · 已选 {selectedConfirmableCount}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={selectAllConfirmableJobs}
+                    disabled={confirmableJobIds.length === 0 || confirming}
+                    className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    全选待确认
+                  </button>
+                  <button
+                    onClick={confirmSelectedJobs}
+                    disabled={selectedConfirmableCount === 0 || confirming}
+                    className="rounded-md bg-amber-600 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {confirming ? "确认中" : "确认选中"}
+                  </button>
+                </div>
+              </div>
             </div>
             <div className="divide-y divide-gray-100">
               {jobs.slice(0, 10).map((job) => (
                 <div key={job.id} className="p-4">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-medium text-gray-900">
-                      {job.kind === "blogger_analysis" ? "博主分析" : "推文分析"}
-                    </p>
+                    <div className="flex min-w-0 items-center gap-2">
+                      {job.status === "awaiting_confirmation" && (
+                        <input
+                          type="checkbox"
+                          checked={selectedJobIds.includes(job.id)}
+                          onChange={() => toggleJobSelection(job.id)}
+                          className="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                          aria-label={`选择分析任务 ${job.id}`}
+                        />
+                      )}
+                      <p className="text-sm font-medium text-gray-900">
+                        {job.kind === "blogger_analysis" ? "博主分析" : "推文分析"}
+                      </p>
+                    </div>
                     <span
                       className={`rounded px-2 py-0.5 text-xs ${statusTone(job.status)}`}
                     >

@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from app.api import me
 from app.core.config import settings
 from app.models import AnalysisJob, Blogger, Tweet, User, UserBloggerFollow
+from app.services.analysis_job_service import create_analysis_job
 
 
 def _user_and_tweet(db_session, auth, alias: str):
@@ -157,3 +158,67 @@ def test_blogger_job_requires_current_user_follow(
         headers=auth.headers("blogger-owner"),
     )
     assert response.status_code == 202
+
+
+def test_confirm_analysis_jobs_dispatches_only_current_user_jobs(
+    client, db_session, auth, monkeypatch
+):
+    owner, target = _user_and_tweet(db_session, auth, "confirm-owner")
+    other = User(
+        id=UUID(auth.user_id("confirm-other")),
+        email=f"confirm-other-{uuid4()}@example.test",
+        username=f"confirm-other-{uuid4()}",
+        password_hash="x",
+        status="active",
+    )
+    db_session.add(other)
+    db_session.flush()
+    own_job = create_analysis_job(
+        db_session,
+        owner.id,
+        kind="tweet_analysis",
+        target_id=target.id,
+        pipeline_version="v1",
+        status="awaiting_confirmation",
+    )
+    other_job = create_analysis_job(
+        db_session,
+        other.id,
+        kind="tweet_analysis",
+        target_id=target.id,
+        pipeline_version="v1",
+        status="awaiting_confirmation",
+    )
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(settings, "user_analysis_requests_enabled", True)
+    monkeypatch.setattr(me, "enforce_user_limit", lambda *a, **k: None)
+    monkeypatch.setattr(
+        me.celery,
+        "send_task",
+        lambda name, *, args, task_id, queue: sent.append(
+            (name, args, task_id, queue)
+        ),
+    )
+
+    response = client.post(
+        "/api/me/analysis-jobs/confirm",
+        json={"job_ids": [str(own_job.id), str(other_job.id)]},
+        headers=auth.headers("confirm-owner"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["confirmed"] == [str(own_job.id)]
+    db_session.refresh(own_job)
+    db_session.refresh(other_job)
+    assert own_job.status == "queued"
+    assert own_job.celery_task_id == str(own_job.id)
+    assert other_job.status == "awaiting_confirmation"
+    assert sent == [
+        (
+            "app.scheduler.tasks.user_analysis_job_task",
+            [str(own_job.id)],
+            str(own_job.id),
+            "analysis",
+        )
+    ]

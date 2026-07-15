@@ -13,6 +13,8 @@ from app.models.blogger import Blogger
 from app.models.user import User
 from app.schemas.blogger import BloggerListItem
 from app.schemas.me import (
+    AnalysisJobConfirmRequest,
+    AnalysisJobConfirmResponse,
     AnalysisJobCreateRequest,
     AnalysisJobListResponse,
     AnalysisJobResponse,
@@ -37,6 +39,7 @@ from app.services.analysis_job_service import (
     AnalysisJobForbidden,
     AnalysisJobNotFound,
     AnalysisJobTargetNotFound,
+    confirm_analysis_jobs,
     create_analysis_job,
     get_analysis_job,
     list_analysis_jobs,
@@ -293,6 +296,47 @@ def get_analysis_jobs(
     return AnalysisJobListResponse(
         items=[_analysis_job_response(job) for job in jobs],
         total=total,
+    )
+
+
+@router.post(
+    "/analysis-jobs/confirm",
+    response_model=AnalysisJobConfirmResponse,
+)
+def confirm_analysis_jobs_endpoint(
+    body: AnalysisJobConfirmRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisJobConfirmResponse:
+    if not settings.user_analysis_requests_enabled:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    def dispatch(job: AnalysisJob) -> str:
+        enforce_user_limit(
+            f"user-analysis:{current_user.id}",
+            limit=settings.user_analysis_daily_limit,
+            window=24 * 60 * 60,
+        )
+        return _dispatch_analysis_job(job)
+
+    try:
+        confirmed, skipped = confirm_analysis_jobs(
+            db,
+            current_user.id,
+            body.job_ids,
+            dispatch=dispatch,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis queue unavailable",
+        )
+
+    return AnalysisJobConfirmResponse(
+        confirmed=[str(job.id) for job in confirmed],
+        skipped=[str(job_id) for job_id in skipped],
     )
 
 

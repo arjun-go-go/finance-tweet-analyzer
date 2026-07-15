@@ -199,173 +199,6 @@ class TrackingReportArgs(BaseModel):
 # 实现熔断粒度控制（同一 circuit_name 共享熔断状态）。
 # ============================================================
 
-@tool(args_schema=PreviewAnalysisArgs)
-def preview_tweet_analysis(
-    blogger_handle: str = "",
-    reanalyze: bool = False,
-    since: str = "",
-    config: RunnableConfig = None,
-) -> str:
-    """Preview pending tweet analysis and persist confirmation jobs."""
-    from datetime import datetime, timedelta, timezone
-
-    from sqlalchemy import func, select
-
-    from app.models.blogger import Blogger
-    from app.models.tweet import Tweet
-    from app.services.analysis_job_service import (
-        AnalysisJobForbidden,
-        AnalysisJobTargetNotFound,
-        create_analysis_job,
-    )
-
-    try:
-        user_id = UUID(_get_authenticated_user_id(config))
-    except (TypeError, ValueError, AttributeError):
-        return "用户身份无效，无法创建持久化分析确认。"
-
-    if not settings.user_analysis_requests_enabled:
-        return "用户分析任务功能暂未开启。"
-
-    if reanalyze or since:
-        return "持久化分析确认暂不支持 reanalyze/since，请先使用默认 pending 推文分析。"
-
-    handle = blogger_handle.strip().lstrip("@").lower() if blogger_handle else ""
-    if handle and handle not in ("all", "全部", "所有") and not _HANDLE_RE.match(handle):
-        return f"参数错误：blogger_handle '{blogger_handle}' 不是有效 Twitter Handle。"
-    if since and not _SINCE_RE.match(since):
-        return f"参数错误：since 格式不正确（收到 '{since}'）。"
-
-    _cleanup_expired_tasks()
-
-    db = SessionLocal()
-    try:
-        query = (
-            select(Tweet.author_handle, func.count(Tweet.id))
-            .where(Tweet.status == "pending")
-            .group_by(Tweet.author_handle)
-        )
-        if handle and handle not in ("all", "全部", "所有"):
-            query = query.where(Tweet.author_handle == handle)
-
-        rows = db.execute(query).all()
-        if not rows:
-            scope = f"博主 @{handle}" if handle and handle not in ("all", "全部", "所有") else "所有博主"
-            return f"{scope} 当前没有待分析的推文。"
-
-        handles_list = [h for h, _ in rows]
-        bloggers = db.execute(
-            select(Blogger).where(Blogger.handle.in_(handles_list))
-        ).scalars().all()
-        blogger_by_handle = {blogger.handle: blogger for blogger in bloggers}
-
-        confirmation_id = uuid4()
-        created_jobs = []
-        skipped = 0
-        for h in handles_list:
-            blogger = blogger_by_handle.get(h)
-            if blogger is None:
-                skipped += 1
-                continue
-            try:
-                job = create_analysis_job(
-                    db,
-                    user_id,
-                    kind="blogger_analysis",
-                    target_id=blogger.id,
-                    pipeline_version=settings.user_analysis_pipeline_version,
-                    status="awaiting_confirmation",
-                    batch_id=confirmation_id,
-                )
-                created_jobs.append(job)
-            except (AnalysisJobForbidden, AnalysisJobTargetNotFound):
-                skipped += 1
-        db.commit()
-    finally:
-        db.close()
-
-    if not created_jobs:
-        return "没有可提交的分析任务。请先关注对应博主，或等待系统抓取可分析推文。"
-
-    total = sum(count for _, count in rows)
-    lines = [f"待分析推文统计：共 {total} 条"]
-    for h, count in sorted(rows, key=lambda x: -x[1])[:10]:
-        lines.append(f"  - @{h}: {count} 条")
-    if len(rows) > 10:
-        lines.append(f"  ...及其他 {len(rows) - 10} 位博主")
-    if skipped:
-        lines.append(f"\n已跳过 {skipped} 位未关注或不存在的博主。")
-    lines.append(f"\n确认ID: {confirmation_id}")
-    lines.append("请用户确认是否执行分析，确认后调用 confirm_tweet_analysis。")
-    return "\n".join(lines)
-
-
-@tool(args_schema=ConfirmTaskArgs)
-def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
-    """Submit durable analysis jobs created by preview_tweet_analysis."""
-    from sqlalchemy import select
-
-    from app.celery_app import celery
-    from app.core.rate_limit import enforce_user_limit
-    from app.models.analysis_job import AnalysisJob
-    from app.services.analysis_job_service import mark_analysis_job_dispatched
-
-    try:
-        user_id = UUID(_get_authenticated_user_id(config))
-    except (TypeError, ValueError, AttributeError):
-        return "用户身份无效，无法提交分析任务。"
-
-    if not settings.user_analysis_requests_enabled:
-        return "用户分析任务功能暂未开启。"
-
-    task_id = task_id.strip()
-    try:
-        confirmation_id = UUID(task_id)
-    except ValueError:
-        return f"确认ID '{task_id}' 无效。请重新预览。"
-
-    db = SessionLocal()
-    try:
-        jobs = db.execute(
-            select(AnalysisJob)
-            .where(
-                AnalysisJob.requested_by_user_id == user_id,
-                AnalysisJob.batch_id == confirmation_id,
-                AnalysisJob.status == "awaiting_confirmation",
-            )
-            .order_by(AnalysisJob.created_at.asc(), AnalysisJob.id.asc())
-        ).scalars().all()
-
-        if not jobs:
-            return f"确认ID '{task_id}' 无效、已提交或已过期。请重新预览。"
-
-        dispatched = []
-        for job in jobs:
-            enforce_user_limit(
-                f"user-analysis:{user_id}",
-                limit=settings.user_analysis_daily_limit,
-                window=24 * 60 * 60,
-            )
-            celery.send_task(
-                "app.scheduler.tasks.user_analysis_job_task",
-                args=[str(job.id)],
-                task_id=str(job.id),
-                queue="analysis",
-            )
-            mark_analysis_job_dispatched(db, job, celery_task_id=str(job.id))
-            dispatched.append(str(job.id))
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-    return (
-        f"已提交分析任务（{len(dispatched)} 个持久化 job）。"
-        f"确认ID: {confirmation_id}。"
-        "后台执行中，可在个人分析任务列表查看状态。"
-    )
 
 
 @resilient_tool(
@@ -508,162 +341,6 @@ def fetch_and_save_tweets(blogger_handle: str, pages: int = 1) -> str:
         db.close()
 
 
-_pending_analysis_tasks: dict[str, dict] = {}
-_TASK_TTL_SECONDS = 600  # 10 分钟过期
-_pending_analysis_lock = threading.Lock()
-
-
-def _cleanup_expired_tasks():
-    """清理过期的 pending analysis tasks，防止内存泄漏。"""
-    from datetime import datetime, timezone
-
-    with _pending_analysis_lock:
-        now = datetime.now(timezone.utc)
-        expired = [
-            tid for tid, info in _pending_analysis_tasks.items()
-            if (now - info.get("_created_at", now)).total_seconds() > _TASK_TTL_SECONDS
-        ]
-        for tid in expired:
-            _pending_analysis_tasks.pop(tid, None)
-        if expired:
-            logger.info("[ChatAgent] Cleaned {} expired pending analysis tasks", len(expired))
-
-
-@tool(args_schema=PreviewAnalysisArgs)
-def preview_tweet_analysis(
-    blogger_handle: str = "",
-    reanalyze: bool = False,
-    since: str = "",
-) -> str:
-    """预览待分析推文的统计信息（不会立即执行分析）。这是分析任务的第一步。
-
-    【触发场景】：用户要求"分析推文""重新分析""分析@xxx 的推文""分析最近的推文"等深度分析需求时使用。
-    【参数规范】：
-    - blogger_handle: 指定博主英文 Handle（不含 @）。空字符串或 'all'/'全部' 表示所有博主。禁止传中文！
-    - reanalyze: True=重新分析已分析过的推文（会清除旧结果重跑），False=仅分析待处理的新推文。
-    - since: 时间范围，必须严格匹配格式 '3d'(3天)/'1w'(1周)/'12h'(12小时)。禁止传"三天内""最近一周"等自然语言！
-
-    【⚠️ 极其重要的工作流约束】：
-    1. 调用此工具后，必须将统计结果（推文数量、博主列表）展示给用户。
-    2. 必须明确询问用户："是否确认提交后台分析？"
-    3. 立即停止回复，等待用户确认。
-    4. 绝对禁止在同一轮对话中自动连续调用 confirm_tweet_analysis！必须等用户明确说"确认/好的/执行"等后才能调用 confirm。
-    """
-    import uuid as _uuid
-    from datetime import datetime, timedelta, timezone
-
-    from sqlalchemy import func, select
-
-    from app.models.tweet import Tweet
-
-    handle = blogger_handle.strip().lstrip("@").lower() if blogger_handle else ""
-    if handle and handle not in ("all", "全部", "所有") and not _HANDLE_RE.match(handle):
-        return f"参数错误：blogger_handle '{blogger_handle}' 不是有效的 Twitter Handle。请提供纯英文/数字用户名（不含@，1-15位）或留空表示全部博主。"
-
-    if since and not _SINCE_RE.match(since):
-        return f"参数错误：since 格式不正确（收到 '{since}'）。必须严格使用如 '3d'(3天)、'1w'(1周)、'12h'(12小时) 的格式。"
-
-    # 先清理过期任务，防止内存泄漏
-    _cleanup_expired_tasks()
-
-    logger.info("[Tool] preview_tweet_analysis: handle=%s reanalyze=%s since=%s", handle or "all", reanalyze, since)
-
-    statuses = ["pending", "analyzed"] if reanalyze else ["pending"]
-
-    since_dt = None
-    if since:
-        amount = int(since[:-1])
-        unit = since[-1]
-        delta = {"d": timedelta(days=amount), "w": timedelta(weeks=amount), "h": timedelta(hours=amount)}.get(unit)
-        if delta:
-            since_dt = datetime.now(timezone.utc) - delta
-
-    db = SessionLocal()
-    try:
-        query = select(Tweet.author_handle, func.count(Tweet.id)).where(
-            Tweet.status.in_(statuses)
-        ).group_by(Tweet.author_handle)
-
-        if handle and handle not in ("all", "全部", "所有"):
-            query = query.where(Tweet.author_handle == handle)
-        if since_dt:
-            query = query.where(Tweet.published_at >= since_dt)
-
-        rows = db.execute(query).all()
-    finally:
-        db.close()
-
-    if not rows:
-        scope = f"博主 @{handle}" if handle and handle not in ("all", "全部", "所有") else "所有博主"
-        return f"{scope} 当前没有{'可重新分析' if reanalyze else '待分析'}的推文。"
-
-    total = sum(count for _, count in rows)
-    handles_list = [h for h, _ in rows]
-
-    task_id = str(_uuid.uuid4())[:8]
-    with _pending_analysis_lock:
-        _pending_analysis_tasks[task_id] = {
-            "blogger_handles": handles_list,
-            "reanalyze": reanalyze,
-            "since": since or None,
-            "_created_at": datetime.now(timezone.utc),
-        }
-
-    lines = []
-    action = "重新分析" if reanalyze else "分析"
-    time_desc = f"（{since}内）" if since else ""
-    lines.append(f"待{action}推文统计{time_desc}：共 {total} 条")
-    for h, count in sorted(rows, key=lambda x: -x[1])[:10]:
-        lines.append(f"  • @{h}: {count} 条")
-    if len(rows) > 10:
-        lines.append(f"  ...及其他 {len(rows) - 10} 位博主")
-    lines.append(f"\n任务ID: {task_id}")
-    lines.append("请用户确认是否执行分析，确认后调用 confirm_tweet_analysis。")
-    return "\n".join(lines)
-
-
-@tool(args_schema=ConfirmTaskArgs)
-def confirm_tweet_analysis(task_id: str) -> str:
-    """用户确认后，正式提交推文分析任务到后台 Celery 执行。这是分析任务的第二步（最终步骤）。
-
-    【触发场景】：仅在用户明确回复"确认""好的""执行""提交"等肯定意图后调用。绝对不要在用户未确认前主动调用！
-    【参数规范】：task_id 必须是上一步 preview_tweet_analysis 返回的任务ID（8位字符串）。不要编造或猜测 task_id。
-    【前置条件】：必须已调用过 preview_tweet_analysis 并获取到 task_id。
-    【与其他工具边界】：仅用于"用户确认后提交分析"，不要用于查询、预览或抓取数据。
-    """
-    import app.celery_app  # noqa: F401 — ensure celery app is loaded before tasks
-    from app.scheduler.tasks import manual_analysis_task
-
-    from datetime import datetime, timezone
-
-    task_id = task_id.strip()
-    with _pending_analysis_lock:
-        task_info = _pending_analysis_tasks.pop(task_id, None)
-
-    if not task_info:
-        return f"任务ID '{task_id}' 无效或已过期。请重新调用 preview_tweet_analysis 获取新的预览。"
-
-    # 检查任务是否过期
-    created_at = task_info.get("_created_at")
-    if created_at and (datetime.now(timezone.utc) - created_at).total_seconds() > _TASK_TTL_SECONDS:
-        return f"任务ID '{task_id}' 已过期（超过 {_TASK_TTL_SECONDS // 60} 分钟未确认）。请重新调用 preview_tweet_analysis 获取新的预览。"
-
-    blogger_handles = task_info["blogger_handles"]
-    reanalyze = task_info["reanalyze"]
-    since = task_info["since"]
-
-    celery_task = manual_analysis_task.delay(
-        blogger_handles=blogger_handles,
-        reanalyze=reanalyze,
-        since=since,
-    )
-
-    action = "重新分析" if reanalyze else "分析"
-    return (
-        f"已提交{action}任务（{len(blogger_handles)} 位博主），"
-        f"Celery 任务ID: {celery_task.id}。"
-        f"后台执行中，预计需要 1-5 分钟。分析完成后可查询结果。"
-    )
 
 
 @resilient_tool(
@@ -964,12 +641,12 @@ def preview_tweet_analysis(
 
 @tool(args_schema=ConfirmTaskArgs)
 def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
-    from sqlalchemy import select
-
     from app.celery_app import celery
     from app.core.rate_limit import enforce_user_limit
-    from app.models.analysis_job import AnalysisJob
-    from app.services.analysis_job_service import mark_analysis_job_dispatched
+    from app.services.analysis_job_service import (
+        confirm_analysis_jobs,
+        list_confirmable_analysis_jobs_by_batch,
+    )
 
     try:
         user_id = UUID(_get_authenticated_user_id(config))
@@ -986,20 +663,11 @@ def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
 
     db = SessionLocal()
     try:
-        jobs = db.execute(
-            select(AnalysisJob)
-            .where(
-                AnalysisJob.requested_by_user_id == user_id,
-                AnalysisJob.batch_id == confirmation_id,
-                AnalysisJob.status == "awaiting_confirmation",
-            )
-            .order_by(AnalysisJob.created_at.asc(), AnalysisJob.id.asc())
-        ).scalars().all()
+        jobs = list_confirmable_analysis_jobs_by_batch(db, user_id, confirmation_id)
         if not jobs:
             return f"确认ID '{task_id}' 无效、已提交或已过期。请重新预览。"
 
-        dispatched = []
-        for job in jobs:
+        def dispatch(job) -> str:
             enforce_user_limit(
                 f"user-analysis:{user_id}",
                 limit=settings.user_analysis_daily_limit,
@@ -1011,8 +679,14 @@ def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
                 task_id=str(job.id),
                 queue="analysis",
             )
-            mark_analysis_job_dispatched(db, job, celery_task_id=str(job.id))
-            dispatched.append(str(job.id))
+            return str(job.id)
+
+        confirmed, _ = confirm_analysis_jobs(
+            db,
+            user_id,
+            [job.id for job in jobs],
+            dispatch=dispatch,
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -1021,7 +695,7 @@ def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
         db.close()
 
     return (
-        f"已提交分析任务（{len(dispatched)} 个持久化 job）。"
+        f"已提交分析任务（{len(confirmed)} 个持久化 job）。"
         f"确认ID: {confirmation_id}。"
         "后台执行中，可在个人分析任务列表查看状态。"
     )

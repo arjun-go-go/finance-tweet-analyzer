@@ -121,6 +121,63 @@ def mark_analysis_job_dispatched(
     return job
 
 
+def list_confirmable_analysis_jobs(
+    db: Session,
+    user_id: UUID,
+    job_ids: list[UUID],
+) -> list[AnalysisJob]:
+    if not job_ids:
+        return []
+    return list(
+        db.execute(
+            select(AnalysisJob)
+            .where(
+                AnalysisJob.requested_by_user_id == user_id,
+                AnalysisJob.id.in_(job_ids),
+                AnalysisJob.status == "awaiting_confirmation",
+            )
+            .order_by(AnalysisJob.created_at.asc(), AnalysisJob.id.asc())
+        ).scalars().all()
+    )
+
+
+def list_confirmable_analysis_jobs_by_batch(
+    db: Session,
+    user_id: UUID,
+    batch_id: UUID,
+) -> list[AnalysisJob]:
+    return list(
+        db.execute(
+            select(AnalysisJob)
+            .where(
+                AnalysisJob.requested_by_user_id == user_id,
+                AnalysisJob.batch_id == batch_id,
+                AnalysisJob.status == "awaiting_confirmation",
+            )
+            .order_by(AnalysisJob.created_at.asc(), AnalysisJob.id.asc())
+        ).scalars().all()
+    )
+
+
+def confirm_analysis_jobs(
+    db: Session,
+    user_id: UUID,
+    job_ids: list[UUID],
+    *,
+    dispatch: Callable[[AnalysisJob], str],
+) -> tuple[list[AnalysisJob], list[UUID]]:
+    jobs = list_confirmable_analysis_jobs(db, user_id, job_ids)
+    found_ids = {job.id for job in jobs}
+    skipped = [job_id for job_id in job_ids if job_id not in found_ids]
+    confirmed: list[AnalysisJob] = []
+    for job in jobs:
+        task_id = dispatch(job)
+        mark_analysis_job_dispatched(db, job, celery_task_id=task_id)
+        confirmed.append(job)
+    db.flush()
+    return confirmed, skipped
+
+
 def mark_analysis_job_started(db: Session, job: AnalysisJob) -> AnalysisJob:
     job.status = "running"
     job.started_at = datetime.now(timezone.utc)

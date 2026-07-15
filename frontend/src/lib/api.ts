@@ -243,6 +243,11 @@ export interface AnalysisJobListResponse {
   total: number;
 }
 
+export interface AnalysisJobConfirmResponse {
+  confirmed: string[];
+  skipped: string[];
+}
+
 export async function listMyBloggers(): Promise<FollowedBloggerListResponse> {
   const res = await authFetch(`${API_BASE}/api/me/bloggers`, {
     cache: "no-store",
@@ -281,6 +286,21 @@ export async function createAnalysisJob(body: {
     throw new Error(data?.detail || "Failed to create analysis job");
   }
   return res.json() as Promise<AnalysisJobItem>;
+}
+
+export async function confirmAnalysisJobs(
+  jobIds: string[],
+): Promise<AnalysisJobConfirmResponse> {
+  const res = await authFetch(`${API_BASE}/api/me/analysis-jobs/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_ids: jobIds }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || "Failed to confirm analysis jobs");
+  }
+  return res.json() as Promise<AnalysisJobConfirmResponse>;
 }
 
 export interface Conversation {
