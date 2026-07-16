@@ -32,6 +32,15 @@ celery.conf.update(
     # Worker 并发控制
     worker_concurrency=2,           # LLM I/O 密集，无需大并发
     worker_prefetch_multiplier=1,   # 一次只取一个任务，避免饿死
+    # Redis broker 连接韧性（防止 Windows 空闲超时断连）
+    broker_connection_retry_on_startup=True,  # 启动时 broker 不可用自动重试
+    broker_connection_max_retries=None,       # 无限重试，不放弃
+    broker_pool_limit=10,                     # 连接池，避免频繁建连
+    broker_heartbeat=30,                      # 30s 心跳保活
+    broker_heartbeat_checkrate=2,             # 每 15s 检查一次心跳
+    redis_socket_connect_timeout=10,          # 连接超时 10s
+    redis_socket_timeout=30,                  # 读写超时 30s
+    redis_backend_health_check_interval=30,   # 后端健康检查间隔
     # 任务路由
     task_routes={
         "app.scheduler.tasks.auto_analysis_task": {"queue": "analysis"},
