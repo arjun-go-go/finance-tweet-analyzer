@@ -546,6 +546,51 @@ def list_my_tracked_tickers(config: RunnableConfig = None) -> str:
         db.close()
 
 
+@tool
+def list_my_followed_bloggers(config: RunnableConfig = None) -> str:
+    """查看当前用户正式关注的博主列表。
+
+    【触发场景】：用户问"我关注了哪些博主""我的关注列表""我跟踪了哪些KOL/博主"。
+    【数据来源】：查询 user_blogger_follows 正式关注关系，不使用记忆偏好 watched_bloggers。
+    """
+    from uuid import UUID
+
+    from app.services import user_resource_service
+
+    user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
+    try:
+        user_id = UUID(user_id_value)
+    except (TypeError, ValueError, AttributeError):
+        return "用户身份无效，无法查询正式关注列表。"
+
+    db = SessionLocal()
+    try:
+        bloggers, total = user_resource_service.list_followed_bloggers(
+            db,
+            user_id,
+            limit=20,
+            offset=0,
+        )
+        if not bloggers:
+            return "你的正式关注列表为空。可以先在个人工作台关注博主。"
+
+        lines = []
+        for blogger in bloggers:
+            verified = int(blogger.total_predictions or 0)
+            correct = float(blogger.correct_predictions or 0.0)
+            accuracy = (correct / verified * 100) if verified else 0.0
+            name = f"（{blogger.name}）" if blogger.name else ""
+            lines.append(
+                f"- @{blogger.handle}{name} | 可信度 {float(blogger.credibility_score):.1f}"
+                f" | 已验证 {verified} | 准确率 {accuracy:.1f}%"
+            )
+
+        suffix = "" if total <= len(bloggers) else f"\n仅显示前 {len(bloggers)} 个，共 {total} 个。"
+        return "你的正式关注列表：\n" + "\n".join(lines) + suffix
+    finally:
+        db.close()
+
+
 # Durable overrides for personal SaaS analysis confirmation.
 @tool(args_schema=PreviewAnalysisArgs)
 def preview_tweet_analysis(
@@ -706,6 +751,7 @@ tools = [
     preview_tweet_analysis, confirm_tweet_analysis,
     query_database, search_public_signals,
     generate_tracking_report, search_my_documents, list_my_tracked_tickers,
+    list_my_followed_bloggers,
 ]
 _tool_node = ToolNode(tools, handle_tool_errors=True)
 

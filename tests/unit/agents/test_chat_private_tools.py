@@ -2,7 +2,7 @@ import uuid
 from types import SimpleNamespace
 
 from app.agents import chat_agent
-from app.services import report_service, tracking_service
+from app.services import report_service, tracking_service, user_resource_service
 
 
 class _Db:
@@ -61,6 +61,39 @@ def test_list_tracked_tickers_passes_authenticated_user(monkeypatch):
     assert captured["user_id"] == user_id
 
 
+def test_list_followed_bloggers_passes_authenticated_user(monkeypatch):
+    user_id = uuid.uuid4()
+    captured = {}
+    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+
+    def list_items(db, passed_user_id, *, limit, offset):
+        captured.update(user_id=passed_user_id, limit=limit, offset=offset)
+        return (
+            [
+                SimpleNamespace(
+                    handle="tesla_analyst",
+                    name="Tesla Analyst",
+                    credibility_score=8.2,
+                    total_predictions=12,
+                    correct_predictions=9,
+                )
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(user_resource_service, "list_followed_bloggers", list_items)
+
+    result = chat_agent.list_my_followed_bloggers.invoke(
+        {},
+        config={"metadata": {"user_id": str(user_id)}},
+    )
+
+    assert captured == {"user_id": user_id, "limit": 20, "offset": 0}
+    assert "@tesla_analyst" in result
+    assert "Tesla Analyst" in result
+    assert "正式关注列表" in result
+
+
 def test_private_tools_fail_closed_without_user_identity(monkeypatch):
     monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
 
@@ -70,6 +103,10 @@ def test_private_tools_fail_closed_without_user_identity(monkeypatch):
     tracking_result = chat_agent.list_my_tracked_tickers.invoke(
         {}, config={"metadata": {}}
     )
+    followed_bloggers_result = chat_agent.list_my_followed_bloggers.invoke(
+        {}, config={"metadata": {}}
+    )
 
     assert "用户身份无效" in report_result
     assert "用户身份无效" in tracking_result
+    assert "用户身份无效" in followed_bloggers_result
