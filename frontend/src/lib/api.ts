@@ -23,7 +23,7 @@ export async function fetchTweets(params?: {
   if (params?.include_analysis) sp.set("include_analysis", "true");
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.offset) sp.set("offset", String(params.offset));
-  const res = await fetch(`${API_BASE}/api/tweets?${sp.toString()}`, {
+  const res = await authFetch(`${API_BASE}/api/tweets?${sp.toString()}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch tweets");
@@ -43,7 +43,7 @@ export async function fetchAnalyses(params?: {
   if (params?.offset) searchParams.set("offset", String(params.offset));
 
   const url = `${API_BASE}/api/analyses?${searchParams.toString()}`;
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await authFetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch analyses");
   return res.json();
 }
@@ -106,7 +106,7 @@ export async function verifyPrediction(
   id: string,
   body: { verdict: "correct" | "partial" | "incorrect"; note?: string },
 ) {
-  const res = await fetch(`${API_BASE}/api/predictions/${id}/verify`, {
+  const res = await authFetch(`${API_BASE}/api/predictions/${id}/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -132,7 +132,7 @@ export async function upsertBlogger(profile: {
   followers_count?: number;
   market_focus?: string[] | null;
 }) {
-  const res = await fetch(`${API_BASE}/api/bloggers/upsert`, {
+  const res = await authFetch(`${API_BASE}/api/bloggers/upsert`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(profile),
@@ -142,7 +142,7 @@ export async function upsertBlogger(profile: {
 }
 
 export async function triggerAnalysis() {
-  const res = await fetch(`${API_BASE}/api/analysis/trigger`, {
+  const res = await authFetch(`${API_BASE}/api/analysis/trigger`, {
     method: "POST",
   });
   if (!res.ok) throw new Error("Failed to trigger analysis");
@@ -150,7 +150,7 @@ export async function triggerAnalysis() {
 }
 
 export async function analyzeSingleTweet(tweetId: string) {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/api/analysis/tweet/${encodeURIComponent(tweetId)}`,
     { method: "POST" },
   );
@@ -159,7 +159,7 @@ export async function analyzeSingleTweet(tweetId: string) {
 }
 
 export async function analyzeBlogger(handle: string) {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/api/analysis/blogger/${encodeURIComponent(handle)}`,
     { method: "POST" },
   );
@@ -168,7 +168,7 @@ export async function analyzeBlogger(handle: string) {
 }
 
 export async function analyzeBloggers(handles: string[]) {
-  const res = await fetch(`${API_BASE}/api/analysis/bloggers`, {
+  const res = await authFetch(`${API_BASE}/api/analysis/bloggers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ blogger_handles: handles }),
@@ -178,7 +178,7 @@ export async function analyzeBloggers(handles: string[]) {
 }
 
 export async function toggleBloggerFetch(handle: string, fetch_enabled: boolean) {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/api/bloggers/${encodeURIComponent(handle)}/fetch-toggle`,
     {
       method: "PATCH",
