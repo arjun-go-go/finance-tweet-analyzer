@@ -1,7 +1,9 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+import { authFetch, getAccessToken } from "./auth";
+
 export async function fetchDashboard() {
-  const res = await fetch(`${API_BASE}/api/dashboard/overview`, {
+  const res = await authFetch(`${API_BASE}/api/dashboard/overview`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch dashboard");
@@ -50,7 +52,7 @@ export async function fetchTickerSummaries(params?: { limit?: number; offset?: n
   const sp = new URLSearchParams();
   sp.set("limit", String(params?.limit ?? 100));
   if (params?.offset) sp.set("offset", String(params.offset));
-  const res = await fetch(`${API_BASE}/api/ticker-summaries?${sp.toString()}`, {
+  const res = await authFetch(`${API_BASE}/api/ticker-summaries?${sp.toString()}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch ticker summaries");
@@ -191,8 +193,6 @@ export async function toggleBloggerFetch(handle: string, fetch_enabled: boolean)
 // ============================================================
 // Chat Conversations API
 // ============================================================
-
-import { authFetch, getAccessToken } from "./auth";
 
 export interface FollowedBloggerListResponse {
   items: Array<{
