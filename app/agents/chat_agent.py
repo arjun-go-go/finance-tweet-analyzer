@@ -16,9 +16,11 @@
     START → init → mem0_recall → agent → (tool_calls?) → tools → agent → ... → extract_preferences → mem0_store → END
 """
 import json
+import importlib.util
 import re
 import threading
 import time
+from functools import lru_cache
 from uuid import UUID, uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
@@ -65,6 +67,12 @@ _SINCE_RE = re.compile(r"^\d+[dwh]$")
 def _get_authenticated_user_id(config: RunnableConfig | None) -> str:
     user_id = ((config or {}).get("metadata") or {}).get("user_id")
     return normalize_user_id(user_id)
+
+
+@lru_cache(maxsize=1)
+def _is_mem0_spacy_model_available() -> bool:
+    """Return whether mem0 can run BM25 lemmatization without runtime downloads."""
+    return importlib.util.find_spec("en_core_web_sm") is not None
 
 
 # ============================================================
@@ -946,13 +954,17 @@ def mem0_recall_node(state: AgentState, config: RunnableConfig) -> dict:
     if not query:
         return {"memories": []}
 
+    if not _is_mem0_spacy_model_available():
+        logger.warning("[mem0] recall skipped: spaCy model en_core_web_sm is not installed")
+        return {"memories": []}
+
     user_id = _get_authenticated_user_id(config)
     try:
         results = client.search(query, filters={"user_id": user_id}, top_k=settings.mem0_top_k)
         memories = [r["memory"] for r in (results.get("results") or [])]
         logger.debug("[mem0] recalled {} memories for user={}", len(memories), user_id)
         return {"memories": memories}
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         logger.warning("[mem0] recall failed: {}", e)
         return {"memories": []}
 
@@ -994,7 +1006,7 @@ def mem0_store_node(state: AgentState, config: RunnableConfig) -> dict:
         try:
             client.add(mem0_messages, user_id=user_id)
             logger.debug("[mem0] stored turn for user={}", user_id)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             logger.warning("[mem0] store failed: {}", e)
 
     threading.Thread(target=_store, daemon=True).start()

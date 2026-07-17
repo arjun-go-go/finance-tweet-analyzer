@@ -20,7 +20,8 @@ def test_recall_node_injects_memories():
         "results": [{"memory": "用户看好BTC短线"}, {"memory": "投资风格：短线"}]
     }
     with patch("app.agents.chat_agent.get_mem0_client", return_value=mock_client), \
-         patch("app.agents.chat_agent.settings") as mock_settings:
+         patch("app.agents.chat_agent.settings") as mock_settings, \
+         patch("app.agents.chat_agent._is_mem0_spacy_model_available", return_value=True):
         mock_settings.mem0_top_k = 5
         mock_settings.mem0_enabled = True
         from app.agents.chat_agent import mem0_recall_node
@@ -44,12 +45,39 @@ def test_recall_node_exception_returns_empty():
     mock_client = MagicMock()
     mock_client.search.side_effect = RuntimeError("timeout")
     with patch("app.agents.chat_agent.get_mem0_client", return_value=mock_client), \
-         patch("app.agents.chat_agent.settings") as mock_settings:
+         patch("app.agents.chat_agent.settings") as mock_settings, \
+         patch("app.agents.chat_agent._is_mem0_spacy_model_available", return_value=True):
         mock_settings.mem0_top_k = 5
         from app.agents.chat_agent import mem0_recall_node
         state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": []}
+
+
+def test_recall_node_system_exit_returns_empty():
+    """mem0_recall_node degrades when a dependency calls sys.exit."""
+    mock_client = MagicMock()
+    mock_client.search.side_effect = SystemExit(1)
+    with patch("app.agents.chat_agent.get_mem0_client", return_value=mock_client), \
+         patch("app.agents.chat_agent.settings") as mock_settings, \
+         patch("app.agents.chat_agent._is_mem0_spacy_model_available", return_value=True):
+        mock_settings.mem0_top_k = 5
+        from app.agents.chat_agent import mem0_recall_node
+        state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        result = mem0_recall_node(state, _make_config())
+    assert result == {"memories": []}
+
+
+def test_recall_node_skips_search_when_spacy_model_missing():
+    """mem0_recall_node does not trigger mem0's runtime spaCy download."""
+    mock_client = MagicMock()
+    with patch("app.agents.chat_agent.get_mem0_client", return_value=mock_client), \
+         patch("app.agents.chat_agent._is_mem0_spacy_model_available", return_value=False):
+        from app.agents.chat_agent import mem0_recall_node
+        state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        result = mem0_recall_node(state, _make_config())
+    assert result == {"memories": []}
+    mock_client.search.assert_not_called()
 
 
 def test_recall_node_no_human_message_returns_empty():
