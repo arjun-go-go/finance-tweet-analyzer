@@ -64,7 +64,7 @@ export async function fetchBloggers(params?: {
 }) {
   const sp = new URLSearchParams();
   if (params?.sort) sp.set("sort", params.sort);
-  const res = await fetch(`${API_BASE}/api/bloggers?${sp.toString()}`, {
+  const res = await authFetch(`${API_BASE}/api/bloggers?${sp.toString()}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch bloggers");
@@ -72,7 +72,7 @@ export async function fetchBloggers(params?: {
 }
 
 export async function fetchBloggerDetail(handle: string) {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/api/bloggers/${encodeURIComponent(handle)}`,
     { cache: "no-store" },
   );
@@ -94,7 +94,7 @@ export async function fetchBloggerPredictions(
   if (params?.ticker) sp.set("ticker", params.ticker);
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.offset) sp.set("offset", String(params.offset));
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/api/bloggers/${encodeURIComponent(handle)}/predictions?${sp.toString()}`,
     { cache: "no-store" },
   );
