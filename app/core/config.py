@@ -179,6 +179,9 @@ class Settings(BaseSettings):
     mem0_chroma_path: str = "./chroma_mem0_db"
     mem0_history_db_path: str = "./mem0_history.db"
     mem0_top_k: int = 5
+    mem0_vector_backend: str = "chroma"
+    mem0_milvus_collection: str = "finance_tweet_mem0_memories"
+    mem0_milvus_metric_type: str = "COSINE"
 
     # ----- Debug -----
     debug_mode: bool = False

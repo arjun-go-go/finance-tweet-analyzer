@@ -52,16 +52,34 @@ def _build_config() -> dict:
         "embedding_dims": settings.embedding_dim,
     }
 
-    return {
-        "llm": {"provider": "openai", "config": llm_cfg},
-        "embedder": {"provider": "openai", "config": embedder_cfg},
-        "vector_store": {
+    backend = settings.mem0_vector_backend.lower()
+    if backend == "milvus":
+        vector_store_cfg = {
+            "provider": "milvus",
+            "config": {
+                "url": settings.milvus_uri,
+                "token": settings.milvus_token,
+                "collection_name": settings.mem0_milvus_collection,
+                "embedding_model_dims": settings.embedding_dim,
+                "metric_type": settings.mem0_milvus_metric_type,
+                "db_name": settings.milvus_db_name,
+            },
+        }
+    elif backend == "chroma":
+        vector_store_cfg = {
             "provider": "chroma",
             "config": {
                 "collection_name": "mem0_memories",
                 "path": settings.mem0_chroma_path,
             },
-        },
+        }
+    else:
+        raise ValueError(f"Unknown mem0 vector backend: {settings.mem0_vector_backend}")
+
+    return {
+        "llm": {"provider": "openai", "config": llm_cfg},
+        "embedder": {"provider": "openai", "config": embedder_cfg},
+        "vector_store": vector_store_cfg,
         "history_db_path": settings.mem0_history_db_path,
         "version": "v1.1",
     }
@@ -91,8 +109,8 @@ def get_mem0_client():
             cfg = _build_config()
             _mem0_client_singleton = Memory.from_config(cfg)
             logger.info(
-                "[mem0] Memory initialized (chroma={}, llm={}, embedder={})",
-                settings.mem0_chroma_path,
+                "[mem0] Memory initialized (vector_backend={}, llm={}, embedder={})",
+                settings.mem0_vector_backend,
                 settings.signal_model,
                 settings.embedding_model,
             )
