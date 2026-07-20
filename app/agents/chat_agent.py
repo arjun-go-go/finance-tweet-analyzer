@@ -15,7 +15,6 @@
 图拓扑：
     START → init → mem0_recall → agent → (tool_calls?) → tools → agent → ... → extract_preferences → mem0_store → END
 """
-import json
 import importlib.util
 import re
 import threading
@@ -32,6 +31,22 @@ from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.llm import get_report_llm, get_signal_llm
+from app.agents.chat.routing import (
+    ANALYSIS_TOOL_NAMES as _ANALYSIS_TOOL_NAMES,
+    INGEST_TOOL_NAMES as _INGEST_TOOL_NAMES,
+    READ_ONLY_TOOL_NAMES as _READ_ONLY_TOOL_NAMES,
+    REPORT_TOOL_NAMES as _REPORT_TOOL_NAMES,
+    classify_tool_route as _base_classify_tool_route,
+    has_explicit_ingest_confirmation as _base_has_explicit_ingest_confirmation,
+    has_explicit_report_confirmation as _base_has_explicit_report_confirmation,
+    latest_human_text as _base_latest_human_text,
+)
+from app.agents.chat.tool_results import (
+    parse_tool_envelope as _base_parse_tool_envelope,
+    tool_error as _base_tool_error,
+    tool_ok as _base_tool_ok,
+    truncate_result as _truncate_tool_result,
+)
 from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
@@ -101,42 +116,6 @@ def _truncate_result(text: str, max_chars: int | None = None) -> str:
     return text[:limit] + f"\n...(结果已截断，原始长度 {len(text)} 字符)"
 
 
-def _tool_ok(message: str, data: dict | None = None) -> str:
-    """Return a structured successful tool result."""
-    return json.dumps(
-        {
-            "ok": True,
-            "message": _truncate_result(message),
-            "data": data or {},
-        },
-        ensure_ascii=False,
-    )
-
-
-def _tool_error(error_code: str, message: str, *, retryable: bool = False) -> str:
-    """Return a structured failed tool result."""
-    return json.dumps(
-        {
-            "ok": False,
-            "error_code": error_code,
-            "message": _truncate_result(message),
-            "retryable": retryable,
-        },
-        ensure_ascii=False,
-    )
-
-
-def _parse_tool_envelope(content: str) -> dict | None:
-    """Parse a structured tool result envelope, returning None for legacy text."""
-    try:
-        parsed = json.loads(content)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(parsed, dict) or "ok" not in parsed:
-        return None
-    return parsed
-
-
 def _current_user_message(config: RunnableConfig | None) -> str:
     return str(((config or {}).get("metadata") or {}).get("current_message") or "")
 
@@ -176,6 +155,13 @@ def _has_explicit_ingest_confirmation(
 # 从源头减少参数格式错误。field_validator 在工具调用前执行，
 # 验证失败会返回清晰的错误消息给 LLM，触发自纠正。
 # ============================================================
+
+_tool_ok = _base_tool_ok
+_tool_error = _base_tool_error
+_parse_tool_envelope = _base_parse_tool_envelope
+_has_explicit_report_confirmation = _base_has_explicit_report_confirmation
+_has_explicit_ingest_confirmation = _base_has_explicit_ingest_confirmation
+
 
 class FetchProfileArgs(BaseModel):
     """获取博主资料的参数约束。"""
@@ -899,6 +885,10 @@ def _classify_tool_route(text: str) -> tuple[str, list[str]]:
     if any(k in normalized for k in ("抓取", "采集", "获取最新", "拉取", "同步推文", "fetch", "crawl", "最新推文")):
         return "ingest", _INGEST_TOOL_NAMES
     return "read_only", _READ_ONLY_TOOL_NAMES
+
+
+_latest_human_text = _base_latest_human_text
+_classify_tool_route = _base_classify_tool_route
 
 
 def route_tools_node(state: AgentState, config: RunnableConfig) -> dict:
