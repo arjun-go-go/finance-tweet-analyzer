@@ -41,6 +41,7 @@ from app.agents.chat.routing import (
     latest_human_text as _base_latest_human_text,
 )
 from app.agents.chat.observability import (
+    record_tool_call_route_link as _record_tool_call_route_link,
     record_tool_route_decision as _record_tool_route_decision,
 )
 from app.agents.chat.tool_results import (
@@ -724,10 +725,14 @@ def route_tools_node(state: AgentState, config: RunnableConfig) -> dict:
     logger.info("[ChatRouter] route={} tools={}", route, allowed)
     return {"tool_route": route, "allowed_tool_names": allowed}
 
-def tools_node(state: AgentState):
+def tools_node(state: AgentState, config: RunnableConfig | None = None):
     """包装 ToolNode，追踪结构化工具调用结果中的失败状态。"""
     result = _tool_node.invoke(state)
     consecutive = state.get("consecutive_tool_failures", 0)
+    metadata = (config or {}).get("metadata") or {}
+    configurable = (config or {}).get("configurable") or {}
+    route = state.get("tool_route")
+    allowed_tool_names = state.get("allowed_tool_names") or []
 
     messages = result.get("messages", [])
     standardized_messages = []
@@ -754,6 +759,16 @@ def tools_node(state: AgentState):
         if envelope is not None and envelope.get("ok") is False:
             has_error = True
             logger.warning("[ToolNode] Tool failure detected: {}", content[:100])
+        tool_status = "error" if envelope is not None and envelope.get("ok") is False else "success"
+        _record_tool_call_route_link(
+            route=route,
+            allowed_tool_names=allowed_tool_names,
+            tool_name=getattr(msg, "name", None),
+            tool_status=tool_status,
+            user_id=metadata.get("user_id"),
+            thread_id=configurable.get("thread_id"),
+            error_detail=content if tool_status == "error" else None,
+        )
         standardized_messages.append(msg)
 
     result["messages"] = standardized_messages
