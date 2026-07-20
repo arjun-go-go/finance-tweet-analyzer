@@ -40,7 +40,7 @@ log_file() {
 process_pattern() {
   case "$1" in
     backend) echo "uvicorn app.main:app.*--port ${BACKEND_PORT}" ;;
-    frontend) echo "next.*start.*--port ${FRONTEND_PORT}" ;;
+    frontend) echo "next-server|next.*start.*--port ${FRONTEND_PORT}" ;;
     worker) echo "celery.*app.celery_app worker" ;;
     beat) echo "celery.*app.celery_app beat" ;;
     *) return 1 ;;
