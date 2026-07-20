@@ -280,7 +280,7 @@ def chat_endpoint(
     thread_id = str(conversation_id)
     config = {
         "configurable": {"thread_id": thread_id},
-        "metadata": {"user_id": user_id, "thread_id": thread_id},
+        "metadata": {"user_id": user_id, "thread_id": thread_id, "current_message": req.message},
         "run_name": f"chat:{user_id}",
         "recursion_limit": settings.agent_recursion_limit,
     }

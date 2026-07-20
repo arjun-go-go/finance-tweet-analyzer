@@ -137,6 +137,22 @@ def _parse_tool_envelope(content: str) -> dict | None:
     return parsed
 
 
+def _current_user_message(config: RunnableConfig | None) -> str:
+    return str(((config or {}).get("metadata") or {}).get("current_message") or "")
+
+
+def _has_explicit_report_confirmation(message: str, ticker: str) -> bool:
+    text = message.lower()
+    ticker_text = ticker.lower()
+    action_words = ("确认", "立即", "开始", "执行", "生成", "创建", "确认生成", "go ahead", "confirm")
+    report_words = ("报告", "周报", "跟踪报告", "report")
+    return (
+        ticker_text in text
+        and any(word in text for word in action_words)
+        and any(word in text for word in report_words)
+    )
+
+
 # ============================================================
 # 工具参数 Schema（Pydantic）—— 约束 LLM 生成的参数
 # ------------------------------------------------------------
@@ -453,6 +469,13 @@ def generate_tracking_report(
         user_id = UUID(user_id_value)
     except (TypeError, ValueError, AttributeError):
         return "用户身份无效，无法生成私有报告。"
+
+    if not _has_explicit_report_confirmation(_current_user_message(config), ticker):
+        return _tool_error(
+            "CONFIRMATION_REQUIRED",
+            f"生成 {ticker} 报告会消耗较多模型和检索资源。请明确回复：确认生成 {ticker} 报告。",
+            retryable=False,
+        )
 
     db = SessionLocal()
     try:

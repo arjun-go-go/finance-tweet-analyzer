@@ -1,3 +1,4 @@
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -32,7 +33,7 @@ def test_generate_tracking_report_passes_authenticated_user(monkeypatch):
 
     chat_agent.generate_tracking_report.invoke(
         {"ticker": "TSLA", "time_range": "1w"},
-        config={"metadata": {"user_id": str(user_id)}},
+        config={"metadata": {"user_id": str(user_id), "current_message": "确认生成 TSLA 报告"}},
     )
 
     assert captured == {
@@ -40,6 +41,30 @@ def test_generate_tracking_report_passes_authenticated_user(monkeypatch):
         "ticker": "TSLA",
         "trigger_type": "chat",
     }
+
+
+def test_generate_tracking_report_requires_explicit_confirmation(monkeypatch):
+    user_id = uuid.uuid4()
+    called = False
+    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+
+    def create_report(db, passed_user_id, ticker, trigger_type):
+        nonlocal called
+        called = True
+        return SimpleNamespace(status="done", summary="summary", consensus="neutral", id=uuid.uuid4())
+
+    monkeypatch.setattr(report_service, "create_and_run_report", create_report)
+
+    result = chat_agent.generate_tracking_report.invoke(
+        {"ticker": "TSLA", "time_range": "1w"},
+        config={"metadata": {"user_id": str(user_id), "current_message": "帮我看看 TSLA"}},
+    )
+
+    assert called is False
+    envelope = json.loads(result)
+    assert envelope["ok"] is False
+    assert envelope["error_code"] == "CONFIRMATION_REQUIRED"
+    assert "确认生成 TSLA 报告" in envelope["message"]
 
 
 def test_list_tracked_tickers_passes_authenticated_user(monkeypatch):
