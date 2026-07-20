@@ -52,6 +52,8 @@ class AgentState(MessagesState):
     user_prefs: dict
     consecutive_tool_failures: int = 0  # 追踪连续工具失败次数，防止死循环
     memories: list  # mem0 本轮召回的跨会话记忆
+    tool_route: str = "read_only"
+    allowed_tool_names: list[str]
 
 
 # ============================================================
@@ -797,7 +799,52 @@ tools = [
     generate_tracking_report, search_my_documents, list_my_tracked_tickers,
     list_my_followed_bloggers,
 ]
+_TOOLS_BY_NAME = {t.name: t for t in tools}
+_READ_ONLY_TOOL_NAMES = [
+    "query_database",
+    "search_public_signals",
+    "search_my_documents",
+    "list_my_tracked_tickers",
+    "list_my_followed_bloggers",
+]
+_INGEST_TOOL_NAMES = _READ_ONLY_TOOL_NAMES + [
+    "fetch_and_save_profile",
+    "fetch_and_save_tweets",
+]
+_ANALYSIS_TOOL_NAMES = _READ_ONLY_TOOL_NAMES + [
+    "preview_tweet_analysis",
+    "confirm_tweet_analysis",
+]
+_REPORT_TOOL_NAMES = _READ_ONLY_TOOL_NAMES + [
+    "generate_tracking_report",
+]
 _tool_node = ToolNode(tools, handle_tool_errors=True)
+
+
+def _latest_human_text(state: AgentState) -> str:
+    messages = state.get("messages") or []
+    return next(
+        (m.content for m in reversed(messages) if isinstance(m, HumanMessage) and isinstance(m.content, str)),
+        "",
+    )
+
+
+def _classify_tool_route(text: str) -> tuple[str, list[str]]:
+    normalized = text.lower()
+    if any(k in normalized for k in ("报告", "周报", "跟踪报告", "生成报告", "report")):
+        return "report", _REPORT_TOOL_NAMES
+    if any(k in normalized for k in ("待分析", "预览分析", "确认分析", "分析任务", "执行分析", "confirm analysis", "preview analysis")):
+        return "analysis", _ANALYSIS_TOOL_NAMES
+    if any(k in normalized for k in ("抓取", "采集", "获取最新", "拉取", "同步推文", "fetch", "crawl", "最新推文")):
+        return "ingest", _INGEST_TOOL_NAMES
+    return "read_only", _READ_ONLY_TOOL_NAMES
+
+
+def route_tools_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Classify the current user intent and expose only the needed tool subset."""
+    route, allowed = _classify_tool_route(_latest_human_text(state))
+    logger.info("[ChatRouter] route={} tools={}", route, allowed)
+    return {"tool_route": route, "allowed_tool_names": allowed}
 
 def tools_node(state: AgentState):
     """包装 ToolNode，追踪结构化工具调用结果中的失败状态。"""
@@ -968,8 +1015,14 @@ def agent_node(state: AgentState, config: RunnableConfig):
             allow_partial=False,
         )
 
+    allowed_tool_names = state.get("allowed_tool_names") or _READ_ONLY_TOOL_NAMES
+    selected_tools = [
+        _TOOLS_BY_NAME[name]
+        for name in allowed_tool_names
+        if name in _TOOLS_BY_NAME
+    ]
     llm = get_report_llm()
-    llm_with_tools = llm.bind_tools(tools)
+    llm_with_tools = llm.bind_tools(selected_tools)
 
     response = llm_with_tools.invoke(
         [SystemMessage(content=system_prompt)] + messages
@@ -1103,6 +1156,7 @@ def build_chat_agent(checkpointer=None):
 
     graph.add_node("init", init_context_node)
     graph.add_node("mem0_recall", mem0_recall_node)
+    graph.add_node("route_tools", route_tools_node)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
     graph.add_node("extract_preferences", extract_preferences_node)
@@ -1110,7 +1164,8 @@ def build_chat_agent(checkpointer=None):
 
     graph.add_edge(START, "init")
     graph.add_edge("init", "mem0_recall")
-    graph.add_edge("mem0_recall", "agent")
+    graph.add_edge("mem0_recall", "route_tools")
+    graph.add_edge("route_tools", "agent")
     graph.add_conditional_edges(
         "agent", should_continue, ["tools", "extract_preferences"]
     )
