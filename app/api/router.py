@@ -13,6 +13,7 @@ from app.api.documents import router as documents_router
 from app.api.tracking import router as tracking_router
 from app.api.reports import router as reports_router
 from app.api.me import router as me_router
+from app.api.admin_traces import router as admin_traces_router
 from app.core.config import settings
 
 
@@ -30,6 +31,7 @@ def build_api_router() -> APIRouter:
     router.include_router(tracking_router)
     router.include_router(reports_router)
     router.include_router(me_router)
+    router.include_router(admin_traces_router)
     if settings.debug_mode:
         from app.api.debug import router as debug_router
 
