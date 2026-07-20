@@ -58,6 +58,10 @@ from app.agents.chat.tools.analysis_jobs import (
     confirm_tweet_analysis_impl as _confirm_tweet_analysis_impl,
     preview_tweet_analysis_impl as _preview_tweet_analysis_impl,
 )
+from app.agents.chat.tools.user_resources import (
+    list_my_followed_bloggers_impl as _list_my_followed_bloggers_impl,
+    list_my_tracked_tickers_impl as _list_my_tracked_tickers_impl,
+)
 from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
@@ -613,6 +617,7 @@ def list_my_tracked_tickers(config: RunnableConfig = None) -> str:
 
     db = SessionLocal()
     try:
+        return _list_my_tracked_tickers_impl(db, user_id)
         items = list_subscriptions(db, user_id)
         if not items:
             return "当前没有订阅任何标的。可以通过「订阅 TSLA」来添加。"
@@ -641,6 +646,7 @@ def list_my_followed_bloggers(config: RunnableConfig = None) -> str:
 
     db = SessionLocal()
     try:
+        return _list_my_followed_bloggers_impl(db, user_id)
         bloggers, total = user_resource_service.list_followed_bloggers(
             db,
             user_id,
