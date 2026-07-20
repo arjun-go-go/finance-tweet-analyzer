@@ -494,11 +494,6 @@ def generate_tracking_report(
     db = SessionLocal()
     try:
         return _generate_tracking_report_impl(db, user_id, ticker)
-        report = create_and_run_report(db, user_id, ticker, trigger_type="chat")
-        if report.status == "done":
-            summary = report.summary or "报告生成完成"
-            return f"{ticker} 跟踪报告已生成\n\n{summary}\n\n评级: {report.consensus or 'N/A'}\n报告ID: {report.id}"
-        return f"报告生成失败: {report.error_detail or '未知错误'}"
     finally:
         db.close()
 
@@ -512,9 +507,6 @@ def search_my_documents(query: str, ticker: str = "", config: RunnableConfig = N
     """
     from uuid import UUID
 
-    from app.rag.embeddings import get_embedder
-    from app.rag.repository import UserDocumentRepository
-    from app.rag.vector_store import get_vector_store
 
     try:
         user_id_str = _get_authenticated_user_id(config)
@@ -523,27 +515,6 @@ def search_my_documents(query: str, ticker: str = "", config: RunnableConfig = N
         return "文档检索暂时不可用：用户身份无效。"
 
     return _search_my_documents_impl(user_id, query, ticker)
-
-    repo = UserDocumentRepository(get_vector_store(), get_embedder())
-
-    try:
-        hits = repo.search(
-            user_id=user_id,
-            query=query,
-            k=5,
-        )
-    except Exception:
-        return "文档检索暂时不可用。"
-
-    if not hits:
-        return "未找到相关文档内容。"
-
-    results = []
-    for i, hit in enumerate(hits, 1):
-        content_preview = hit.content[:200] if hit.content else hit.metadata.get("title", "")
-        results.append(f"[{i}] {content_preview}")
-    return "\n\n".join(results)
-
 
 @tool
 def search_public_signals(query: str, source_type: str = "analysis", blogger: str = "", config: RunnableConfig = None) -> str:
@@ -562,59 +533,12 @@ def search_public_signals(query: str, source_type: str = "analysis", blogger: st
     """
     return _search_public_signals_impl(query, source_type, blogger)
 
-    from app.rag.embeddings import get_embedder
-    from app.rag.vector_store import get_vector_store
-
-    vs = get_vector_store()
-    embedder = get_embedder()
-
-    if source_type not in ("analysis", "tweet"):
-        return "参数错误：source_type 必须是 'analysis' 或 'tweet'。"
-
-    flt: dict = {"source_type": source_type}
-    if blogger:
-        flt["blogger_handle"] = blogger
-
-    try:
-        emb = embedder.embed_query(query)
-        hits = vs.query(
-            "public_signals",
-            query_embedding=emb,
-            k=10,
-            filter=flt,
-        )
-    except Exception:
-        return "公共信号检索暂时不可用。"
-
-    if not hits:
-        blogger_hint = f" 博主 @{blogger}" if blogger else ""
-        return f"未在公共信号库中找到与「{query}」相关的 {source_type} 内容{blogger_hint}。"
-
-    results = []
-    for i, hit in enumerate(hits, 1):
-        meta = hit.metadata
-        blogger = meta.get("blogger_handle", "未知博主")
-        sentiment = meta.get("sentiment", "")
-        horizon = meta.get("horizon", "")
-        score = hit.score
-        content_preview = hit.content[:1000] if hit.content else ""
-        header = f"[{i}] 博主: {blogger}"
-        if sentiment:
-            header += f" | 情感: {sentiment}"
-        if horizon:
-            header += f" | 周期: {horizon}"
-        header += f" | 相关度: {score:.3f}"
-        results.append(f"{header}\n{content_preview}")
-    return "\n\n".join(results)
-
-
 @tool
 def list_my_tracked_tickers(config: RunnableConfig = None) -> str:
     """查看当前用户订阅的所有标的跟踪列表。
 
     【触发场景】：用户问"我订阅了哪些""我的跟踪列表""关注了什么标的"。
     """
-    from app.services.tracking_service import list_subscriptions
     from uuid import UUID
 
     user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
@@ -626,11 +550,6 @@ def list_my_tracked_tickers(config: RunnableConfig = None) -> str:
     db = SessionLocal()
     try:
         return _list_my_tracked_tickers_impl(db, user_id)
-        items = list_subscriptions(db, user_id)
-        if not items:
-            return "当前没有订阅任何标的。可以通过「订阅 TSLA」来添加。"
-        lines = [f"- {t.ticker} ({t.frequency}, {t.status})" for t in items]
-        return f"你的订阅列表（{len(items)} 个）：\n" + "\n".join(lines)
     finally:
         db.close()
 
@@ -644,7 +563,6 @@ def list_my_followed_bloggers(config: RunnableConfig = None) -> str:
     """
     from uuid import UUID
 
-    from app.services import user_resource_service
 
     user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
     try:
@@ -655,28 +573,6 @@ def list_my_followed_bloggers(config: RunnableConfig = None) -> str:
     db = SessionLocal()
     try:
         return _list_my_followed_bloggers_impl(db, user_id)
-        bloggers, total = user_resource_service.list_followed_bloggers(
-            db,
-            user_id,
-            limit=20,
-            offset=0,
-        )
-        if not bloggers:
-            return "你的正式关注列表为空。可以先在个人工作台关注博主。"
-
-        lines = []
-        for blogger in bloggers:
-            verified = int(blogger.total_predictions or 0)
-            correct = float(blogger.correct_predictions or 0.0)
-            accuracy = (correct / verified * 100) if verified else 0.0
-            name = f"（{blogger.name}）" if blogger.name else ""
-            lines.append(
-                f"- @{blogger.handle}{name} | 可信度 {float(blogger.credibility_score):.1f}"
-                f" | 已验证 {verified} | 准确率 {accuracy:.1f}%"
-            )
-
-        suffix = "" if total <= len(bloggers) else f"\n仅显示前 {len(bloggers)} 个，共 {total} 个。"
-        return "你的正式关注列表：\n" + "\n".join(lines) + suffix
     finally:
         db.close()
 
@@ -689,15 +585,7 @@ def preview_tweet_analysis(
     since: str = "",
     config: RunnableConfig = None,
 ) -> str:
-    from sqlalchemy import func, select
 
-    from app.models.blogger import Blogger
-    from app.models.tweet import Tweet
-    from app.services.analysis_job_service import (
-        AnalysisJobForbidden,
-        AnalysisJobTargetNotFound,
-        create_analysis_job,
-    )
 
     try:
         user_id = UUID(_get_authenticated_user_id(config))
@@ -722,74 +610,12 @@ def preview_tweet_analysis(
             since=since,
             pipeline_version=settings.user_analysis_pipeline_version,
         )
-        query = (
-            select(Tweet.author_handle, func.count(Tweet.id))
-            .where(Tweet.status == "pending")
-            .group_by(Tweet.author_handle)
-        )
-        if handle and handle not in ("all", "全部", "所有"):
-            query = query.where(Tweet.author_handle == handle)
-        rows = db.execute(query).all()
-        if not rows:
-            scope = f"博主 @{handle}" if handle and handle not in ("all", "全部", "所有") else "所有博主"
-            return f"{scope} 当前没有待分析的推文。"
-
-        handles_list = [h for h, _ in rows]
-        bloggers = db.execute(
-            select(Blogger).where(Blogger.handle.in_(handles_list))
-        ).scalars().all()
-        blogger_by_handle = {blogger.handle: blogger for blogger in bloggers}
-
-        confirmation_id = uuid4()
-        created_jobs = []
-        skipped = 0
-        for h in handles_list:
-            blogger = blogger_by_handle.get(h)
-            if blogger is None:
-                skipped += 1
-                continue
-            try:
-                created_jobs.append(
-                    create_analysis_job(
-                        db,
-                        user_id,
-                        kind="blogger_analysis",
-                        target_id=blogger.id,
-                        pipeline_version=settings.user_analysis_pipeline_version,
-                        status="awaiting_confirmation",
-                        batch_id=confirmation_id,
-                    )
-                )
-            except (AnalysisJobForbidden, AnalysisJobTargetNotFound):
-                skipped += 1
-        db.commit()
     finally:
         db.close()
-
-    if not created_jobs:
-        return "没有可提交的分析任务。请先关注对应博主，或等待系统抓取可分析推文。"
-
-    total = sum(count for _, count in rows)
-    lines = [f"待分析推文统计：共 {total} 条"]
-    for h, count in sorted(rows, key=lambda x: -x[1])[:10]:
-        lines.append(f"  - @{h}: {count} 条")
-    if len(rows) > 10:
-        lines.append(f"  ...及其他 {len(rows) - 10} 位博主")
-    if skipped:
-        lines.append(f"\n已跳过 {skipped} 位未关注或不存在的博主。")
-    lines.append(f"\n确认ID: {confirmation_id}")
-    lines.append("请用户确认是否执行分析，确认后调用 confirm_tweet_analysis。")
-    return "\n".join(lines)
 
 
 @tool(args_schema=ConfirmTaskArgs)
 def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
-    from app.celery_app import celery
-    from app.core.rate_limit import enforce_user_limit
-    from app.services.analysis_job_service import (
-        confirm_analysis_jobs,
-        list_confirmable_analysis_jobs_by_batch,
-    )
 
     try:
         user_id = UUID(_get_authenticated_user_id(config))
@@ -812,42 +638,8 @@ def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
             confirmation_id=confirmation_id,
             daily_limit=settings.user_analysis_daily_limit,
         )
-        jobs = list_confirmable_analysis_jobs_by_batch(db, user_id, confirmation_id)
-        if not jobs:
-            return f"确认ID '{task_id}' 无效、已提交或已过期。请重新预览。"
-
-        def dispatch(job) -> str:
-            enforce_user_limit(
-                f"user-analysis:{user_id}",
-                limit=settings.user_analysis_daily_limit,
-                window=24 * 60 * 60,
-            )
-            celery.send_task(
-                "app.scheduler.tasks.user_analysis_job_task",
-                args=[str(job.id)],
-                task_id=str(job.id),
-                queue="analysis",
-            )
-            return str(job.id)
-
-        confirmed, _ = confirm_analysis_jobs(
-            db,
-            user_id,
-            [job.id for job in jobs],
-            dispatch=dispatch,
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
     finally:
         db.close()
-
-    return (
-        f"已提交分析任务（{len(confirmed)} 个持久化 job）。"
-        f"确认ID: {confirmation_id}。"
-        "后台执行中，可在个人分析任务列表查看状态。"
-    )
 
 
 tools = [
