@@ -153,6 +153,22 @@ def _has_explicit_report_confirmation(message: str, ticker: str) -> bool:
     )
 
 
+def _has_explicit_ingest_confirmation(
+    message: str,
+    *,
+    handle: str,
+    target_words: tuple[str, ...],
+) -> bool:
+    text = message.lower()
+    handle_text = handle.lower().lstrip("@")
+    action_words = ("确认", "立即", "开始", "执行", "获取", "抓取", "采集", "同步", "拉取", "fetch", "crawl", "confirm")
+    return (
+        handle_text in text
+        and any(word in text for word in action_words)
+        and any(word.lower() in text for word in target_words)
+    )
+
+
 # ============================================================
 # 工具参数 Schema（Pydantic）—— 约束 LLM 生成的参数
 # ------------------------------------------------------------
@@ -278,7 +294,7 @@ def _fetch_profile_impl(handle: str) -> dict | None:
 
 
 @tool(args_schema=FetchProfileArgs)
-def fetch_and_save_profile(blogger_handle: str) -> str:
+def fetch_and_save_profile(blogger_handle: str, config: RunnableConfig = None) -> str:
     """获取 Twitter 博主的最新基础资料（粉丝数、简介、推文数等）并保存到本地数据库。
 
     【触发场景】：用户首次提及某个博主，或要求查看某人的"主页信息""粉丝数""简介""个人资料"时使用。
@@ -294,6 +310,17 @@ def fetch_and_save_profile(blogger_handle: str) -> str:
         return "请提供博主用户名。"
     if not _HANDLE_RE.match(handle):
         return f"参数错误：'{blogger_handle}' 不是有效的 Twitter Handle。请提供纯英文/数字用户名（不含@，1-15位），例如 elonmusk。"
+
+    if not _has_explicit_ingest_confirmation(
+        _current_user_message(config),
+        handle=handle,
+        target_words=("资料", "主页", "profile", "简介", "粉丝"),
+    ):
+        return _tool_error(
+            "CONFIRMATION_REQUIRED",
+            f"获取并保存 @{handle} 资料会调用外部 Twitter API 并写入数据库。请明确回复：确认获取 {handle} 资料。",
+            retryable=False,
+        )
 
     logger.info("[Tool] fetch_and_save_profile: {}", handle)
     result = _fetch_profile_impl(handle)
@@ -340,7 +367,7 @@ def _fetch_tweets_impl(user_id: str, max_pages: int) -> list:
 
 
 @tool(args_schema=FetchTweetsArgs)
-def fetch_and_save_tweets(blogger_handle: str, pages: int = 1) -> str:
+def fetch_and_save_tweets(blogger_handle: str, pages: int = 1, config: RunnableConfig = None) -> str:
     """采集指定 Twitter 博主的最新推文并入库。
 
     【触发场景】：用户明确要求查看某人的"最新推文""刚刚发的推特""最近发了什么""今天的动态"等实时数据需求时使用。
@@ -361,6 +388,17 @@ def fetch_and_save_tweets(blogger_handle: str, pages: int = 1) -> str:
     if not _HANDLE_RE.match(handle):
         return f"参数错误：'{blogger_handle}' 不是有效的 Twitter Handle。请提供纯英文/数字用户名（不含@，1-15位）。"
     pages = max(1, min(pages, 3))
+
+    if not _has_explicit_ingest_confirmation(
+        _current_user_message(config),
+        handle=handle,
+        target_words=("推文", "tweets", "tweet", "最新推文"),
+    ):
+        return _tool_error(
+            "CONFIRMATION_REQUIRED",
+            f"抓取 @{handle} 最新推文会调用外部 Twitter API 并写入数据库。请明确回复：确认抓取 {handle} 最新推文。",
+            retryable=False,
+        )
 
     logger.info("[Tool] fetch_and_save_tweets: {} (pages={})", handle, pages)
 
