@@ -100,7 +100,7 @@ async def debug_retrieve(
     # bm25_retriever: takes (intent: QueryIntent)
     t0 = time.perf_counter()
     try:
-        paths["bm25"] = retrieve_bm25(intent)
+        paths["bm25"] = retrieve_bm25(intent, user_id=current_user.id)
     except Exception as e:
         paths["bm25"] = [{"unique_id": "error", "content": str(e), "source_type": "error", "metadata": {}, "score": 0}]
     latency_ms["bm25"] = round((time.perf_counter() - t0) * 1000, 1)
