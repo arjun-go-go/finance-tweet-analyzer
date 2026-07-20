@@ -21,7 +21,7 @@ import time
 from functools import lru_cache
 from uuid import UUID
 
-from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool, InjectedToolArg
 from langgraph.graph import StateGraph, START, END, MessagesState
@@ -72,6 +72,10 @@ from app.agents.chat.nodes.memory import (
     extract_preferences_node_impl as _extract_preferences_node_impl,
     mem0_recall_node_impl as _mem0_recall_node_impl,
     mem0_store_node_impl as _mem0_store_node_impl,
+)
+from app.agents.chat.nodes.agent import (
+    agent_node_impl as _agent_node_impl,
+    build_prompt_from_state as _build_prompt_from_state,
 )
 from app.core.config import settings
 from app.core.deps import SessionLocal
@@ -822,64 +826,17 @@ def init_context_node(state: AgentState, config: RunnableConfig) -> dict:
 # ============================================================
 
 def agent_node(state: AgentState, config: RunnableConfig):
-    messages = state["messages"]
-    consecutive_failures = state.get("consecutive_tool_failures", 0)
-
-    # 死循环防御：连续 3 次工具调用失败/报错，强制中断并返回友好提示
-    if consecutive_failures >= 3:
-        logger.warning("[Agent] Consecutive tool failures detected ({}). Forcing fallback response.", consecutive_failures)
-        from langchain_core.messages import AIMessage
-        fallback_msg = AIMessage(content="抱歉，系统当前处理您的请求时遇到连续错误，请稍后再试或换一种方式提问。")
-        return {"messages": [fallback_msg], "consecutive_tool_failures": 0}
-
-    # Build system prompt first to account for its token cost in the budget
-    profile = state.get("user_profile") or {}
-    prefs = state.get("user_prefs") or {}
-    memories = state.get("memories") or []
-    system_prompt = _build_prompt_from_state(get_prompt("chat/system"), profile, prefs, memories=memories)
-
-    # System prompt tokens must be reserved from the total budget
-    system_tokens = _estimate_tokens([SystemMessage(content=system_prompt)])
-    available_budget = settings.agent_max_tokens_per_turn - system_tokens
-
-    # If system prompt alone exceeds budget, reduce memories and rebuild
-    if available_budget < 0 and memories:
-        memories = memories[:2]
-        system_prompt = _build_prompt_from_state(get_prompt("chat/system"), profile, prefs, memories=memories)
-        system_tokens = _estimate_tokens([SystemMessage(content=system_prompt)])
-        available_budget = settings.agent_max_tokens_per_turn - system_tokens
-
-    # Token budget: trim safely (preserve system, start on human, keep tool_call pairs intact)
-    token_estimate = _estimate_tokens(messages)
-    if token_estimate > available_budget:
-        logger.warning(
-            "[Agent] Token budget exceeded ({} > {}), trimming messages",
-            token_estimate, available_budget,
-        )
-        messages = trim_messages(
-            messages,
-            max_tokens=available_budget,
-            token_counter=_estimate_tokens,
-            strategy="last",
-            include_system=True,
-            start_on="human",
-            allow_partial=False,
-        )
-
-    allowed_tool_names = state.get("allowed_tool_names") or _READ_ONLY_TOOL_NAMES
-    selected_tools = [
-        _TOOLS_BY_NAME[name]
-        for name in allowed_tool_names
-        if name in _TOOLS_BY_NAME
-    ]
-    llm = get_report_llm()
-    llm_with_tools = llm.bind_tools(selected_tools)
-
-    response = llm_with_tools.invoke(
-        [SystemMessage(content=system_prompt)] + messages
+    return _agent_node_impl(
+        state,
+        config,
+        tools_by_name=_TOOLS_BY_NAME,
+        default_tool_names=_READ_ONLY_TOOL_NAMES,
+        estimate_tokens=_estimate_tokens,
+        settings_obj=settings,
+        get_prompt_fn=get_prompt,
+        get_llm=get_report_llm,
+        build_prompt=_build_prompt_from_state,
     )
-    return {"messages": [response]}
-
 
 # ============================================================
 # mem0 记忆召回节点 —— 同步，在 Agent 回复前执行
