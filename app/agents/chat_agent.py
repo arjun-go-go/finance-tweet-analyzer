@@ -40,6 +40,9 @@ from app.agents.chat.routing import (
     has_explicit_report_confirmation as _base_has_explicit_report_confirmation,
     latest_human_text as _base_latest_human_text,
 )
+from app.agents.chat.observability import (
+    record_tool_route_decision as _record_tool_route_decision,
+)
 from app.agents.chat.tool_results import (
     parse_tool_envelope as _base_parse_tool_envelope,
     tool_error as _base_tool_error,
@@ -707,7 +710,17 @@ _classify_tool_route = _base_classify_tool_route
 
 def route_tools_node(state: AgentState, config: RunnableConfig) -> dict:
     """Classify the current user intent and expose only the needed tool subset."""
-    route, allowed = _classify_tool_route(_latest_human_text(state))
+    message = _latest_human_text(state)
+    route, allowed = _classify_tool_route(message)
+    metadata = (config or {}).get("metadata") or {}
+    configurable = (config or {}).get("configurable") or {}
+    _record_tool_route_decision(
+        route=route,
+        allowed_tool_names=allowed,
+        message=message,
+        user_id=metadata.get("user_id"),
+        thread_id=configurable.get("thread_id"),
+    )
     logger.info("[ChatRouter] route={} tools={}", route, allowed)
     return {"tool_route": route, "allowed_tool_names": allowed}
 
