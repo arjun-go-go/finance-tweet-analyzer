@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -79,8 +79,16 @@ class Settings(BaseSettings):
     cors_allowed_origins: list[str] = ["http://localhost:3000"]
 
     # ----- RAG / Vector store -----
-    vector_backend: str = "chroma"
+    vector_backend: str = Field(
+        default="chroma",
+        validation_alias=AliasChoices("VECTOR_BACKEND", "VECTOR_STORE_BACKEND"),
+    )
     chroma_persist_dir: str = "./chroma_db"
+    milvus_uri: str = ""
+    milvus_token: str = ""
+    milvus_db_name: str = "default"
+    milvus_collection_prefix: str = "finance_tweet"
+    milvus_timeout_sec: float = 30.0
 
     # ----- Embedding -----
     embedding_provider: str = "dashscope"
@@ -227,6 +235,7 @@ class Settings(BaseSettings):
             "twitter_auth_token",
             "twitter_ct0",
             "twitter_bearer_token",
+            "milvus_token",
         }
         for name, value in super().__repr_args__():
             yield name, "**********" if name in sensitive_fields else value

@@ -66,16 +66,16 @@ def health_check():
         logger.warning("[Health] redis check failed: {}", e)
         checks["redis"] = f"error: {e}"
 
-    # ChromaDB connectivity
+    # Vector store connectivity
     try:
         from app.rag.vector_store import get_vector_store
         vs = get_vector_store()
         vs.count("user_documents")
         vs.count("public_signals")
-        checks["chromadb"] = "ok"
+        checks["vector_store"] = "ok"
     except Exception as e:
-        logger.warning("[Health] chromadb check failed: {}", e)
-        checks["chromadb"] = f"error: {e}"
+        logger.warning("[Health] vector store check failed: {}", e)
+        checks["vector_store"] = f"error: {e}"
 
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, "checks": checks, "circuits": get_circuit_status()}
