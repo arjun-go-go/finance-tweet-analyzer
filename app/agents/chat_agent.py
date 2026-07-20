@@ -54,6 +54,10 @@ from app.agents.chat.tools.ingestion import (
 from app.agents.chat.tools.reports import (
     generate_tracking_report_impl as _generate_tracking_report_impl,
 )
+from app.agents.chat.tools.analysis_jobs import (
+    confirm_tweet_analysis_impl as _confirm_tweet_analysis_impl,
+    preview_tweet_analysis_impl as _preview_tweet_analysis_impl,
+)
 from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
@@ -696,6 +700,14 @@ def preview_tweet_analysis(
 
     db = SessionLocal()
     try:
+        return _preview_tweet_analysis_impl(
+            db,
+            user_id=user_id,
+            blogger_handle=blogger_handle,
+            reanalyze=reanalyze,
+            since=since,
+            pipeline_version=settings.user_analysis_pipeline_version,
+        )
         query = (
             select(Tweet.author_handle, func.count(Tweet.id))
             .where(Tweet.status == "pending")
@@ -780,6 +792,12 @@ def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
 
     db = SessionLocal()
     try:
+        return _confirm_tweet_analysis_impl(
+            db,
+            user_id=user_id,
+            confirmation_id=confirmation_id,
+            daily_limit=settings.user_analysis_daily_limit,
+        )
         jobs = list_confirmable_analysis_jobs_by_batch(db, user_id, confirmation_id)
         if not jobs:
             return f"确认ID '{task_id}' 无效、已提交或已过期。请重新预览。"
