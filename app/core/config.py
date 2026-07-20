@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     rag_rrf_k: int = 60
     rag_retrieval_timeout_sec: float = 5.0
     rag_bm25_top_k: int = 15
+    rag_keyword_backend: str = "postgres"
+
+    # ----- Elasticsearch keyword retrieval -----
+    elasticsearch_url: str = ""
+    elasticsearch_username: str = ""
+    elasticsearch_password: str = ""
+    es_rag_index: str = "finance_rag_chunks"
+    es_request_timeout_sec: float = 3.0
+    es_bulk_chunk_size: int = 500
 
     # ----- Report generation -----
     report_section_timeout_sec: int = 90
@@ -239,6 +248,7 @@ class Settings(BaseSettings):
             "twitter_ct0",
             "twitter_bearer_token",
             "milvus_token",
+            "elasticsearch_password",
         }
         for name, value in super().__repr_args__():
             yield name, "**********" if name in sensitive_fields else value

@@ -203,7 +203,7 @@ def retrieve_bm25_node(state: RetrieveSubState) -> dict:
     """检索路径 5：PostgreSQL 全文检索（BM25）。"""
     intent = QueryIntent(**state["intent"])
     try:
-        results = retrieve_bm25(intent)
+        results = retrieve_bm25(intent, user_id=uuid.UUID(state["user_id"]))
         return {"retrieve_results": [results]}
     except Exception as e:
         return {"retrieve_results": [[]], "retrieval_errors": {"bm25": f"{type(e).__name__}: {e}"}}

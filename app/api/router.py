@@ -79,5 +79,18 @@ def health_check():
         logger.warning("[Health] vector store check failed: {}", e)
         checks["vector_store"] = f"error: {e}"
 
-    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    # Optional Elasticsearch keyword read model connectivity
+    if settings.rag_keyword_backend.lower().strip() == "elasticsearch" or settings.elasticsearch_url:
+        try:
+            from app.rag.keyword_store import get_keyword_store
+            if get_keyword_store().health_check():
+                checks["elasticsearch"] = "ok"
+            else:
+                checks["elasticsearch"] = "error: ping returned false"
+        except Exception as e:
+            logger.warning("[Health] elasticsearch check failed: {}", e)
+            checks["elasticsearch"] = f"error: {e}"
+
+    hard_checks = ["database", "redis", "vector_store"]
+    overall = "ok" if all(checks.get(name) == "ok" for name in hard_checks) else "degraded"
     return {"status": overall, "checks": checks, "circuits": get_circuit_status()}

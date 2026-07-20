@@ -13,7 +13,10 @@ from sqlalchemy import select, update
 
 from app.core.deps import SessionLocal
 from app.models.analysis import AnalysisResult
+from app.models.doc_chunk import DocChunk
+from app.models.document import Document
 from app.models.tweet import Tweet
+from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
 from app.scheduler.locks import (
     try_acquire,
     release,
@@ -26,6 +29,23 @@ from app.services.analysis_job_service import run_user_analysis_job
 from app.services.analysis_service import analyze_by_blogger, analyze_single_tweet
 
 logger = get_task_logger(__name__)
+
+
+def _best_effort_upsert_es_chunks(chunks, user_id=None) -> dict:
+    """Best-effort Elasticsearch upsert for DocChunk-like rows."""
+    chunk_list = list(chunks or [])
+    stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
+    if not chunk_list:
+        return stats
+    try:
+        docs = [chunk_to_es_document(chunk, user_id=user_id) for chunk in chunk_list]
+        indexed, errors = get_keyword_store().bulk_upsert_documents(docs)
+        stats["indexed"] = int(indexed or 0)
+        stats["errors"] = len(errors or [])
+    except Exception as exc:
+        stats["errors"] = len(chunk_list)
+        logger.warning("[Celery] Elasticsearch chunk upsert skipped: %s", exc)
+    return stats
 
 
 @shared_task(
@@ -468,7 +488,8 @@ def ingest_document_task(self, document_id: str) -> dict:
         doc.chunk_count = len(rows)
         doc.status = "indexed"
         db.commit()
-        return {"document_id": str(doc.id), "chunks": len(rows)}
+        es_stats = _best_effort_upsert_es_chunks(rows, user_id=doc.user_id)
+        return {"document_id": str(doc.id), "chunks": len(rows), "es": es_stats}
     except Exception as e:
         db.rollback()
         try:
@@ -623,6 +644,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         embedder = get_embedder()
         vectors = embedder.embed_documents(embed_texts)
         indexed = 0
+        rows_to_index = []
 
         for i, (chunk_text, vec) in enumerate(zip(chunks, vectors)):
             content_hash = sha256(chunk_text.encode("utf-8")).hexdigest()
@@ -635,7 +657,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 embeddings=[vec],
                 metadatas=[meta],
             )
-            db.add(DocChunk(
+            row = DocChunk(
                 document_id=None,
                 chunk_index=i,
                 content=chunk_text,
@@ -644,11 +666,14 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 metadata_=meta,
                 vector_id=vector_id,
                 search_vector=sa.func.to_tsvector("simple", tokenize_for_tsvector(chunk_text)),
-            ))
+            )
+            db.add(row)
+            rows_to_index.append(row)
             indexed += 1
 
         db.commit()
-        return {"source_type": source_type, "source_id": source_id, "indexed": indexed}
+        es_stats = _best_effort_upsert_es_chunks(rows_to_index)
+        return {"source_type": source_type, "source_id": source_id, "indexed": indexed, "es": es_stats}
     except Exception:
         db.rollback()
         raise
@@ -931,6 +956,59 @@ def backfill_search_vector_task(self, batch_size: int = 200) -> dict:
 
     logger.info("[Celery] backfill_search_vector: %s", stats)
     return stats
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.reindex_elasticsearch_chunks_task",
+    acks_late=True,
+)
+def reindex_elasticsearch_chunks_task(
+    self,
+    batch_size: int = 500,
+    source_type: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Reindex existing doc_chunks into the approved Elasticsearch RAG index."""
+    db = SessionLocal()
+    stats = {"scanned": 0, "attempted": 0, "indexed": 0, "errors": 0, "dry_run": dry_run}
+    try:
+        stmt = (
+            select(DocChunk, Document.user_id)
+            .outerjoin(Document, DocChunk.document_id == Document.id)
+            .order_by(DocChunk.created_at.asc(), DocChunk.id.asc())
+            .limit(batch_size)
+        )
+        if source_type:
+            stmt = stmt.where(DocChunk.metadata_["source_type"].astext == source_type)
+
+        rows = db.execute(stmt).all()
+        stats["scanned"] = len(rows)
+        if dry_run or not rows:
+            return stats
+
+        public_chunks = []
+        private_by_user = {}
+        for chunk, user_id in rows:
+            if user_id:
+                private_by_user.setdefault(user_id, []).append(chunk)
+            else:
+                public_chunks.append(chunk)
+
+        for user_id, chunks in private_by_user.items():
+            result = _best_effort_upsert_es_chunks(chunks, user_id=user_id)
+            stats["attempted"] += result["attempted"]
+            stats["indexed"] += result["indexed"]
+            stats["errors"] += result["errors"]
+        if public_chunks:
+            result = _best_effort_upsert_es_chunks(public_chunks)
+            stats["attempted"] += result["attempted"]
+            stats["indexed"] += result["indexed"]
+            stats["errors"] += result["errors"]
+
+        return stats
+    finally:
+        db.close()
 
 
 @shared_task(
