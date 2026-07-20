@@ -36,13 +36,53 @@ def latest_human_text(state: dict) -> str:
 
 
 def classify_tool_route(text: str) -> tuple[str, list[str]]:
+    """Classify user intent into the narrowest safe tool set.
+
+    Production rule: default to read-only. Open high-cost/write-capable tools only
+    when the user's wording clearly asks for that operation.
+    """
     normalized = text.lower()
-    if any(k in normalized for k in ("报告", "周报", "跟踪报告", "生成报告", "report")):
+
+    negation_words = ("不要", "不用", "别", "无需", "不需要", "不要生成", "no report", "don't")
+    report_words = ("报告", "日报", "周报", "跟踪报告", "生成报告", "report")
+    report_actions = ("生成", "写", "做", "创建", "出", "给我", "generate", "create", "write")
+    if any(neg in normalized for neg in negation_words) and any(word in normalized for word in report_words):
+        return "read_only", READ_ONLY_TOOL_NAMES
+
+    if any(word in normalized for word in report_words) and (
+        "report" in normalized or any(action in normalized for action in report_actions)
+    ):
         return "report", REPORT_TOOL_NAMES
-    if any(k in normalized for k in ("待分析", "预览分析", "确认分析", "分析任务", "执行分析", "confirm analysis", "preview analysis")):
+
+    analysis_words = (
+        "待分析",
+        "待处理推文",
+        "预览分析",
+        "确认分析",
+        "分析任务",
+        "执行分析",
+        "提交分析",
+        "开始分析",
+        "confirm analysis",
+        "preview analysis",
+    )
+    if any(word in normalized for word in analysis_words):
         return "analysis", ANALYSIS_TOOL_NAMES
-    if any(k in normalized for k in ("抓取", "采集", "获取最新", "拉取", "同步推文", "fetch", "crawl", "最新推文")):
+
+    ingest_words = (
+        "抓取",
+        "采集",
+        "获取最新",
+        "拉取",
+        "同步推文",
+        "同步",
+        "fetch",
+        "crawl",
+        "最新推文",
+    )
+    if any(word in normalized for word in ingest_words):
         return "ingest", INGEST_TOOL_NAMES
+
     return "read_only", READ_ONLY_TOOL_NAMES
 
 
@@ -50,7 +90,7 @@ def has_explicit_report_confirmation(message: str, ticker: str) -> bool:
     text = message.lower()
     ticker_text = ticker.lower()
     action_words = ("确认", "立即", "开始", "执行", "生成", "创建", "确认生成", "go ahead", "confirm")
-    report_words = ("报告", "周报", "跟踪报告", "report")
+    report_words = ("报告", "日报", "周报", "跟踪报告", "report")
     return (
         ticker_text in text
         and any(word in text for word in action_words)
