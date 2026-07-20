@@ -47,6 +47,13 @@ from app.agents.chat.tool_results import (
     tool_ok as _base_tool_ok,
     truncate_result as _truncate_tool_result,
 )
+from app.agents.chat.tools.ingestion import (
+    fetch_profile_impl as _fetch_profile_impl,
+    fetch_tweets_impl as _fetch_tweets_impl,
+)
+from app.agents.chat.tools.reports import (
+    generate_tracking_report_impl as _generate_tracking_report_impl,
+)
 from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
@@ -265,20 +272,6 @@ class TrackingReportArgs(BaseModel):
 
 
 
-@resilient_tool(
-    retries=3,
-    backoff_base=2.0,
-    circuit_name="twitter_api",
-    failure_threshold=5,
-    recovery_timeout=120.0,
-    fallback_message="Twitter API 暂时不可用，请稍后重试。",
-    retryable_exceptions=(ConnectionError, TimeoutError, OSError),
-)
-def _fetch_profile_impl(handle: str) -> dict | None:
-    from app.services.twitter_service import fetch_user_profile
-    return fetch_user_profile(handle)
-
-
 @tool(args_schema=FetchProfileArgs)
 def fetch_and_save_profile(blogger_handle: str, config: RunnableConfig = None) -> str:
     """获取 Twitter 博主的最新基础资料（粉丝数、简介、推文数等）并保存到本地数据库。
@@ -336,20 +329,6 @@ def fetch_and_save_profile(blogger_handle: str, config: RunnableConfig = None) -
         return f"保存失败: {str(e)}"
     finally:
         db.close()
-
-
-@resilient_tool(
-    retries=3,
-    backoff_base=2.0,
-    circuit_name="twitter_api",
-    failure_threshold=5,
-    recovery_timeout=120.0,
-    fallback_message="Twitter API 暂时不可用，请稍后重试。",
-    retryable_exceptions=(ConnectionError, TimeoutError, OSError),
-)
-def _fetch_tweets_impl(user_id: str, max_pages: int) -> list:
-    from app.services.twitter_service import fetch_user_tweets
-    return fetch_user_tweets(user_id, max_pages=max_pages)
 
 
 @tool(args_schema=FetchTweetsArgs)
@@ -485,7 +464,6 @@ def generate_tracking_report(
     【触发场景】：用户要求生成报告、分析某个标的的最近动态、周报等。
     【参数】：ticker 为标的代码（如 TSLA、BTC），time_range 为时间范围（1d/1w/1m）。
     """
-    from app.services.report_service import create_and_run_report
     from uuid import UUID
 
     user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
@@ -503,6 +481,7 @@ def generate_tracking_report(
 
     db = SessionLocal()
     try:
+        return _generate_tracking_report_impl(db, user_id, ticker)
         report = create_and_run_report(db, user_id, ticker, trigger_type="chat")
         if report.status == "done":
             summary = report.summary or "报告生成完成"
