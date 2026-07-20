@@ -62,6 +62,10 @@ from app.agents.chat.tools.user_resources import (
     list_my_followed_bloggers_impl as _list_my_followed_bloggers_impl,
     list_my_tracked_tickers_impl as _list_my_tracked_tickers_impl,
 )
+from app.agents.chat.tools.rag_search import (
+    search_my_documents_impl as _search_my_documents_impl,
+    search_public_signals_impl as _search_public_signals_impl,
+)
 from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.core.resilience import resilient_tool
@@ -518,6 +522,8 @@ def search_my_documents(query: str, ticker: str = "", config: RunnableConfig = N
     except (ValueError, AttributeError):
         return "文档检索暂时不可用：用户身份无效。"
 
+    return _search_my_documents_impl(user_id, query, ticker)
+
     repo = UserDocumentRepository(get_vector_store(), get_embedder())
 
     try:
@@ -554,6 +560,8 @@ def search_public_signals(query: str, source_type: str = "analysis", blogger: st
       - query_database 查的是结构化 SQL 数据库（analysis_results / tweets 表）
       - 此工具查的是向量语义库 public_signals，适合找"意思相近"的内容
     """
+    return _search_public_signals_impl(query, source_type, blogger)
+
     from app.rag.embeddings import get_embedder
     from app.rag.vector_store import get_vector_store
 
