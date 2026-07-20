@@ -17,10 +17,9 @@
 """
 import importlib.util
 import re
-import threading
 import time
 from functools import lru_cache
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
 from langchain_core.runnables import RunnableConfig
@@ -65,6 +64,14 @@ from app.agents.chat.tools.user_resources import (
 from app.agents.chat.tools.rag_search import (
     search_my_documents_impl as _search_my_documents_impl,
     search_public_signals_impl as _search_public_signals_impl,
+)
+from app.agents.chat.nodes.context import (
+    init_context_node_impl as _init_context_node_impl,
+)
+from app.agents.chat.nodes.memory import (
+    extract_preferences_node_impl as _extract_preferences_node_impl,
+    mem0_recall_node_impl as _mem0_recall_node_impl,
+    mem0_store_node_impl as _mem0_store_node_impl,
 )
 from app.core.config import settings
 from app.core.deps import SessionLocal
@@ -800,17 +807,7 @@ def _build_prompt_from_state(base_prompt: str, profile: dict, prefs: dict, memor
 # ============================================================
 
 def init_context_node(state: AgentState, config: RunnableConfig) -> dict:
-    from app.memory.preferences import get_preferences
-    from app.memory.profile import get_profile
-
-    user_id = _get_authenticated_user_id(config)
-    db = SessionLocal()
-    try:
-        profile = get_profile(db, user_id) or {}
-        prefs = get_preferences(db, user_id) or {}
-    finally:
-        db.close()
-    return {"user_profile": profile, "user_prefs": prefs}
+    return _init_context_node_impl(state, config)
 
 
 # ============================================================
@@ -893,31 +890,13 @@ def agent_node(state: AgentState, config: RunnableConfig):
 # ============================================================
 
 def mem0_recall_node(state: AgentState, config: RunnableConfig) -> dict:
-    client = get_mem0_client()
-    if client is None:
-        return {"memories": []}
-
-    messages = state.get("messages") or []
-    query = next(
-        (m.content for m in reversed(messages) if isinstance(m, HumanMessage)),
-        None,
+    return _mem0_recall_node_impl(
+        state,
+        config,
+        get_client=get_mem0_client,
+        settings_obj=settings,
+        spacy_checker=_is_mem0_spacy_model_available,
     )
-    if not query:
-        return {"memories": []}
-
-    if not _is_mem0_spacy_model_available():
-        logger.warning("[mem0] recall skipped: spaCy model en_core_web_sm is not installed")
-        return {"memories": []}
-
-    user_id = _get_authenticated_user_id(config)
-    try:
-        results = client.search(query, filters={"user_id": user_id}, top_k=settings.mem0_top_k)
-        memories = [r["memory"] for r in (results.get("results") or [])]
-        logger.debug("[mem0] recalled {} memories for user={}", len(memories), user_id)
-        return {"memories": memories}
-    except (Exception, SystemExit) as e:
-        logger.warning("[mem0] recall failed: {}", e)
-        return {"memories": []}
 
 
 # ============================================================
@@ -928,40 +907,7 @@ def mem0_recall_node(state: AgentState, config: RunnableConfig) -> dict:
 # ============================================================
 
 def mem0_store_node(state: AgentState, config: RunnableConfig) -> dict:
-    from langchain_core.messages import AIMessage as _AIMessage
-
-    client = get_mem0_client()
-    if client is None:
-        return {}
-
-    messages = state.get("messages") or []
-    user_id = _get_authenticated_user_id(config)
-
-    last_human = next(
-        (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
-    )
-    last_ai = next(
-        (m for m in reversed(messages)
-         if isinstance(m, _AIMessage) and not getattr(m, "tool_calls", None)),
-        None,
-    )
-    if not last_human or not last_ai:
-        return {}
-
-    mem0_messages = [
-        {"role": "user", "content": last_human.content},
-        {"role": "assistant", "content": last_ai.content},
-    ]
-
-    def _store():
-        try:
-            client.add(mem0_messages, user_id=user_id)
-            logger.debug("[mem0] stored turn for user={}", user_id)
-        except (Exception, SystemExit) as e:
-            logger.warning("[mem0] store failed: {}", e)
-
-    threading.Thread(target=_store, daemon=True).start()
-    return {}
+    return _mem0_store_node_impl(state, config, get_client=get_mem0_client)
 
 
 # ============================================================
@@ -973,15 +919,7 @@ def mem0_store_node(state: AgentState, config: RunnableConfig) -> dict:
 # ============================================================
 
 def extract_preferences_node(state: AgentState, config: RunnableConfig):
-    from app.memory.preferences import extract_preferences_background
-
-    messages = state["messages"]
-    user_id = _get_authenticated_user_id(config)
-    for msg in reversed(messages):
-        if hasattr(msg, "type") and msg.type == "human":
-            extract_preferences_background(msg.content, user_id=user_id)
-            break
-    return {}
+    return _extract_preferences_node_impl(state, config)
 
 
 # ============================================================
