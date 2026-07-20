@@ -99,6 +99,42 @@ def _truncate_result(text: str, max_chars: int | None = None) -> str:
     return text[:limit] + f"\n...(结果已截断，原始长度 {len(text)} 字符)"
 
 
+def _tool_ok(message: str, data: dict | None = None) -> str:
+    """Return a structured successful tool result."""
+    return json.dumps(
+        {
+            "ok": True,
+            "message": _truncate_result(message),
+            "data": data or {},
+        },
+        ensure_ascii=False,
+    )
+
+
+def _tool_error(error_code: str, message: str, *, retryable: bool = False) -> str:
+    """Return a structured failed tool result."""
+    return json.dumps(
+        {
+            "ok": False,
+            "error_code": error_code,
+            "message": _truncate_result(message),
+            "retryable": retryable,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _parse_tool_envelope(content: str) -> dict | None:
+    """Parse a structured tool result envelope, returning None for legacy text."""
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict) or "ok" not in parsed:
+        return None
+    return parsed
+
+
 # ============================================================
 # 工具参数 Schema（Pydantic）—— 约束 LLM 生成的参数
 # ------------------------------------------------------------
@@ -763,31 +799,39 @@ tools = [
 ]
 _tool_node = ToolNode(tools, handle_tool_errors=True)
 
-# 工具错误关键词 —— 用于检测工具返回的是否为失败结果
-_TOOL_ERROR_MARKERS = ("失败", "错误", "异常", "不可用", "未找到", "参数错误", "系统异常", "操作失败")
-
-
 def tools_node(state: AgentState):
-    """包装 ToolNode，追踪工具调用结果中的失败状态。
-
-    如果工具返回的消息内容包含错误关键词，则增加 consecutive_tool_failures 计数；
-    如果工具返回正常结果，则重置计数器为 0。
-    """
+    """包装 ToolNode，追踪结构化工具调用结果中的失败状态。"""
     result = _tool_node.invoke(state)
     consecutive = state.get("consecutive_tool_failures", 0)
 
-    # 检查最新的 tool message 是否包含错误标记
     messages = result.get("messages", [])
+    standardized_messages = []
     has_error = False
-    if messages:
-        last_msg = messages[-1]
-        if hasattr(last_msg, "content") and isinstance(last_msg.content, str):
-            content = last_msg.content
-            # ToolNode 的错误消息通常以 "Error:" 开头（handle_tool_errors=True 时）
-            # 或者包含我们的工具返回的中文错误关键词
-            if content.startswith("Error:") or any(marker in content for marker in _TOOL_ERROR_MARKERS):
-                has_error = True
-                logger.warning("[ToolNode] Tool failure detected: {}", content[:100])
+    for msg in messages:
+        if not (hasattr(msg, "content") and isinstance(msg.content, str)):
+            standardized_messages.append(msg)
+            continue
+
+        content = msg.content
+        envelope = _parse_tool_envelope(content)
+        tool_node_status = getattr(msg, "status", None)
+        if envelope is None:
+            if tool_node_status == "error" or content.startswith("Error:"):
+                content = _tool_error("TOOL_EXECUTION_ERROR", content, retryable=True)
+            else:
+                content = _tool_ok(content)
+            if hasattr(msg, "model_copy"):
+                msg = msg.model_copy(update={"content": content})
+            else:
+                msg.content = content
+            envelope = _parse_tool_envelope(content)
+
+        if envelope is not None and envelope.get("ok") is False:
+            has_error = True
+            logger.warning("[ToolNode] Tool failure detected: {}", content[:100])
+        standardized_messages.append(msg)
+
+    result["messages"] = standardized_messages
 
     if has_error:
         consecutive += 1
