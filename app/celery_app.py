@@ -53,7 +53,6 @@ celery.conf.update(
         "app.scheduler.tasks.report_streaming_task": {"queue": "report"},
         "app.scheduler.tasks.scan_due_tracking_task": {"queue": "default"},
         "app.scheduler.tasks.gc_vector_task": {"queue": "default"},
-        "app.scheduler.tasks.backfill_search_vector_task": {"queue": "default"},
         "app.scheduler.tasks.reindex_elasticsearch_chunks_task": {"queue": "default"},
         "app.scheduler.tasks.scan_blogger_tweets_task": {"queue": "ingest"},
         "app.scheduler.tasks.user_analysis_job_task": {"queue": "analysis"},
@@ -101,12 +100,6 @@ celery.conf.beat_schedule = {
         "schedule": 600,
         "kwargs": {"batch_size": 15},
         "options": {"queue": "embed"},
-    },
-    # 回填 doc_chunks 的 search_vector（每 5 分钟处理 200 条，全部回填完后自动空转）
-    "backfill-search-vector-periodic": {
-        "task": "app.scheduler.tasks.backfill_search_vector_task",
-        "schedule": 300,
-        "kwargs": {"batch_size": 200},
     },
     # 定时抓取博主最新推文
     "scan-blogger-tweets": {

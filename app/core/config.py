@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     rag_rrf_k: int = 60
     rag_retrieval_timeout_sec: float = 5.0
     rag_bm25_top_k: int = 15
-    rag_keyword_backend: str = "postgres"
+    rag_keyword_backend: str = "elasticsearch"
 
     # ----- Elasticsearch keyword retrieval -----
     elasticsearch_url: str = ""

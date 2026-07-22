@@ -15,23 +15,23 @@ def _intent():
     )
 
 
-def test_retrieve_bm25_uses_postgres_backend_by_default(monkeypatch):
-    monkeypatch.setattr(bm25_retriever.settings, "rag_keyword_backend", "postgres")
+def test_retrieve_bm25_uses_elasticsearch_backend_by_default(monkeypatch):
+    monkeypatch.setattr(bm25_retriever.settings, "rag_keyword_backend", "elasticsearch")
     captured = {}
 
-    def fake_pg(intent, user_id=None):
-        captured["intent"] = intent
-        captured["user_id"] = user_id
-        return [{"unique_id": "pg:1"}]
+    class Store:
+        def search(self, **kwargs):
+            captured.update(kwargs)
+            return [{"unique_id": "es:1"}]
 
-    monkeypatch.setattr(bm25_retriever, "retrieve_pg_bm25", fake_pg)
+    monkeypatch.setattr(bm25_retriever, "get_keyword_store", lambda: Store())
 
     result = bm25_retriever.retrieve_bm25(
         _intent(),
         user_id=UUID("10000000-0000-0000-0000-000000000001"),
     )
 
-    assert result == [{"unique_id": "pg:1"}]
+    assert result == [{"unique_id": "es:1"}]
     assert captured["user_id"] == UUID("10000000-0000-0000-0000-000000000001")
 
 
@@ -62,7 +62,7 @@ def test_retrieve_bm25_uses_elasticsearch_backend_when_configured(monkeypatch):
     }
 
 
-def test_retrieve_bm25_falls_back_to_postgres_when_elasticsearch_fails(monkeypatch):
+def test_retrieve_bm25_does_not_fallback_to_postgres_when_elasticsearch_fails(monkeypatch):
     monkeypatch.setattr(bm25_retriever.settings, "rag_keyword_backend", "elasticsearch")
 
     class Store:
@@ -70,20 +70,5 @@ def test_retrieve_bm25_falls_back_to_postgres_when_elasticsearch_fails(monkeypat
             raise RuntimeError("es unavailable")
 
     monkeypatch.setattr(bm25_retriever, "get_keyword_store", lambda: Store())
-    monkeypatch.setattr(
-        bm25_retriever,
-        "retrieve_pg_bm25",
-        lambda intent, user_id=None: [{"unique_id": "pg:fallback", "user_id": str(user_id)}],
-    )
 
-    result = bm25_retriever.retrieve_bm25(
-        _intent(),
-        user_id=UUID("10000000-0000-0000-0000-000000000001"),
-    )
-
-    assert result == [
-        {
-            "unique_id": "pg:fallback",
-            "user_id": "10000000-0000-0000-0000-000000000001",
-        }
-    ]
+    assert bm25_retriever.retrieve_bm25(_intent()) == []

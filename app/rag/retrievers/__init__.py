@@ -7,7 +7,7 @@ RAG 多路检索器包
 2. tweet_retriever   — 公共推文信号（public_signals, source_type='tweet'）
 3. analysis_retriever — 分析结果信号（public_signals, source_type='analysis'）
 4. structured_retriever — PostgreSQL 结构化数据（predictions / analysis_results 表）
-5. bm25_retriever    — PostgreSQL 全文检索（doc_chunks.search_vector, jieba 分词）
+5. bm25_retriever    — Elasticsearch BM25 关键词检索
 
 所有检索器输出统一格式：
   {"unique_id": str, "content": str, "source_type": str, "metadata": dict, "score": float}

@@ -421,7 +421,6 @@ def ingest_document_task(self, document_id: str) -> dict:
     from app.rag.chunking import chunk_document
     from app.rag.embeddings import get_embedder
     from app.rag.repository import Chunk, UserDocumentRepository
-    from app.rag.tokenizer import tokenize_for_tsvector
     from app.rag.vector_store import get_vector_store
 
     db = SessionLocal()
@@ -466,7 +465,6 @@ def ingest_document_task(self, document_id: str) -> dict:
                     }.items()
                     if v is not None
                 },
-                search_vector=sa.func.to_tsvector("simple", tokenize_for_tsvector(c)),
             )
             for i, c in enumerate(chunks)
         ]
@@ -523,7 +521,6 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
     from app.models.doc_chunk import DocChunk
     from app.rag.chunking import chunk_analysis, chunk_tweet
     from app.rag.embeddings import get_embedder
-    from app.rag.tokenizer import tokenize_for_tsvector
     from app.rag.vector_store import get_vector_store
 
     db = SessionLocal()
@@ -665,7 +662,6 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 char_count=len(chunk_text),
                 metadata_=meta,
                 vector_id=vector_id,
-                search_vector=sa.func.to_tsvector("simple", tokenize_for_tsvector(chunk_text)),
             )
             db.add(row)
             rows_to_index.append(row)
@@ -902,59 +898,6 @@ def backfill_analysis_signals_task(self, batch_size: int = 100) -> dict:
         db.close()
 
     logger.info("[Celery] backfill_analysis_signals: %s", stats)
-    return stats
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.backfill_search_vector_task",
-    acks_late=True,
-)
-def backfill_search_vector_task(self, batch_size: int = 200) -> dict:
-    """回填已有 doc_chunks 的 search_vector 列（逐批 UPDATE）。
-
-    查询 search_vector IS NULL 的记录，用 jieba 分词后写入 tsvector。
-    每次处理 batch_size 条，通过 Beat 定期执行直到全部回填完毕。
-
-    手动触发：
-      backfill_search_vector_task.delay(batch_size=500)
-    """
-    from app.models.doc_chunk import DocChunk
-    from app.rag.tokenizer import tokenize_for_tsvector
-
-    db = SessionLocal()
-    stats = {"updated": 0, "remaining": 0}
-    try:
-        rows = db.execute(
-            select(DocChunk)
-            .where(DocChunk.search_vector.is_(None))
-            .limit(batch_size)
-        ).scalars().all()
-
-        for chunk in rows:
-            tokenized = tokenize_for_tsvector(chunk.content or "")
-            if tokenized:
-                chunk.search_vector = sa.func.to_tsvector("simple", tokenized)
-            else:
-                chunk.search_vector = sa.func.to_tsvector("simple", "")
-            stats["updated"] += 1
-
-        db.commit()
-
-        remaining = db.execute(
-            select(sa.func.count())
-            .select_from(DocChunk)
-            .where(DocChunk.search_vector.is_(None))
-        ).scalar() or 0
-        stats["remaining"] = remaining
-
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-    logger.info("[Celery] backfill_search_vector: %s", stats)
     return stats
 
 

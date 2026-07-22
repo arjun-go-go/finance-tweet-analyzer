@@ -15,7 +15,7 @@ def _settings(**overrides):
 def test_elasticsearch_keyword_settings_have_safe_defaults():
     configured = _settings()
 
-    assert configured.rag_keyword_backend == "postgres"
+    assert configured.rag_keyword_backend == "elasticsearch"
     assert configured.elasticsearch_url == ""
     assert configured.elasticsearch_username == ""
     assert configured.elasticsearch_password == ""
