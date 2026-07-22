@@ -62,6 +62,7 @@ def build_rag_index_body() -> dict[str, Any]:
                 "ticker": {"type": "keyword"},
                 "tickers": {"type": "keyword"},
                 "blogger_handle": {"type": "keyword"},
+                "index_stage": {"type": "keyword"},
                 "published_at": {"type": "date"},
                 "created_at": {"type": "date"},
                 "metadata": {
@@ -149,22 +150,59 @@ class ElasticsearchKeywordStore:
         self._client = client or build_elasticsearch_client()
         self.index_name = index_name or settings.es_rag_index
 
+    def versioned_index_name(self, version: int = 1) -> str:
+        return f"{self.index_name}_v{version}"
+
     def health_check(self) -> bool:
         return bool(self._client.ping())
 
     def index_exists(self) -> bool:
-        return bool(self._client.indices.exists(index=self.index_name))
+        return bool(self._client.indices.exists_alias(name=self.index_name))
+
+    def current_write_index(self) -> str | None:
+        try:
+            aliases = self._client.indices.get_alias(name=self.index_name)
+        except Exception:
+            return None
+        for index, data in (aliases or {}).items():
+            if self.index_name in (data.get("aliases") or {}):
+                return index
+        return None
 
     def create_index_if_missing(self) -> bool:
         if self.index_exists():
             return False
+        physical_index = self.versioned_index_name(1)
         body = build_rag_index_body()
         self._client.indices.create(
-            index=self.index_name,
+            index=physical_index,
             settings=body["settings"],
             mappings=body["mappings"],
         )
+        if self._client.indices.exists(index=self.index_name):
+            self._client.reindex(
+                source={"index": self.index_name},
+                dest={"index": physical_index},
+                refresh=True,
+                wait_for_completion=True,
+            )
+            self._client.indices.delete(index=self.index_name)
+        self._client.indices.update_aliases(
+            body={
+                "actions": [
+                    {"add": {"index": physical_index, "alias": self.index_name}},
+                ]
+            }
+        )
         return True
+
+    def switch_alias(self, new_index: str) -> dict[str, Any]:
+        current_index = self.current_write_index()
+        actions: list[dict[str, Any]] = []
+        if current_index:
+            actions.append({"remove": {"index": current_index, "alias": self.index_name}})
+        actions.append({"add": {"index": new_index, "alias": self.index_name}})
+        return self._client.indices.update_aliases(body={"actions": actions})
 
     def _build_query(
         self,
@@ -206,20 +244,76 @@ class ElasticsearchKeywordStore:
             filters.append({"range": {"published_at": {"lte": _iso(time_range_end)}}})
 
         return {
-            "bool": {
-                "must": [
-                    {
-                        "multi_match": {
-                            "query": query_text,
-                            "fields": ["content^3", "title^2", "ticker^4", "tickers^4"],
-                            "type": "best_fields",
-                            "operator": "or",
-                        }
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "multi_match": {
+                                    "query": query_text,
+                                    "fields": [
+                                        "ticker^8",
+                                        "tickers^8",
+                                        "title^4",
+                                        "blogger_handle^3",
+                                        "content^2",
+                                    ],
+                                    "type": "best_fields",
+                                    "operator": "or",
+                                }
+                            }
+                        ],
+                        "filter": filters,
                     }
+                },
+                "functions": [
+                    {"filter": {"term": {"index_stage": "analysis"}}, "weight": 1.25},
+                    {"filter": {"term": {"index_stage": "raw"}}, "weight": 1.05},
+                    {
+                        "gauss": {
+                            "published_at": {
+                                "origin": "now",
+                                "scale": "14d",
+                                "decay": 0.5,
+                            }
+                        },
+                        "weight": 1.15,
+                    },
                 ],
-                "filter": filters,
+                "score_mode": "sum",
+                "boost_mode": "multiply",
             }
         }
+
+    def _highlight(self) -> dict[str, Any]:
+        return {
+            "pre_tags": ["<em>"],
+            "post_tags": ["</em>"],
+            "fields": {
+                "content": {"fragment_size": 160, "number_of_fragments": 3},
+                "title": {"fragment_size": 120, "number_of_fragments": 1},
+            },
+        }
+
+    def _results_from_response(self, response: dict[str, Any]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for hit in response.get("hits", {}).get("hits", []):
+            source = hit.get("_source") or {}
+            chunk_id = str(source.get("chunk_id") or hit.get("_id") or "")
+            metadata = dict(source.get("metadata") or {})
+            metadata["chunk_id"] = chunk_id
+            if hit.get("highlight"):
+                metadata["highlight"] = hit["highlight"]
+            results.append(
+                {
+                    "unique_id": f"es:{chunk_id}",
+                    "content": source.get("content") or "",
+                    "source_type": source.get("source_type") or metadata.get("source_type", "document"),
+                    "metadata": metadata,
+                    "score": float(hit.get("_score") or 0.0),
+                }
+            )
+        return results
 
     def search(
         self,
@@ -231,33 +325,50 @@ class ElasticsearchKeywordStore:
         time_range_end: datetime | date | None = None,
         top_k: int | None = None,
     ) -> list[dict[str, Any]]:
+        query = self._build_query(
+            query_text=query_text,
+            user_id=user_id,
+            blogger_filter=blogger_filter,
+            time_range_start=time_range_start,
+            time_range_end=time_range_end,
+        )
         response = self._client.search(
             index=self.index_name,
-            query=self._build_query(
-                query_text=query_text,
-                user_id=user_id,
-                blogger_filter=blogger_filter,
-                time_range_start=time_range_start,
-                time_range_end=time_range_end,
-            ),
+            query=query,
             size=top_k or settings.rag_bm25_top_k,
+            highlight=self._highlight(),
         )
-        results: list[dict[str, Any]] = []
-        for hit in response.get("hits", {}).get("hits", []):
-            source = hit.get("_source") or {}
-            chunk_id = str(source.get("chunk_id") or hit.get("_id") or "")
-            metadata = dict(source.get("metadata") or {})
-            metadata["chunk_id"] = chunk_id
-            results.append(
-                {
-                    "unique_id": f"es:{chunk_id}",
-                    "content": source.get("content") or "",
-                    "source_type": source.get("source_type") or metadata.get("source_type", "document"),
-                    "metadata": metadata,
-                    "score": float(hit.get("_score") or 0.0),
-                }
-            )
-        return results
+        return self._results_from_response(response)
+
+    def debug_search(
+        self,
+        *,
+        query_text: str,
+        user_id: UUID | str | None = None,
+        blogger_filter: list[str] | None = None,
+        time_range_start: datetime | date | None = None,
+        time_range_end: datetime | date | None = None,
+        top_k: int | None = None,
+    ) -> dict[str, Any]:
+        query = self._build_query(
+            query_text=query_text,
+            user_id=user_id,
+            blogger_filter=blogger_filter,
+            time_range_start=time_range_start,
+            time_range_end=time_range_end,
+        )
+        response = self._client.search(
+            index=self.index_name,
+            query=query,
+            size=top_k or settings.rag_bm25_top_k,
+            highlight=self._highlight(),
+        )
+        return {
+            "index": self.index_name,
+            "query": query,
+            "raw_hits": response.get("hits", {}).get("hits", []),
+            "results": self._results_from_response(response),
+        }
 
     def bulk_upsert_documents(self, documents: Iterable[dict[str, Any]]) -> tuple[int, list[Any]]:
         actions = [
@@ -283,6 +394,21 @@ class ElasticsearchKeywordStore:
             index=self.index_name,
             query={"term": {"document_id": str(document_id)}},
             conflicts="proceed",
+        )
+
+    def delete_by_source(self, source_type: str, source_id: UUID | str) -> dict[str, Any]:
+        return self._client.delete_by_query(
+            index=self.index_name,
+            query={
+                "bool": {
+                    "filter": [
+                        {"term": {"source_type": source_type}},
+                        {"term": {"source_id": str(source_id)}},
+                    ]
+                }
+            },
+            conflicts="proceed",
+            refresh=True,
         )
 
 

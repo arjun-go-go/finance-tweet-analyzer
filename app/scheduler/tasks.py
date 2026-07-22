@@ -87,6 +87,32 @@ def _best_effort_upsert_es_chunks(chunks, user_id=None, db=None) -> dict:
     return stats
 
 
+def _delete_existing_source_chunks(db, source_type: str, source_id: str) -> dict:
+    """Delete old PG/ES chunks for a source before rewriting it."""
+    stats = {"pg_deleted": 0, "es_deleted": 0}
+    existing_chunks = db.execute(
+        select(DocChunk).where(
+            DocChunk.metadata_["source_type"].astext == source_type,
+            DocChunk.metadata_["source_id"].astext == str(source_id),
+        )
+    ).scalars().all()
+    for chunk in existing_chunks:
+        db.delete(chunk)
+        stats["pg_deleted"] += 1
+
+    try:
+        result = get_keyword_store().delete_by_source(source_type, source_id)
+        stats["es_deleted"] = int(result.get("deleted") or 0)
+    except Exception as exc:
+        logger.warning(
+            "[Celery] Elasticsearch source cleanup skipped for %s:%s: %s",
+            source_type,
+            source_id,
+            exc,
+        )
+    return stats
+
+
 @shared_task(
     bind=True,
     name="app.scheduler.tasks.auto_analysis_task",
@@ -681,6 +707,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         vectors = embedder.embed_documents(embed_texts)
         indexed = 0
         rows_to_index = []
+        cleanup_stats = _delete_existing_source_chunks(db, source_type, source_id)
 
         for i, (chunk_text, vec) in enumerate(zip(chunks, vectors)):
             content_hash = sha256(chunk_text.encode("utf-8")).hexdigest()
@@ -708,7 +735,13 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
 
         db.commit()
         es_stats = _best_effort_upsert_es_chunks(rows_to_index, db=db)
-        return {"source_type": source_type, "source_id": source_id, "indexed": indexed, "es": es_stats}
+        return {
+            "source_type": source_type,
+            "source_id": source_id,
+            "indexed": indexed,
+            "cleanup": cleanup_stats,
+            "es": es_stats,
+        }
     except Exception:
         db.rollback()
         raise

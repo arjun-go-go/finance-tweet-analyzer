@@ -12,6 +12,12 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
 
 class _FakeSession:
     def __init__(self, tweet):

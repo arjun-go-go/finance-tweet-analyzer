@@ -44,6 +44,7 @@ async def debug_retrieve(
     from app.rag.retrievers.analysis_retriever import retrieve_analyses
     from app.rag.retrievers.structured_retriever import retrieve_structured
     from app.rag.retrievers.bm25_retriever import retrieve_bm25
+    from app.rag.keyword_store import get_keyword_store
     from app.rag.fusion import reciprocal_rank_fusion
     from app.rag.reranker import rerank, apply_time_decay
 
@@ -61,6 +62,7 @@ async def debug_retrieve(
         intent = intent.model_copy(update={"blogger_filter": request.blogger_filter})
 
     intent_dict = intent.model_dump()
+    es_query_text = f"{intent.ticker} {' '.join(intent.keywords)}".strip()
 
     # 2. Retrieve from 4 paths (adapting to each retriever's actual signature)
     paths: dict[str, list[dict]] = {}
@@ -105,6 +107,20 @@ async def debug_retrieve(
         paths["bm25"] = [{"unique_id": "error", "content": str(e), "source_type": "error", "metadata": {}, "score": 0}]
     latency_ms["bm25"] = round((time.perf_counter() - t0) * 1000, 1)
 
+    t0 = time.perf_counter()
+    try:
+        es_debug = get_keyword_store().debug_search(
+            query_text=es_query_text,
+            user_id=current_user.id,
+            blogger_filter=intent.blogger_filter,
+            time_range_start=intent.time_range_start,
+            time_range_end=intent.time_range_end,
+            top_k=settings.rag_bm25_top_k,
+        )
+    except Exception as e:
+        es_debug = {"error": str(e), "query": None, "raw_hits": [], "results": []}
+    latency_ms["es_debug"] = round((time.perf_counter() - t0) * 1000, 1)
+
     # 3. RRF Fusion
     t0 = time.perf_counter()
     all_results = [paths["documents"], paths["tweets"], paths["analyses"], paths["structured"], paths["bm25"]]
@@ -113,12 +129,17 @@ async def debug_retrieve(
 
     # 4. Rerank
     t0 = time.perf_counter()
+    rerank_debug = {"input_count": len(fused), "selected_indices": []}
     try:
         reranked_indices = rerank(
             query=request.query,
             documents=[item["content"] for item in fused],
             top_n=settings.reranker_top_n,
         )
+        rerank_debug["selected_indices"] = [
+            {"index": idx, "score": float(score)}
+            for idx, score in reranked_indices
+        ]
         reranked = [fused[idx] for idx, _score in reranked_indices]
     except Exception:
         reranked = fused[: settings.reranker_top_n]
@@ -128,7 +149,9 @@ async def debug_retrieve(
     return {
         "intent": intent_dict,
         "paths": paths,
+        "es_debug": es_debug,
         "fused": fused,
         "reranked": reranked,
+        "rerank_debug": rerank_debug,
         "latency_ms": latency_ms,
     }

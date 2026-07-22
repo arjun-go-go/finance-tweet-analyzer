@@ -136,6 +136,38 @@ def test_retry_failed_es_index_jobs_task_reindexes_failed_jobs(monkeypatch):
     assert calls[0][1] == UUID("10000000-0000-0000-0000-000000000001")
 
 
+def test_delete_existing_source_chunks_deletes_pg_chunks_and_es_documents(monkeypatch):
+    deleted_rows = []
+    es_calls = []
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [Chunk()]
+
+    class FakeSession:
+        def execute(self, stmt):
+            return Result()
+
+        def delete(self, row):
+            deleted_rows.append(row)
+
+    class Store:
+        def delete_by_source(self, source_type, source_id):
+            es_calls.append((source_type, source_id))
+            return {"deleted": 1}
+
+    monkeypatch.setattr(tasks, "get_keyword_store", lambda: Store())
+
+    result = tasks._delete_existing_source_chunks(FakeSession(), "tweet", "tweet-1")
+
+    assert result == {"pg_deleted": 1, "es_deleted": 1}
+    assert deleted_rows[0].id == Chunk.id
+    assert es_calls == [("tweet", "tweet-1")]
+
+
 def test_reindex_elasticsearch_chunks_task_dry_run_does_not_write(monkeypatch):
     class FakeResult:
         def all(self):
