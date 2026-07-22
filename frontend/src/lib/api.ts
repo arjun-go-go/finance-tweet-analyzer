@@ -852,8 +852,19 @@ export interface RetrievalDebugResponse {
     structured: RetrievalResult[];
     bm25: RetrievalResult[];
   };
+  es_debug?: {
+    index?: string;
+    query?: Record<string, unknown> | null;
+    raw_hits?: Array<Record<string, unknown>>;
+    results?: RetrievalResult[];
+    error?: string;
+  };
   fused: RetrievalResult[];
   reranked: RetrievalResult[];
+  rerank_debug?: {
+    input_count: number;
+    selected_indices: Array<{ index: number; score: number }>;
+  };
   latency_ms: Record<string, number>;
 }
 
@@ -873,6 +884,67 @@ export async function debugRetrieve(
   });
   if (!res.ok) throw new Error("Failed to debug retrieve");
   return res.json() as Promise<RetrievalDebugResponse>;
+}
+
+export interface EsAdminStats {
+  elasticsearch: {
+    alias: string;
+    current_write_index: string | null;
+    total: number;
+    source_counts: Record<string, number>;
+  };
+  doc_chunks: number;
+  index_jobs: Record<string, Record<string, number>>;
+}
+
+export interface IndexJobItem {
+  doc_chunk_id: string;
+  target: string;
+  status: string;
+  attempts: number;
+  error_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export async function fetchEsAdminStats(): Promise<EsAdminStats> {
+  const res = await authFetch(`${API_BASE}/api/admin/es/stats`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch ES stats");
+  return res.json() as Promise<EsAdminStats>;
+}
+
+export async function fetchEsIndexJobs(params?: {
+  target?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ items: IndexJobItem[]; total: number }> {
+  const sp = new URLSearchParams();
+  if (params?.target) sp.set("target", params.target);
+  if (params?.status) sp.set("status", params.status);
+  sp.set("limit", String(params?.limit ?? 50));
+  sp.set("offset", String(params?.offset ?? 0));
+  const res = await authFetch(`${API_BASE}/api/admin/es/jobs?${sp.toString()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error("Failed to fetch index jobs");
+  return res.json() as Promise<{ items: IndexJobItem[]; total: number }>;
+}
+
+export async function rebuildEsAlias(params?: {
+  batchSize?: number;
+  targetIndex?: string;
+  switchAlias?: boolean;
+}): Promise<{ task_id: string; status: string }> {
+  const sp = new URLSearchParams();
+  sp.set("batch_size", String(params?.batchSize ?? 500));
+  if (params?.targetIndex) sp.set("target_index", params.targetIndex);
+  if (params?.switchAlias != null) sp.set("switch_alias", String(params.switchAlias));
+  const res = await authFetch(`${API_BASE}/api/admin/es/alias/rebuild?${sp.toString()}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to rebuild ES alias");
+  return res.json() as Promise<{ task_id: string; status: string }>;
 }
 
 export { getAccessToken };

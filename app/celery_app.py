@@ -55,6 +55,7 @@ celery.conf.update(
         "app.scheduler.tasks.gc_vector_task": {"queue": "default"},
         "app.scheduler.tasks.reindex_elasticsearch_chunks_task": {"queue": "default"},
         "app.scheduler.tasks.retry_failed_es_index_jobs_task": {"queue": "default"},
+        "app.scheduler.tasks.rebuild_elasticsearch_alias_task": {"queue": "default"},
         "app.scheduler.tasks.scan_blogger_tweets_task": {"queue": "ingest"},
         "app.scheduler.tasks.user_analysis_job_task": {"queue": "analysis"},
         "app.scheduler.tasks.fetch_blogger_tweets_task": {"queue": "ingest"},

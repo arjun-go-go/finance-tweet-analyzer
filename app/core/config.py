@@ -129,6 +129,13 @@ class Settings(BaseSettings):
     es_rag_index: str = "finance_rag_chunks"
     es_request_timeout_sec: float = 3.0
     es_bulk_chunk_size: int = 500
+    es_source_type_quota: dict[str, int] = {
+        "tweet": 5,
+        "analysis": 5,
+        "document": 3,
+        "pdf": 1,
+        "docx": 1,
+    }
 
     # ----- Report generation -----
     report_section_timeout_sec: int = 90

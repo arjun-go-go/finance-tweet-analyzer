@@ -20,7 +20,7 @@ def test_retrieve_bm25_uses_elasticsearch_backend_by_default(monkeypatch):
     captured = {}
 
     class Store:
-        def search(self, **kwargs):
+        def search_with_source_quotas(self, **kwargs):
             captured.update(kwargs)
             return [{"unique_id": "es:1"}]
 
@@ -40,7 +40,7 @@ def test_retrieve_bm25_uses_elasticsearch_backend_when_configured(monkeypatch):
     captured = {}
 
     class Store:
-        def search(self, **kwargs):
+        def search_with_source_quotas(self, **kwargs):
             captured.update(kwargs)
             return [{"unique_id": "es:1"}]
 
@@ -54,11 +54,11 @@ def test_retrieve_bm25_uses_elasticsearch_backend_when_configured(monkeypatch):
     assert result == [{"unique_id": "es:1"}]
     assert captured == {
         "query_text": "BTC ETF risk",
+        "source_quotas": bm25_retriever.settings.es_source_type_quota,
         "user_id": UUID("10000000-0000-0000-0000-000000000001"),
         "blogger_filter": ["satoshi"],
         "time_range_start": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "time_range_end": datetime(2026, 1, 31, tzinfo=timezone.utc),
-        "top_k": bm25_retriever.settings.rag_bm25_top_k,
     }
 
 
@@ -66,7 +66,7 @@ def test_retrieve_bm25_does_not_fallback_to_postgres_when_elasticsearch_fails(mo
     monkeypatch.setattr(bm25_retriever.settings, "rag_keyword_backend", "elasticsearch")
 
     class Store:
-        def search(self, **kwargs):
+        def search_with_source_quotas(self, **kwargs):
             raise RuntimeError("es unavailable")
 
     monkeypatch.setattr(bm25_retriever, "get_keyword_store", lambda: Store())

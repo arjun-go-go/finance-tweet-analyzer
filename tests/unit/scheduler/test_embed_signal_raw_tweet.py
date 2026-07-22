@@ -37,8 +37,15 @@ class _FakeSession:
     def add(self, row):
         self.added.append(row)
 
+    def merge(self, row):
+        self.added.append(row)
+        return row
+
     def commit(self):
         self.committed = True
+
+    def flush(self):
+        pass
 
     def rollback(self):
         pass
@@ -88,6 +95,11 @@ def test_embed_signal_task_indexes_raw_tweet_without_analysis(monkeypatch):
         tasks,
         "_best_effort_upsert_es_chunks",
         lambda rows, **_kwargs: {"indexed": len(rows)},
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_delete_existing_source_chunks",
+        lambda *_args, **_kwargs: {"pg_deleted": 0, "es_deleted": 0},
     )
 
     result = tasks.embed_signal_task.run("tweet", str(tweet.id))

@@ -15,7 +15,7 @@ from app.core.deps import SessionLocal
 from app.models.analysis import AnalysisResult
 from app.models.doc_chunk import DocChunk
 from app.models.document import Document
-from app.models.es_index_job import EsIndexJob
+from app.models.index_job import IndexJob
 from app.models.tweet import Tweet
 from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
 from app.scheduler.locks import (
@@ -32,18 +32,26 @@ from app.services.analysis_service import analyze_by_blogger, analyze_single_twe
 logger = get_task_logger(__name__)
 
 
-def _record_es_index_jobs(db, chunks, *, status: str, attempts: int, error_message: str | None = None) -> None:
+def _record_index_jobs(
+    db,
+    chunks,
+    *,
+    target: str,
+    status: str,
+    attempts: int,
+    error_message: str | None = None,
+) -> None:
     if db is None:
         return
     for chunk in chunks:
         previous_attempts = 0
         if hasattr(db, "get"):
-            existing = db.get(EsIndexJob, chunk.id)
+            existing = db.get(IndexJob, {"doc_chunk_id": chunk.id, "target": target})
             previous_attempts = getattr(existing, "attempts", 0) if existing else 0
         db.merge(
-            EsIndexJob(
+            IndexJob(
                 doc_chunk_id=chunk.id,
-                target="elasticsearch",
+                target=target,
                 status=status,
                 attempts=previous_attempts + attempts,
                 error_message=error_message,
@@ -65,25 +73,46 @@ def _best_effort_upsert_es_chunks(chunks, user_id=None, db=None) -> dict:
         stats["indexed"] = int(indexed or 0)
         stats["errors"] = len(errors or [])
         if stats["errors"]:
-            _record_es_index_jobs(
+            _record_index_jobs(
                 db,
                 chunk_list,
+                target="elasticsearch",
                 status="failed",
                 attempts=1,
                 error_message=str(errors[:3]),
             )
         else:
-            _record_es_index_jobs(db, chunk_list, status="success", attempts=1)
+            _record_index_jobs(db, chunk_list, target="elasticsearch", status="success", attempts=1)
     except Exception as exc:
         stats["errors"] = len(chunk_list)
-        _record_es_index_jobs(
+        _record_index_jobs(
             db,
             chunk_list,
+            target="elasticsearch",
             status="failed",
             attempts=1,
             error_message=str(exc)[:1000],
         )
         logger.warning("[Celery] Elasticsearch chunk upsert skipped: %s", exc)
+    return stats
+
+
+def _upsert_es_chunks_to_index(chunks, *, index_name: str, user_id=None) -> dict:
+    chunk_list = list(chunks or [])
+    stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
+    if not chunk_list:
+        return stats
+    try:
+        docs = [chunk_to_es_document(chunk, user_id=user_id) for chunk in chunk_list]
+        indexed, errors = get_keyword_store().bulk_upsert_documents_to_index(
+            docs,
+            index_name=index_name,
+        )
+        stats["indexed"] = int(indexed or 0)
+        stats["errors"] = len(errors or [])
+    except Exception as exc:
+        stats["errors"] = len(chunk_list)
+        logger.warning("[Celery] Elasticsearch version index upsert failed: %s", exc)
     return stats
 
 
@@ -550,6 +579,7 @@ def ingest_document_task(self, document_id: str) -> dict:
 
         doc.chunk_count = len(rows)
         doc.status = "indexed"
+        _record_index_jobs(db, rows, target="milvus", status="success", attempts=1)
         db.commit()
         es_stats = _best_effort_upsert_es_chunks(rows, user_id=doc.user_id, db=db)
         return {"document_id": str(doc.id), "chunks": len(rows), "es": es_stats}
@@ -733,6 +763,8 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             rows_to_index.append(row)
             indexed += 1
 
+        db.flush()
+        _record_index_jobs(db, rows_to_index, target="milvus", status="success", attempts=1)
         db.commit()
         es_stats = _best_effort_upsert_es_chunks(rows_to_index, db=db)
         return {
@@ -1037,9 +1069,12 @@ def retry_failed_es_index_jobs_task(self, batch_size: int = 200) -> dict:
     stats = {"scanned": 0, "attempted": 0, "indexed": 0, "errors": 0, "missing_chunks": 0}
     try:
         jobs = db.execute(
-            select(EsIndexJob)
-            .where(EsIndexJob.status.in_(["pending", "failed"]))
-            .order_by(EsIndexJob.updated_at.asc())
+            select(IndexJob)
+            .where(
+                IndexJob.target == "elasticsearch",
+                IndexJob.status.in_(["pending", "failed"]),
+            )
+            .order_by(IndexJob.updated_at.asc())
             .limit(batch_size)
         ).scalars().all()
         stats["scanned"] = len(jobs)
@@ -1069,6 +1104,71 @@ def retry_failed_es_index_jobs_task(self, batch_size: int = 200) -> dict:
     except Exception:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.rebuild_elasticsearch_alias_task",
+    acks_late=True,
+)
+def rebuild_elasticsearch_alias_task(
+    self,
+    batch_size: int = 500,
+    target_index: str | None = None,
+    switch_alias: bool = True,
+) -> dict:
+    """Build a new versioned ES index from PG doc_chunks and optionally switch alias."""
+    db = SessionLocal()
+    store = get_keyword_store()
+    index_name = target_index or store.next_versioned_index_name()
+    stats = {
+        "target_index": index_name,
+        "created": False,
+        "scanned": 0,
+        "attempted": 0,
+        "indexed": 0,
+        "errors": 0,
+        "alias_switched": False,
+    }
+    try:
+        stats["created"] = store.create_version_index(index_name)
+        offset = 0
+        while True:
+            rows = db.execute(
+                select(DocChunk, Document.user_id)
+                .outerjoin(Document, DocChunk.document_id == Document.id)
+                .order_by(DocChunk.created_at.asc(), DocChunk.id.asc())
+                .offset(offset)
+                .limit(batch_size)
+            ).all()
+            if not rows:
+                break
+            stats["scanned"] += len(rows)
+            private_by_user = {}
+            public_chunks = []
+            for chunk, user_id in rows:
+                if user_id:
+                    private_by_user.setdefault(user_id, []).append(chunk)
+                else:
+                    public_chunks.append(chunk)
+            for user_id, chunks in private_by_user.items():
+                result = _upsert_es_chunks_to_index(chunks, index_name=index_name, user_id=user_id)
+                stats["attempted"] += result["attempted"]
+                stats["indexed"] += result["indexed"]
+                stats["errors"] += result["errors"]
+            if public_chunks:
+                result = _upsert_es_chunks_to_index(public_chunks, index_name=index_name)
+                stats["attempted"] += result["attempted"]
+                stats["indexed"] += result["indexed"]
+                stats["errors"] += result["errors"]
+            offset += len(rows)
+
+        if switch_alias and stats["errors"] == 0:
+            store.switch_alias(index_name)
+            stats["alias_switched"] = True
+        return stats
     finally:
         db.close()
 

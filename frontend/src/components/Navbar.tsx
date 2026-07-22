@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/tracking", label: "追踪" },
   { href: "/me", label: "我的工作台" },
   { href: "/retrieval-test", label: "检索测试" },
+  { href: "/admin/es", label: "ES Admin" },
   { href: "/chat", label: "智能助手" },
 ];
 

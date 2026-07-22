@@ -18,13 +18,13 @@ def retrieve_es_bm25(intent: QueryIntent, user_id: UUID | None = None) -> list[d
     query_text = _query_text(intent)
     if not query_text:
         return []
-    return get_keyword_store().search(
+    return get_keyword_store().search_with_source_quotas(
         query_text=query_text,
+        source_quotas=settings.es_source_type_quota,
         user_id=user_id,
         blogger_filter=intent.blogger_filter,
         time_range_start=intent.time_range_start,
         time_range_end=intent.time_range_end,
-        top_k=settings.rag_bm25_top_k,
     )
 
 

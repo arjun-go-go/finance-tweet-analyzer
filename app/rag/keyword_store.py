@@ -204,6 +204,28 @@ class ElasticsearchKeywordStore:
         actions.append({"add": {"index": new_index, "alias": self.index_name}})
         return self._client.indices.update_aliases(body={"actions": actions})
 
+    def next_versioned_index_name(self) -> str:
+        current = self.current_write_index()
+        if not current or not current.startswith(f"{self.index_name}_v"):
+            return self.versioned_index_name(1)
+        suffix = current.rsplit("_v", 1)[-1]
+        try:
+            version = int(suffix)
+        except ValueError:
+            version = 0
+        return self.versioned_index_name(version + 1)
+
+    def create_version_index(self, index_name: str) -> bool:
+        if self._client.indices.exists(index=index_name):
+            return False
+        body = build_rag_index_body()
+        self._client.indices.create(
+            index=index_name,
+            settings=body["settings"],
+            mappings=body["mappings"],
+        )
+        return True
+
     def _build_query(
         self,
         *,
@@ -340,6 +362,44 @@ class ElasticsearchKeywordStore:
         )
         return self._results_from_response(response)
 
+    def search_with_source_quotas(
+        self,
+        *,
+        query_text: str,
+        source_quotas: dict[str, int],
+        user_id: UUID | str | None = None,
+        blogger_filter: list[str] | None = None,
+        time_range_start: datetime | date | None = None,
+        time_range_end: datetime | date | None = None,
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for source_type, quota in source_quotas.items():
+            if quota <= 0:
+                continue
+            query = self._build_query(
+                query_text=query_text,
+                user_id=user_id,
+                blogger_filter=blogger_filter,
+                time_range_start=time_range_start,
+                time_range_end=time_range_end,
+            )
+            query["function_score"]["query"]["bool"]["filter"].append(
+                {"term": {"source_type": source_type}}
+            )
+            response = self._client.search(
+                index=self.index_name,
+                query=query,
+                size=quota,
+                highlight=self._highlight(),
+            )
+            for item in self._results_from_response(response):
+                if item["unique_id"] in seen:
+                    continue
+                seen.add(item["unique_id"])
+                merged.append(item)
+        return sorted(merged, key=lambda item: item.get("score", 0), reverse=True)
+
     def debug_search(
         self,
         *,
@@ -371,10 +431,18 @@ class ElasticsearchKeywordStore:
         }
 
     def bulk_upsert_documents(self, documents: Iterable[dict[str, Any]]) -> tuple[int, list[Any]]:
+        return self.bulk_upsert_documents_to_index(documents, index_name=self.index_name)
+
+    def bulk_upsert_documents_to_index(
+        self,
+        documents: Iterable[dict[str, Any]],
+        *,
+        index_name: str,
+    ) -> tuple[int, list[Any]]:
         actions = [
             {
                 "_op_type": "index",
-                "_index": self.index_name,
+                "_index": index_name,
                 "_id": doc["chunk_id"],
                 "_source": doc,
             }
@@ -388,6 +456,27 @@ class ElasticsearchKeywordStore:
             chunk_size=settings.es_bulk_chunk_size,
             raise_on_error=False,
         )
+
+    def stats(self) -> dict[str, Any]:
+        source_counts: dict[str, int] = {}
+        for source_type in ("tweet", "analysis", "document", "paste", "url", "pdf", "docx"):
+            try:
+                resp = self._client.count(
+                    index=self.index_name,
+                    query={"term": {"source_type": source_type}},
+                )
+                count = int(resp.get("count") or 0)
+                if count:
+                    source_counts[source_type] = count
+            except Exception:
+                continue
+        total = self._client.count(index=self.index_name).get("count", 0)
+        return {
+            "alias": self.index_name,
+            "current_write_index": self.current_write_index(),
+            "total": int(total or 0),
+            "source_counts": source_counts,
+        }
 
     def delete_by_document_id(self, document_id: UUID | str) -> dict[str, Any]:
         return self._client.delete_by_query(
