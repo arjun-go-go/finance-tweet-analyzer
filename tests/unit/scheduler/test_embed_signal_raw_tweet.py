@@ -78,7 +78,11 @@ def test_embed_signal_task_indexes_raw_tweet_without_analysis(monkeypatch):
     monkeypatch.setattr(tasks, "SessionLocal", lambda: db)
     monkeypatch.setattr("app.rag.vector_store.get_vector_store", lambda: vs)
     monkeypatch.setattr("app.rag.embeddings.get_embedder", lambda: _FakeEmbedder())
-    monkeypatch.setattr(tasks, "_best_effort_upsert_es_chunks", lambda rows: {"indexed": len(rows)})
+    monkeypatch.setattr(
+        tasks,
+        "_best_effort_upsert_es_chunks",
+        lambda rows, **_kwargs: {"indexed": len(rows)},
+    )
 
     result = tasks.embed_signal_task.run("tweet", str(tweet.id))
 

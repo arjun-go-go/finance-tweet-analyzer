@@ -15,6 +15,7 @@ from app.core.deps import SessionLocal
 from app.models.analysis import AnalysisResult
 from app.models.doc_chunk import DocChunk
 from app.models.document import Document
+from app.models.es_index_job import EsIndexJob
 from app.models.tweet import Tweet
 from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
 from app.scheduler.locks import (
@@ -31,7 +32,28 @@ from app.services.analysis_service import analyze_by_blogger, analyze_single_twe
 logger = get_task_logger(__name__)
 
 
-def _best_effort_upsert_es_chunks(chunks, user_id=None) -> dict:
+def _record_es_index_jobs(db, chunks, *, status: str, attempts: int, error_message: str | None = None) -> None:
+    if db is None:
+        return
+    for chunk in chunks:
+        previous_attempts = 0
+        if hasattr(db, "get"):
+            existing = db.get(EsIndexJob, chunk.id)
+            previous_attempts = getattr(existing, "attempts", 0) if existing else 0
+        db.merge(
+            EsIndexJob(
+                doc_chunk_id=chunk.id,
+                target="elasticsearch",
+                status=status,
+                attempts=previous_attempts + attempts,
+                error_message=error_message,
+            )
+        )
+    if hasattr(db, "commit"):
+        db.commit()
+
+
+def _best_effort_upsert_es_chunks(chunks, user_id=None, db=None) -> dict:
     """Best-effort Elasticsearch upsert for DocChunk-like rows."""
     chunk_list = list(chunks or [])
     stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
@@ -42,8 +64,25 @@ def _best_effort_upsert_es_chunks(chunks, user_id=None) -> dict:
         indexed, errors = get_keyword_store().bulk_upsert_documents(docs)
         stats["indexed"] = int(indexed or 0)
         stats["errors"] = len(errors or [])
+        if stats["errors"]:
+            _record_es_index_jobs(
+                db,
+                chunk_list,
+                status="failed",
+                attempts=1,
+                error_message=str(errors[:3]),
+            )
+        else:
+            _record_es_index_jobs(db, chunk_list, status="success", attempts=1)
     except Exception as exc:
         stats["errors"] = len(chunk_list)
+        _record_es_index_jobs(
+            db,
+            chunk_list,
+            status="failed",
+            attempts=1,
+            error_message=str(exc)[:1000],
+        )
         logger.warning("[Celery] Elasticsearch chunk upsert skipped: %s", exc)
     return stats
 
@@ -486,7 +525,7 @@ def ingest_document_task(self, document_id: str) -> dict:
         doc.chunk_count = len(rows)
         doc.status = "indexed"
         db.commit()
-        es_stats = _best_effort_upsert_es_chunks(rows, user_id=doc.user_id)
+        es_stats = _best_effort_upsert_es_chunks(rows, user_id=doc.user_id, db=db)
         return {"document_id": str(doc.id), "chunks": len(rows), "es": es_stats}
     except Exception as e:
         db.rollback()
@@ -668,7 +707,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             indexed += 1
 
         db.commit()
-        es_stats = _best_effort_upsert_es_chunks(rows_to_index)
+        es_stats = _best_effort_upsert_es_chunks(rows_to_index, db=db)
         return {"source_type": source_type, "source_id": source_id, "indexed": indexed, "es": es_stats}
     except Exception:
         db.rollback()
@@ -939,17 +978,64 @@ def reindex_elasticsearch_chunks_task(
                 public_chunks.append(chunk)
 
         for user_id, chunks in private_by_user.items():
-            result = _best_effort_upsert_es_chunks(chunks, user_id=user_id)
+            result = _best_effort_upsert_es_chunks(chunks, user_id=user_id, db=db)
             stats["attempted"] += result["attempted"]
             stats["indexed"] += result["indexed"]
             stats["errors"] += result["errors"]
         if public_chunks:
-            result = _best_effort_upsert_es_chunks(public_chunks)
+            result = _best_effort_upsert_es_chunks(public_chunks, db=db)
             stats["attempted"] += result["attempted"]
             stats["indexed"] += result["indexed"]
             stats["errors"] += result["errors"]
 
         return stats
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.retry_failed_es_index_jobs_task",
+    acks_late=True,
+)
+def retry_failed_es_index_jobs_task(self, batch_size: int = 200) -> dict:
+    """Retry pending/failed Elasticsearch index jobs from the PG ledger."""
+    db = SessionLocal()
+    stats = {"scanned": 0, "attempted": 0, "indexed": 0, "errors": 0, "missing_chunks": 0}
+    try:
+        jobs = db.execute(
+            select(EsIndexJob)
+            .where(EsIndexJob.status.in_(["pending", "failed"]))
+            .order_by(EsIndexJob.updated_at.asc())
+            .limit(batch_size)
+        ).scalars().all()
+        stats["scanned"] = len(jobs)
+
+        for job in jobs:
+            chunk = db.get(DocChunk, job.doc_chunk_id)
+            if not chunk:
+                job.status = "failed"
+                job.error_message = "doc_chunk missing"
+                job.attempts = (job.attempts or 0) + 1
+                stats["missing_chunks"] += 1
+                continue
+
+            user_id = None
+            if chunk.document_id:
+                doc = db.get(Document, chunk.document_id)
+                user_id = doc.user_id if doc else None
+
+            result = _best_effort_upsert_es_chunks([chunk], user_id=user_id, db=db)
+            stats["attempted"] += result["attempted"]
+            stats["indexed"] += result["indexed"]
+            stats["errors"] += result["errors"]
+
+        if stats["missing_chunks"]:
+            db.commit()
+        return stats
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
