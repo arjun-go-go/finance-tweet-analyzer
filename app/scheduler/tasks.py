@@ -541,11 +541,8 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 )
             ).scalar_one_or_none()
             result_data = analysis.result if analysis else {}
-            # 只对投资市场分析相关的推文做向量化，闲聊/生活类直接跳过
-            if not result_data.get("is_investment_related"):
-                return {"skipped": True, "reason": "not investment related"}
             tickers = result_data.get("tickers", [])
-            sentiment = result_data.get("overall_sentiment", "neutral")
+            sentiment = result_data.get("overall_sentiment", "unknown")
             # horizon 是 per-ticker 字段，取第一个有效值
             horizon = "unknown"
             for t in (tickers or []):
@@ -560,6 +557,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 "horizon": horizon,
                 "published_at": tweet.published_at.isoformat() if tweet.published_at else "",
                 "credibility_score": 0.0,
+                "index_stage": "raw",
             }
         elif source_type == "analysis":
             analysis = db.get(AnalysisResult, UUID(source_id))
@@ -604,6 +602,8 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 "horizon": horizon,
                 "published_at": tweet.published_at.isoformat() if tweet and tweet.published_at else "",
                 "credibility_score": analysis.confidence or 0.0,
+                "parent_tweet_id": str(analysis.tweet_id),
+                "index_stage": "analysis",
             }
         else:
             return {"error": f"Unknown source_type: {source_type}"}
@@ -817,9 +817,9 @@ def gc_vector_task(self) -> dict:
     acks_late=True,
 )
 def backfill_signals_task(self, batch_size: int = 100) -> dict:
-    """回填历史已分析推文的向量化。
+    """回填历史原始推文的向量化。
 
-    扫描 status='analyzed' 但尚未在 doc_chunks 中有 source_type='tweet' 记录的推文，
+    扫描有正文但尚未在 doc_chunks 中有 source_type='tweet' 记录的推文，
     分批 dispatch embed_signal_task 避免队列积压。
 
     可通过 Celery Beat 定期执行，也可手动触发：
@@ -830,7 +830,7 @@ def backfill_signals_task(self, batch_size: int = 100) -> dict:
     db = SessionLocal()
     stats = {"dispatched": 0, "already_indexed": 0}
     try:
-        # 找出所有已分析但未向量化的推文
+        # 找出所有有正文但未向量化的推文
         # 子查询：已有 tweet 类型 doc_chunk 的 source_id 集合
         indexed_subq = (
             select(DocChunk.metadata_["source_id"].astext)
@@ -841,7 +841,7 @@ def backfill_signals_task(self, batch_size: int = 100) -> dict:
         pending_tweets = db.execute(
             select(Tweet)
             .where(
-                Tweet.status == "analyzed",
+                Tweet.content.is_not(None),
                 Tweet.id.cast(sa.String).not_in(indexed_subq),
             )
             .order_by(Tweet.published_at.desc())
@@ -1266,13 +1266,16 @@ def fetch_blogger_tweets_task(self, handle: str) -> dict:
         import_items_raw = convert_tweets_to_import(raw_tweets)
         items = [TweetImportItem(**item) for item in import_items_raw]
 
-        imported, skipped = import_tweets(db, items)
+        imported, skipped, tweet_ids = import_tweets(db, items, return_ids=True)
         stats["imported"] = imported
         stats["skipped"] = skipped
 
         # 更新抓取时间
         blogger.last_fetched_at = datetime.now(timezone.utc)
         db.commit()
+
+        for tweet_id in tweet_ids:
+            embed_signal_task.delay("tweet", str(tweet_id))
 
         # 有新推文则触发分析
         if imported > 0:

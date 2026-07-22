@@ -421,7 +421,11 @@ def fetch_and_save_tweets(blogger_handle: str, pages: int = 1, config: RunnableC
 
     db = SessionLocal()
     try:
-        imported, skipped = import_tweets(db, tweet_models)
+        imported, skipped, tweet_ids = import_tweets(db, tweet_models, return_ids=True)
+        from app.scheduler.tasks import embed_signal_task
+
+        for tweet_id in tweet_ids:
+            embed_signal_task.delay("tweet", str(tweet_id))
         return (
             f"推文采集完成：共获取 {len(raw_tweets)} 条（原创 {original_count}，转推 {retweet_count}）。"
             f"入库：新导入 {imported} 条，跳过 {skipped} 条（已存在）。"

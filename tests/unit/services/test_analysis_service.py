@@ -1,7 +1,10 @@
 import uuid
 from types import SimpleNamespace
 
-from app.services.analysis_service import _mark_successful_tweets
+from app.services.analysis_service import (
+    _dispatch_analysis_indexing,
+    _mark_successful_tweets,
+)
 
 
 def _tweet(tweet_id: uuid.UUID):
@@ -34,3 +37,19 @@ def test_mark_successful_tweets_ignores_unknown_analysis_ids():
 
     assert completed == []
     assert tweet.status == "pending"
+
+
+def test_dispatch_analysis_indexing_uses_analysis_source_type(monkeypatch):
+    analysis_id = uuid.uuid4()
+    dispatched = []
+
+    class FakeEmbedTask:
+        @staticmethod
+        def delay(source_type, source_id):
+            dispatched.append((source_type, source_id))
+
+    monkeypatch.setattr("app.scheduler.tasks.embed_signal_task", FakeEmbedTask)
+
+    _dispatch_analysis_indexing([analysis_id])
+
+    assert dispatched == [("analysis", str(analysis_id))]

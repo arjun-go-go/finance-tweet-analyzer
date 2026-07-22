@@ -1,6 +1,7 @@
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from uuid import UUID
 
 from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
@@ -12,13 +13,16 @@ def import_tweets(
     db: Session,
     items: list[TweetImportItem],
     blogger: BloggerProfile | None = None,
-) -> tuple[int, int]:
+    *,
+    return_ids: bool = False,
+) -> tuple[int, int] | tuple[int, int, list[UUID]]:
     if blogger is not None:
         upsert_blogger(db, blogger)
 
     imported = 0
     skipped = 0
     seen_ids: set[str] = set()
+    imported_tweets: list[Tweet] = []
 
     for item in items:
         if item.tweet_id in seen_ids:
@@ -46,8 +50,14 @@ def import_tweets(
             status="pending",
         )
         db.add(tweet)
+        imported_tweets.append(tweet)
         imported += 1
+
+    if return_ids and imported_tweets and hasattr(db, "flush"):
+        db.flush()
 
     db.commit()
     logger.info("Tweet import: {} imported, {} skipped", imported, skipped)
+    if return_ids:
+        return imported, skipped, [t.id for t in imported_tweets]
     return imported, skipped

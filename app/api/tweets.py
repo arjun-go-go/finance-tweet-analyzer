@@ -8,6 +8,7 @@ from app.core.auth import get_current_admin, get_current_user
 from app.models.user import User
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
+from app.scheduler.tasks import embed_signal_task
 from app.schemas.tweet import TweetImportRequest, TweetImportResponse
 from app.services.tweet_service import import_tweets
 
@@ -97,5 +98,12 @@ def import_tweets_endpoint(
     _admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    imported, skipped = import_tweets(db, request.tweets, request.blogger)
+    imported, skipped, tweet_ids = import_tweets(
+        db,
+        request.tweets,
+        request.blogger,
+        return_ids=True,
+    )
+    for tweet_id in tweet_ids:
+        embed_signal_task.delay("tweet", str(tweet_id))
     return TweetImportResponse(imported=imported, skipped=skipped)

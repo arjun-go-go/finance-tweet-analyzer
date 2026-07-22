@@ -112,6 +112,13 @@ def _mark_successful_tweets(
     return successful_tweets
 
 
+def _dispatch_analysis_indexing(analysis_result_ids: list[uuid.UUID]) -> None:
+    from app.scheduler.tasks import embed_signal_task
+
+    for analysis_result_id in analysis_result_ids:
+        embed_signal_task.delay("analysis", str(analysis_result_id))
+
+
 def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict:
     """实时分析链路：classify → analysis ‖ risk → merge → 写DB。
 
@@ -162,6 +169,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             continue
 
         # Upsert 分析结果：按 (tweet_id, analysis_type) 更新或插入
+        analysis_result_ids: list[uuid.UUID] = []
         for analysis in state["analyses"]:
             tweet_id_str = analysis.pop("tweet_id")
             author = analysis.pop("author_handle")
@@ -180,11 +188,14 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 existing.confidence = analysis.get("confidence", 0.0)
                 existing.batch_id = batch_id
                 existing.prediction_status = "pending"
+                analysis_result_ids.append(existing.id)
                 db.execute(
                     delete(Prediction).where(Prediction.tweet_id == tid)
                 )
             else:
+                analysis_result_id = uuid.uuid4()
                 db.add(AnalysisResult(
+                    id=analysis_result_id,
                     tweet_id=tid,
                     analysis_type="tweet_analysis",
                     result=analysis,
@@ -193,6 +204,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                     batch_id=batch_id,
                     prediction_status="pending",
                 ))
+                analysis_result_ids.append(analysis_result_id)
 
             analysis["tweet_id"] = tweet_id_str
             analysis["author_handle"] = author
@@ -238,10 +250,8 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             logger.error("Batch {}-{} commit failed: {}", i, i + len(batch_tweets), e)
             continue
 
-        # 分析完成后异步触发向量化，将推文入库到 public_signals collection
-        from app.scheduler.tasks import embed_signal_task
-        for t in successful_batch_tweets:
-            embed_signal_task.delay("tweet", str(t.id))
+        # 分析完成后异步触发向量化，将结构化分析结果入库到 public_signals collection
+        _dispatch_analysis_indexing(analysis_result_ids)
 
         all_analyses.extend(state["analyses"])
         all_summaries.extend(state["ticker_summaries"])
