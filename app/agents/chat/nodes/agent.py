@@ -1,14 +1,92 @@
 from __future__ import annotations
 
+import re
+import uuid
 from collections.abc import Callable, Mapping
 
-from langchain_core.messages import AIMessage, SystemMessage, trim_messages
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
 from app.agents.llm import get_report_llm
 from app.core.config import settings
 from app.prompts import get_prompt
+from app.agents.chat.tool_results import parse_tool_envelope
+from app.agents.chat.routing import READ_ONLY_TOOL_NAMES
+
+
+EMPTY_RESULT_MARKERS = (
+    "未找到",
+    "没有相关",
+    "暂无相关",
+    "当前没有",
+    "列表为空",
+)
+
+
+def terminal_tool_response(messages: list) -> str | None:
+    """Build a deterministic final answer after an explicit error or empty result."""
+    if not messages or not isinstance(messages[-1], ToolMessage):
+        return None
+    envelope = parse_tool_envelope(messages[-1].content)
+    if envelope is None:
+        return None
+    message = str(envelope.get("message") or "工具未返回可用信息。")
+    if envelope.get("ok") is False:
+        return f"{message} 当前证据不足，无法确认相关信息。"
+    if not any(marker in message for marker in EMPTY_RESULT_MARKERS):
+        return None
+    citation = str((envelope.get("evidence") or {}).get("citation") or "")
+    return f"{message} 当前证据不足，无法确认更多信息。{citation}"
+
+
+def has_tool_result_since_latest_human(messages: list) -> bool:
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            return False
+        if isinstance(message, ToolMessage):
+            return True
+    return False
+
+
+def deterministic_analysis_call(messages: list, tool_name: str) -> AIMessage | None:
+    """Build the two-stage analysis tool call without relying on model sampling."""
+    human_text = next(
+        (message.content for message in reversed(messages) if isinstance(message, HumanMessage)),
+        "",
+    )
+    if tool_name == "preview_tweet_analysis":
+        handle_match = re.search(r"@([A-Za-z0-9_]{1,15})", human_text)
+        since_match = re.search(r"\b(\d+[hdw])\b", human_text.lower())
+        args = {
+            "blogger_handle": handle_match.group(1) if handle_match else "",
+            "reanalyze": "重新分析" in human_text,
+            "since": since_match.group(1) if since_match else "",
+        }
+    elif tool_name == "confirm_tweet_analysis":
+        context = "\n".join(
+            message.content
+            for message in messages
+            if isinstance(message, (AIMessage, ToolMessage)) and isinstance(message.content, str)
+        )
+        confirmation_match = re.search(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            context,
+        )
+        if confirmation_match is None:
+            return None
+        args = {"task_id": confirmation_match.group(0)}
+    else:
+        return None
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": tool_name,
+            "args": args,
+            "id": f"call_{uuid.uuid4().hex}",
+            "type": "tool_call",
+        }],
+    )
 
 
 def build_prompt_from_state(
@@ -83,6 +161,11 @@ def agent_node_impl(
         )
         return {"messages": [fallback_msg], "consecutive_tool_failures": 0}
 
+    terminal_response = terminal_tool_response(messages)
+    if terminal_response:
+        logger.info("[Agent] Terminal tool result detected; returning deterministic final answer")
+        return {"messages": [AIMessage(content=terminal_response)]}
+
     profile = state.get("user_profile") or {}
     prefs = state.get("user_prefs") or {}
     memories = state.get("memories") or []
@@ -130,9 +213,20 @@ def agent_node_impl(
         for name in allowed_tool_names
         if name in tools_by_name
     ]
-    llm_with_tools = get_llm().bind_tools(selected_tools)
+    llm = get_llm()
+    action_tools = [name for name in allowed_tool_names if name not in READ_ONLY_TOOL_NAMES]
+    if (
+        len(action_tools) == 1
+        and action_tools[0] in ("preview_tweet_analysis", "confirm_tweet_analysis")
+        and not has_tool_result_since_latest_human(messages)
+    ):
+        deterministic_call = deterministic_analysis_call(messages, action_tools[0])
+        if deterministic_call is not None:
+            logger.info("[Agent] Deterministic analysis action tool={}", action_tools[0])
+            return {"messages": [deterministic_call]}
+    runnable = llm.bind_tools(selected_tools)
 
-    response = llm_with_tools.invoke(
+    response = runnable.invoke(
         [SystemMessage(content=system_prompt)] + messages
     )
     return {"messages": [response]}

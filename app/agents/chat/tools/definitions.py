@@ -190,7 +190,7 @@ class PreviewAnalysisArgs(BaseModel):
 
 class ConfirmTaskArgs(BaseModel):
     """确认分析任务的参数约束。"""
-    task_id: str = Field(description="preview_tweet_analysis 返回的 8 位任务 ID。不要编造。")
+    task_id: str = Field(description="preview_tweet_analysis 返回的确认 ID（UUID）。必须原样传入，不要编造。")
 
     @field_validator("task_id")
     @classmethod
@@ -596,4 +596,3 @@ tools = [
     generate_tracking_report, search_my_documents, list_my_tracked_tickers,
     list_my_followed_bloggers,
 ]
-

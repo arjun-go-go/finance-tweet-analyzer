@@ -14,10 +14,14 @@ INGEST_TOOL_NAMES = READ_ONLY_TOOL_NAMES + [
     "fetch_and_save_profile",
     "fetch_and_save_tweets",
 ]
+INGEST_PROFILE_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["fetch_and_save_profile"]
+INGEST_TWEET_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["fetch_and_save_tweets"]
 ANALYSIS_TOOL_NAMES = READ_ONLY_TOOL_NAMES + [
     "preview_tweet_analysis",
     "confirm_tweet_analysis",
 ]
+ANALYSIS_PREVIEW_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["preview_tweet_analysis"]
+ANALYSIS_CONFIRM_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["confirm_tweet_analysis"]
 REPORT_TOOL_NAMES = READ_ONLY_TOOL_NAMES + [
     "generate_tracking_report",
 ]
@@ -55,6 +59,14 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
     normalized_context = context_text.lower()
 
     confirmation_words = ("确认", "好的", "可以", "执行", "开始", "go ahead", "confirm")
+    confirmation_phrases = (
+        "确认提交",
+        "立即执行",
+        "是的",
+        "继续",
+        "没问题",
+        "提交吧",
+    )
     analysis_confirmation_markers = (
         "确认id",
         "confirm_tweet_analysis",
@@ -62,10 +74,10 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
         "请用户确认是否执行分析",
     )
     if (
-        normalized in confirmation_words
+        (normalized in confirmation_words or any(phrase in normalized for phrase in confirmation_phrases))
         and any(marker in normalized_context for marker in analysis_confirmation_markers)
     ):
-        return "analysis", ANALYSIS_TOOL_NAMES
+        return "analysis", ANALYSIS_CONFIRM_TOOL_NAMES
 
     negation_words = ("不要", "不用", "别", "无需", "不需要", "不要生成", "no report", "don't")
     report_words = ("报告", "日报", "周报", "跟踪报告", "生成报告", "report")
@@ -102,11 +114,35 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
         "执行分析",
         "提交分析",
         "开始分析",
+        "分析待处理",
+        "创建推文分析",
+        "有多少待分析",
+        "tweet analysis",
+        "分析所有 pending",
+        "准备执行推文分析",
+        "分析新采集",
+        "深度分析推文",
+        "分析任务预览",
         "confirm analysis",
         "preview analysis",
     )
     if any(word in normalized for word in analysis_words):
-        return "analysis", ANALYSIS_TOOL_NAMES
+        if "确认分析" in normalized or "confirm analysis" in normalized:
+            return "analysis", ANALYSIS_CONFIRM_TOOL_NAMES
+        return "analysis", ANALYSIS_PREVIEW_TOOL_NAMES
+
+    profile_words = (
+        "主页信息",
+        "主页资料",
+        "个人简介",
+        "更新资料",
+        "获取资料",
+        "最新资料",
+        "同步博主",
+        "profile",
+    )
+    if any(word in normalized for word in profile_words):
+        return "ingest", INGEST_PROFILE_TOOL_NAMES
 
     ingest_words = (
         "抓取",
@@ -119,15 +155,9 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
         "crawl",
         "最新推文",
         "最近发了什么",
-        "主页信息",
-        "主页资料",
-        "个人简介",
-        "更新资料",
-        "获取资料",
-        "profile",
     )
     if any(word in normalized for word in ingest_words):
-        return "ingest", INGEST_TOOL_NAMES
+        return "ingest", INGEST_TWEET_TOOL_NAMES
 
     return "read_only", READ_ONLY_TOOL_NAMES
 
