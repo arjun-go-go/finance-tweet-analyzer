@@ -130,7 +130,7 @@ class ChromaVectorStore:
         因为我们已通过 embed_with_dedupe 得到了向量，无需 LangChain 再调 API。
         """
         cleaned = [_scrub_meta(m) for m in metadatas]
-        self._col(collection)._collection.add(
+        self._col(collection)._collection.upsert(
             ids=ids,
             documents=texts,
             embeddings=embeddings,
@@ -333,7 +333,7 @@ class MilvusVectorStore:
             }
             for i in range(len(ids))
         ]
-        self._client.insert(collection_name=physical_name, data=rows, timeout=self._timeout_sec)
+        self._client.upsert(collection_name=physical_name, data=rows, timeout=self._timeout_sec)
 
     def query(
         self,

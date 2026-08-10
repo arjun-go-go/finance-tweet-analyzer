@@ -25,8 +25,17 @@ def search_my_documents_impl(user_id: UUID, query: str, ticker: str = "") -> str
 
     results = []
     for i, hit in enumerate(hits, 1):
-        content_preview = hit.content[:200] if hit.content else hit.metadata.get("title", "")
-        results.append(f"[{i}] {content_preview}")
+        meta = hit.metadata or {}
+        content_preview = hit.content[:500] if hit.content else meta.get("title", "")
+        source_id = meta.get("source_id") or meta.get("document_id") or meta.get("chunk_id")
+        source_uri = meta.get("source_uri") or meta.get("url")
+        source_parts = [f"来源ID: {source_id}"] if source_id else []
+        if source_uri:
+            source_parts.append(f"原文: {source_uri}")
+        source_line = " | ".join(source_parts)
+        results.append(
+            f"[{i}] {content_preview}" + (f"\n{source_line}" if source_line else "")
+        )
     return "\n\n".join(results)
 
 
@@ -63,6 +72,9 @@ def search_public_signals_impl(query: str, source_type: str = "analysis", blogge
         blogger_handle = meta.get("blogger_handle", "未知博主")
         sentiment = meta.get("sentiment", "")
         horizon = meta.get("horizon", "")
+        published_at = meta.get("published_at") or meta.get("created_at")
+        source_id = meta.get("source_id") or meta.get("tweet_id") or meta.get("chunk_id")
+        source_uri = meta.get("source_uri") or meta.get("url")
         score = hit.score
         content_preview = hit.content[:1000] if hit.content else ""
         header = f"[{i}] 博主: {blogger_handle}"
@@ -70,6 +82,11 @@ def search_public_signals_impl(query: str, source_type: str = "analysis", blogge
             header += f" | 情感: {sentiment}"
         if horizon:
             header += f" | 周期: {horizon}"
+        if published_at:
+            header += f" | 时间: {published_at}"
+        if source_id:
+            header += f" | 来源ID: {source_id}"
         header += f" | 相关度: {score:.3f}"
-        results.append(f"{header}\n{content_preview}")
+        source_line = f"\n原文: {source_uri}" if source_uri else ""
+        results.append(f"{header}\n{content_preview}{source_line}")
     return "\n\n".join(results)

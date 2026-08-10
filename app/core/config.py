@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # ----- Scheduler -----
     scheduler_enabled: bool = True
     scheduler_interval_minutes: int = 10
+    analysis_max_attempts: int = 3
+    analysis_retry_base_seconds: int = 60
+    analysis_retry_max_seconds: int = 900
+    analysis_processing_timeout_seconds: int = 600
 
     # ----- Redis & Celery -----
     redis_url: str = "redis://localhost:6379/0"
@@ -33,6 +37,11 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
     celery_task_serializer: str = "json"
     celery_prediction_interval_minutes: int = 5
+    outbox_dispatch_batch_size: int = 100
+    outbox_dispatch_interval_seconds: int = 2
+    outbox_retry_base_seconds: int = 5
+    outbox_retry_max_seconds: int = 300
+    celery_pipeline_heartbeat_ttl_seconds: int = 30
 
     # ----- Memory compression -----
     compression_threshold: int = 40

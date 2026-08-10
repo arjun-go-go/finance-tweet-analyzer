@@ -3,7 +3,6 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.celery_app import celery
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.deps import get_db
@@ -43,9 +42,9 @@ from app.services.analysis_job_service import (
     create_analysis_job,
     get_analysis_job,
     list_analysis_jobs,
-    mark_analysis_job_dispatch_failed,
     mark_analysis_job_dispatched,
 )
+from app.services.outbox_service import enqueue_outbox_event
 
 
 router = APIRouter(prefix="/api/me", tags=["me"])
@@ -88,13 +87,12 @@ def _analysis_job_response(job: AnalysisJob) -> AnalysisJobResponse:
     )
 
 
-def _dispatch_analysis_job(job: AnalysisJob) -> str:
+def _dispatch_analysis_job(db: Session, job: AnalysisJob) -> str:
     task_id = str(job.id)
-    celery.send_task(
-        "app.scheduler.tasks.user_analysis_job_task",
-        args=[task_id],
-        task_id=task_id,
-        queue="analysis",
+    enqueue_outbox_event(
+        db,
+        "analysis.job_requested",
+        {"job_id": task_id, "task_id": task_id},
     )
     return task_id
 
@@ -260,6 +258,8 @@ def create_analysis_job_endpoint(
             target_id=body.target_id,
             pipeline_version=settings.user_analysis_pipeline_version,
         )
+        task_id = _dispatch_analysis_job(db, job)
+        mark_analysis_job_dispatched(db, job, celery_task_id=task_id)
         db.commit()
         db.refresh(job)
     except AnalysisJobTargetNotFound:
@@ -267,19 +267,6 @@ def create_analysis_job_endpoint(
     except AnalysisJobForbidden:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    try:
-        task_id = _dispatch_analysis_job(job)
-    except Exception:
-        mark_analysis_job_dispatch_failed(db, job)
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Analysis queue unavailable",
-        )
-
-    mark_analysis_job_dispatched(db, job, celery_task_id=task_id)
-    db.commit()
-    db.refresh(job)
     return _analysis_job_response(job)
 
 
@@ -317,7 +304,7 @@ def confirm_analysis_jobs_endpoint(
             limit=settings.user_analysis_daily_limit,
             window=24 * 60 * 60,
         )
-        return _dispatch_analysis_job(job)
+        return _dispatch_analysis_job(db, job)
 
     try:
         confirmed, skipped = confirm_analysis_jobs(

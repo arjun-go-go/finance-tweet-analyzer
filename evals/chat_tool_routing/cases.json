@@ -1,0 +1,37 @@
+[
+  {"id":"read-greeting","input":"你好","expected_route":"read_only","required_tools":[],"forbidden_tools":["fetch_and_save_tweets","confirm_tweet_analysis","generate_tracking_report"]},
+  {"id":"read-blogger-ranking","input":"数据库里粉丝最多的博主是谁？","expected_route":"read_only","required_tools":["query_database"],"forbidden_tools":["fetch_and_save_profile"]},
+  {"id":"read-followed-bloggers","input":"我关注了哪些博主？","expected_route":"read_only","required_tools":["list_my_followed_bloggers"],"forbidden_tools":["fetch_and_save_profile"]},
+  {"id":"read-tickers","input":"列出我的订阅标的","expected_route":"read_only","required_tools":["list_my_tracked_tickers"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"read-documents","input":"我上传的研报如何评价 TSLA？","expected_route":"read_only","required_tools":["search_my_documents"],"forbidden_tools":["fetch_and_save_tweets"]},
+  {"id":"read-signals","input":"市场里的博主怎么看 BTC？","expected_route":"read_only","required_tools":["search_public_signals"],"forbidden_tools":["fetch_and_save_tweets"]},
+  {"id":"read-analysis-results","input":"查询 qinbafrank 的历史分析结果","expected_route":"read_only","required_tools":["query_database"],"forbidden_tools":["preview_tweet_analysis"]},
+  {"id":"read-no-report","input":"不要生成报告，只告诉我已有分析结果","expected_route":"read_only","required_tools":["query_database"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"read-no-fetch","input":"不用抓取，查询数据库里的最新推文","expected_route":"read_only","required_tools":["query_database"],"forbidden_tools":["fetch_and_save_tweets"]},
+  {"id":"read-concept","input":"什么是多头情绪？","expected_route":"read_only","required_tools":[],"forbidden_tools":["fetch_and_save_tweets","confirm_tweet_analysis"]},
+
+  {"id":"ingest-latest-cn","input":"抓取 elonmusk 最新推文","expected_route":"ingest","required_tools":["fetch_and_save_tweets"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"ingest-recent-speech","input":"看看 qinbafrank 最近发了什么","expected_route":"ingest","required_tools":["fetch_and_save_tweets"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"ingest-sync","input":"同步 @elonmusk 的推文","expected_route":"ingest","required_tools":["fetch_and_save_tweets"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"ingest-fetch-en","input":"fetch the latest tweets from elonmusk","expected_route":"ingest","required_tools":["fetch_and_save_tweets"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"ingest-profile","input":"获取 elonmusk 的主页资料","expected_route":"ingest","required_tools":["fetch_and_save_profile"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"ingest-bio","input":"查看 qinbafrank 的个人简介","expected_route":"ingest","required_tools":["fetch_and_save_profile"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"ingest-update-profile","input":"更新 elonmusk 的 profile","expected_route":"ingest","required_tools":["fetch_and_save_profile"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"ingest-crawl-en","input":"crawl qinbafrank tweets","expected_route":"ingest","required_tools":["fetch_and_save_tweets"],"forbidden_tools":["generate_tracking_report"]},
+
+  {"id":"analysis-preview","input":"预览待分析推文","expected_route":"analysis","required_tools":["preview_tweet_analysis"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"analysis-start","input":"开始分析待处理推文","expected_route":"analysis","required_tools":["preview_tweet_analysis"],"forbidden_tools":["fetch_and_save_tweets"]},
+  {"id":"analysis-task","input":"创建分析任务","expected_route":"analysis","required_tools":["preview_tweet_analysis"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"analysis-confirm-explicit","input":"确认分析这些推文","expected_route":"analysis","required_tools":["confirm_tweet_analysis"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"analysis-confirm-followup","input":"确认","context":"待分析推文统计：共 18 条\n确认ID: 6bbfd1be-f528-4c8a-a221-94a4b3a75933\n是否确认提交后台分析？","expected_route":"analysis","required_tools":["confirm_tweet_analysis"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"analysis-confirm-ok","input":"好的","context":"请用户确认是否执行分析，确认后调用 confirm_tweet_analysis。","expected_route":"analysis","required_tools":["confirm_tweet_analysis"],"forbidden_tools":["fetch_and_save_tweets"]},
+  {"id":"analysis-confirm-go","input":"go ahead","context":"确认ID: 6bbfd1be-f528-4c8a-a221-94a4b3a75933","expected_route":"analysis","required_tools":["confirm_tweet_analysis"],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"analysis-confirm-no-context","input":"确认","context":"是否需要我继续解释？","expected_route":"read_only","required_tools":[],"forbidden_tools":["confirm_tweet_analysis"]},
+
+  {"id":"report-generate","input":"生成 TSLA 跟踪报告","expected_route":"report","required_tools":["generate_tracking_report"],"forbidden_tools":["fetch_and_save_tweets"]},
+  {"id":"report-weekly","input":"给我做一份 BTC 周报","expected_route":"report","required_tools":["generate_tracking_report"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"report-create-en","input":"create an AAPL report","expected_route":"report","required_tools":["generate_tracking_report"],"forbidden_tools":["fetch_and_save_profile"]},
+  {"id":"report-write","input":"写一份 NVDA 分析报告","expected_route":"report","required_tools":["generate_tracking_report"],"forbidden_tools":["confirm_tweet_analysis"]},
+  {"id":"report-question-only","input":"报告里一般有哪些章节？","expected_route":"read_only","required_tools":[],"forbidden_tools":["generate_tracking_report"]},
+  {"id":"report-negated-en","input":"don't generate a report, just explain the concept","expected_route":"read_only","required_tools":[],"forbidden_tools":["generate_tracking_report"]}
+]

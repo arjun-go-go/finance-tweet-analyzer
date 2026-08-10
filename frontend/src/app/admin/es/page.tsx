@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   fetchEsAdminStats,
   fetchEsIndexJobs,
+  reconcileIndexes,
   rebuildEsAlias,
   type EsAdminStats,
   type IndexJobItem,
@@ -66,6 +67,17 @@ export default function EsAdminPage() {
     }
   };
 
+  const triggerReconcile = async () => {
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await reconcileIndexes(1000);
+      setMessage(`Index reconcile 已入队：${result.task_id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "触发索引对账失败");
+    }
+  };
+
   return (
     <div className="min-h-screen rounded-3xl bg-[#070b12] p-6 text-slate-100">
       <div className="mb-6 flex flex-col gap-4 rounded-3xl border border-cyan-400/20 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950/30 p-6 lg:flex-row lg:items-end lg:justify-between">
@@ -79,6 +91,9 @@ export default function EsAdminPage() {
           </p>
         </div>
         <div className="flex gap-3">
+          <button onClick={triggerReconcile} className="rounded-2xl border border-cyan-400/40 px-5 py-3 text-sm text-cyan-200 hover:border-cyan-300">
+            ES / Milvus 对账
+          </button>
           <button onClick={load} className="rounded-2xl border border-slate-700 px-5 py-3 text-sm text-slate-200 hover:border-cyan-300">
             刷新
           </button>
@@ -94,11 +109,13 @@ export default function EsAdminPage() {
 
       {stats && (
         <div className="space-y-5">
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
             <Stat label="Alias" value={stats.elasticsearch.alias} />
             <Stat label="Write Index" value={stats.elasticsearch.current_write_index || "-"} />
             <Stat label="ES Docs" value={stats.elasticsearch.total} />
             <Stat label="PG Chunks" value={stats.doc_chunks} />
+            <Stat label="Milvus Signals" value={stats.vector_store.public_signals} />
+            <Stat label="Milvus Documents" value={stats.vector_store.user_documents} />
           </div>
 
           <div className="grid gap-5 lg:grid-cols-2">

@@ -7,6 +7,7 @@ from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
 from app.schemas.tweet import TweetImportItem
 from app.services.blogger_service import ensure_blogger, upsert_blogger
+from app.services.outbox_service import enqueue_outbox_event
 
 
 def import_tweets(
@@ -53,8 +54,15 @@ def import_tweets(
         imported_tweets.append(tweet)
         imported += 1
 
-    if return_ids and imported_tweets and hasattr(db, "flush"):
+    if imported_tweets and hasattr(db, "flush"):
         db.flush()
+
+    for tweet in imported_tweets:
+        enqueue_outbox_event(
+            db,
+            "tweet.index_requested",
+            {"tweet_id": str(tweet.id)},
+        )
 
     db.commit()
     logger.info("Tweet import: {} imported, {} skipped", imported, skipped)

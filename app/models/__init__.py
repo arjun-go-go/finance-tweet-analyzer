@@ -17,6 +17,7 @@ from app.models.user_blogger_follow import UserBloggerFollow
 from app.models.user_tweet_bookmark import UserTweetBookmark
 from app.models.analysis_job import AnalysisJob
 from app.models.index_job import IndexJob
+from app.models.outbox_event import OutboxEvent
 
 __all__ = [
     "Base",
@@ -38,4 +39,5 @@ __all__ = [
     "UserTweetBookmark",
     "AnalysisJob",
     "IndexJob",
+    "OutboxEvent",
 ]

@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.auth import router as auth_router
@@ -15,6 +16,7 @@ from app.api.reports import router as reports_router
 from app.api.me import router as me_router
 from app.api.admin_traces import router as admin_traces_router
 from app.api.admin_es import router as admin_es_router
+from app.api.admin_runtime import router as admin_runtime_router
 from app.core.config import settings
 
 
@@ -34,6 +36,7 @@ def build_api_router() -> APIRouter:
     router.include_router(me_router)
     router.include_router(admin_traces_router)
     router.include_router(admin_es_router)
+    router.include_router(admin_runtime_router)
     if settings.debug_mode:
         from app.api.debug import router as debug_router
 
@@ -64,8 +67,12 @@ def health_check():
     # Redis connectivity
     try:
         from app.scheduler.locks import _get_redis
-        _get_redis().ping()
+        redis_client = _get_redis()
+        redis_client.ping()
         checks["redis"] = "ok"
+        checks["celery_pipeline"] = (
+            "ok" if redis_client.get("health:celery_pipeline") else "error: heartbeat missing"
+        )
     except Exception as e:
         logger.warning("[Health] redis check failed: {}", e)
         checks["redis"] = f"error: {e}"
@@ -93,6 +100,20 @@ def health_check():
             logger.warning("[Health] elasticsearch check failed: {}", e)
             checks["elasticsearch"] = f"error: {e}"
 
-    hard_checks = ["database", "redis", "vector_store"]
+    hard_checks = ["database", "redis", "celery_pipeline", "vector_store"]
+    if settings.rag_keyword_backend.lower().strip() == "elasticsearch":
+        hard_checks.append("elasticsearch")
     overall = "ok" if all(checks.get(name) == "ok" for name in hard_checks) else "degraded"
     return {"status": overall, "checks": checks, "circuits": get_circuit_status()}
+
+
+@api_router.get("/api/live")
+def liveness_check():
+    return {"status": "ok"}
+
+
+@api_router.get("/api/ready")
+def readiness_check():
+    result = health_check()
+    status_code = 200 if result["status"] == "ok" else 503
+    return JSONResponse(content=result, status_code=status_code)

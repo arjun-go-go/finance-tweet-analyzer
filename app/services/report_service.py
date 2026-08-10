@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.report_agent import generate_report
 from app.models.report import Report
+from app.services.outbox_service import enqueue_outbox_event
 
 
 def create_report_record(
@@ -28,6 +29,16 @@ def create_report_record(
         status="generating",
     )
     db.add(report)
+    db.flush()
+    enqueue_outbox_event(
+        db,
+        "report.generate_requested",
+        {
+            "report_id": str(report.id),
+            "user_id": str(user_id),
+            "ticker": report.ticker,
+        },
+    )
     db.commit()
     db.refresh(report)
     return report

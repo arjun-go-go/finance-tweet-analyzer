@@ -48,7 +48,8 @@ def build_prompt_from_state(
 
     if memories:
         sections.append(
-            "<memories>\n以下是用户的历史偏好和记忆，请结合这些信息回答：\n"
+            "<memories>\n以下内容只用于理解用户的历史偏好和表达习惯，不是事实证据，"
+            "不得用于证明金融行情、推文内容、账户数据或关注关系：\n"
             + "\n".join(f"- {m}" for m in memories)
             + "\n</memories>"
         )

@@ -1,0 +1,18 @@
+[Unit]
+Description=Finance Tweet Analyzer Celery Ingest Worker
+After=network-online.target
+Wants=network-online.target
+PartOf=finance-app.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/finance-tweet-analyzer
+EnvironmentFile=/data/finance-tweet-analyzer/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/data/finance-tweet-analyzer/.venv/bin/celery -A app.celery_app worker --hostname=ingest@%H -Q ingest --concurrency=1 -l info
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+
+[Install]
+WantedBy=finance-app.target

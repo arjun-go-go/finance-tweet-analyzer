@@ -54,11 +54,13 @@ celery.conf.update(
         "app.scheduler.tasks.scan_due_tracking_task": {"queue": "default"},
         "app.scheduler.tasks.gc_vector_task": {"queue": "default"},
         "app.scheduler.tasks.reindex_elasticsearch_chunks_task": {"queue": "default"},
-        "app.scheduler.tasks.retry_failed_es_index_jobs_task": {"queue": "default"},
+        "app.scheduler.tasks.retry_failed_index_jobs_task": {"queue": "default"},
         "app.scheduler.tasks.rebuild_elasticsearch_alias_task": {"queue": "default"},
         "app.scheduler.tasks.scan_blogger_tweets_task": {"queue": "ingest"},
         "app.scheduler.tasks.user_analysis_job_task": {"queue": "analysis"},
         "app.scheduler.tasks.fetch_blogger_tweets_task": {"queue": "ingest"},
+        "app.scheduler.tasks.dispatch_outbox_events_task": {"queue": "default"},
+        "app.scheduler.tasks.reconcile_index_jobs_task": {"queue": "default"},
     },
     task_default_queue="default",
 )
@@ -67,6 +69,11 @@ celery.conf.update(
 # Beat 定时调度配置
 # ============================================================
 celery.conf.beat_schedule = {
+    "dispatch-transactional-outbox": {
+        "task": "app.scheduler.tasks.dispatch_outbox_events_task",
+        "schedule": settings.outbox_dispatch_interval_seconds,
+        "options": {"queue": "default"},
+    },
     # 自动分析：按配置间隔扫描 pending 推文
     "auto-analysis-periodic": {
         "task": "app.scheduler.tasks.auto_analysis_task",
@@ -103,10 +110,16 @@ celery.conf.beat_schedule = {
         "kwargs": {"batch_size": 15},
         "options": {"queue": "embed"},
     },
-    "retry-failed-es-index-jobs-periodic": {
-        "task": "app.scheduler.tasks.retry_failed_es_index_jobs_task",
+    "retry-failed-index-jobs-periodic": {
+        "task": "app.scheduler.tasks.retry_failed_index_jobs_task",
         "schedule": 300,
         "kwargs": {"batch_size": 200},
+    },
+    "reconcile-index-jobs-hourly": {
+        "task": "app.scheduler.tasks.reconcile_index_jobs_task",
+        "schedule": 3600,
+        "kwargs": {"batch_size": 1000},
+        "options": {"queue": "default"},
     },
     # 定时抓取博主最新推文
     "scan-blogger-tweets": {

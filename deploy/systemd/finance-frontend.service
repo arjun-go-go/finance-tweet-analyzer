@@ -1,0 +1,17 @@
+[Unit]
+Description=Finance Tweet Analyzer Frontend
+After=network-online.target finance-backend.service
+Wants=network-online.target
+PartOf=finance-app.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/finance-tweet-analyzer/frontend
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start -- --hostname 0.0.0.0 --port 3000
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=finance-app.target

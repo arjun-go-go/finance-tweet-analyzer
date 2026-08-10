@@ -894,6 +894,10 @@ export interface EsAdminStats {
     source_counts: Record<string, number>;
   };
   doc_chunks: number;
+  vector_store: {
+    public_signals: number;
+    user_documents: number;
+  };
   index_jobs: Record<string, Record<string, number>>;
 }
 
@@ -944,6 +948,15 @@ export async function rebuildEsAlias(params?: {
     method: "POST",
   });
   if (!res.ok) throw new Error("Failed to rebuild ES alias");
+  return res.json() as Promise<{ task_id: string; status: string }>;
+}
+
+export async function reconcileIndexes(batchSize = 1000): Promise<{ task_id: string; status: string }> {
+  const res = await authFetch(
+    `${API_BASE}/api/admin/es/reconcile?batch_size=${batchSize}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error("Failed to reconcile indexes");
   return res.json() as Promise<{ task_id: string; status: string }>;
 }
 

@@ -8,7 +8,6 @@ from app.core.auth import get_current_admin, get_current_user
 from app.models.user import User
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
-from app.scheduler.tasks import embed_signal_task
 from app.schemas.tweet import TweetImportRequest, TweetImportResponse
 from app.services.tweet_service import import_tweets
 
@@ -23,6 +22,11 @@ class TweetListItem(BaseModel):
     content: str
     published_at: str
     status: str
+    analysis_attempts: int = 0
+    analysis_last_error: str | None = None
+    analysis_next_retry_at: str | None = None
+    analysis_started_at: str | None = None
+    analysis_completed_at: str | None = None
     metrics: dict | None = None
     analysis: dict | None = None
 
@@ -34,7 +38,10 @@ class TweetListResponse(BaseModel):
 
 @router.get("", response_model=TweetListResponse)
 def list_tweets(
-    status: str | None = Query(None, description="pending / analyzed"),
+    status: str | None = Query(
+        None,
+        description="pending / analyzing / retrying / analyzed / failed",
+    ),
     blogger: str | None = Query(None),
     include_analysis: bool = Query(False, description="Include latest tweet_analysis result"),
     limit: int = Query(20, le=100),
@@ -84,6 +91,20 @@ def list_tweets(
             content=t.content,
             published_at=t.published_at.isoformat() if t.published_at else "",
             status=t.status or "pending",
+            analysis_attempts=t.analysis_attempts or 0,
+            analysis_last_error=t.analysis_last_error,
+            analysis_next_retry_at=(
+                t.analysis_next_retry_at.isoformat()
+                if t.analysis_next_retry_at else None
+            ),
+            analysis_started_at=(
+                t.analysis_started_at.isoformat()
+                if t.analysis_started_at else None
+            ),
+            analysis_completed_at=(
+                t.analysis_completed_at.isoformat()
+                if t.analysis_completed_at else None
+            ),
             metrics=t.metrics,
             analysis=analysis_map.get(str(t.id)),
         )
@@ -98,12 +119,10 @@ def import_tweets_endpoint(
     _admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    imported, skipped, tweet_ids = import_tweets(
+    imported, skipped, _tweet_ids = import_tweets(
         db,
         request.tweets,
         request.blogger,
         return_ids=True,
     )
-    for tweet_id in tweet_ids:
-        embed_signal_task.delay("tweet", str(tweet_id))
     return TweetImportResponse(imported=imported, skipped=skipped)

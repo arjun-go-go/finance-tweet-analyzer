@@ -50,3 +50,17 @@ def parse_tool_envelope(content: str) -> dict | None:
     if not isinstance(parsed, dict) or "ok" not in parsed:
         return None
     return parsed
+
+
+def attach_tool_evidence(content: str, tool_name: str | None) -> str:
+    """Label a successful tool result so the answer can cite its evidence source."""
+    envelope = parse_tool_envelope(content)
+    if envelope is None or envelope.get("ok") is not True:
+        return content
+    normalized_tool_name = tool_name or "unknown_tool"
+    envelope["evidence"] = {
+        "id": f"tool:{normalized_tool_name}",
+        "tool": normalized_tool_name,
+        "citation": f"【tool:{normalized_tool_name}】",
+    }
+    return json.dumps(envelope, ensure_ascii=False)

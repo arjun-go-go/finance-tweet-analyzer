@@ -20,7 +20,6 @@ from app.rag.repository import UserDocumentRepository
 from app.rag.storage import DocumentStorage
 from app.rag.embeddings import get_embedder
 from app.rag.vector_store import get_vector_store
-from app.scheduler.tasks import ingest_document_task
 from app.schemas.document import (
     DocumentListResponse,
     DocumentPasteRequest,
@@ -36,8 +35,17 @@ from app.services.document_service import (
     get_document_status,
     list_documents,
 )
+from app.services.outbox_service import enqueue_outbox_event
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+def _enqueue_document_ingest(db: Session, document_id: UUID) -> None:
+    enqueue_outbox_event(
+        db,
+        "document.ingest_requested",
+        {"document_id": str(document_id)},
+    )
 
 
 def _handle_duplicate(doc, parsed_text, storage, user):
@@ -48,8 +56,8 @@ def _handle_duplicate(doc, parsed_text, storage, user):
         storage.save(str(user.id), str(doc.id), parsed_text.encode("utf-8"), ".txt")
         db_session = object_session(doc)
         if db_session:
+            _enqueue_document_ingest(db_session, doc.id)
             db_session.commit()
-        ingest_document_task.delay(str(doc.id))
     return doc
 
 
@@ -109,13 +117,13 @@ async def upload_document(
         # For text-based types, also save the parsed text as .txt for the Celery task
         if ext not in (".pdf", ".docx"):
             storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        _enqueue_document_ingest(db, doc.id)
         db.commit()
     except DuplicateDocument as e:
         return _handle_duplicate(e.document, parsed.text, storage, user)
     except QuotaExceeded as e:
         raise HTTPException(429, detail=e.reason)
 
-    ingest_document_task.delay(str(doc.id))
     return doc
 
 
@@ -141,13 +149,13 @@ def paste_document(
             storage=storage,
         )
         storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        _enqueue_document_ingest(db, doc.id)
         db.commit()
     except DuplicateDocument as e:
         return _handle_duplicate(e.document, parsed.text, storage, user)
     except QuotaExceeded as e:
         raise HTTPException(429, detail=e.reason)
 
-    ingest_document_task.delay(str(doc.id))
     return doc
 
 
@@ -190,13 +198,13 @@ def ingest_url(
             storage=storage,
         )
         storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        _enqueue_document_ingest(db, doc.id)
         db.commit()
     except DuplicateDocument as e:
         return _handle_duplicate(e.document, parsed.text, storage, user)
     except QuotaExceeded as e:
         raise HTTPException(429, detail=e.reason)
 
-    ingest_document_task.delay(str(doc.id))
     return doc
 
 

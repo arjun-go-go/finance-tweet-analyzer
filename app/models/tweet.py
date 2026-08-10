@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import String, Text, DateTime
+from sqlalchemy import Integer, String, Text, DateTime
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,3 +24,14 @@ class Tweet(Base, TimestampMixin):
     media_urls: Mapped[Any | None] = mapped_column(JSONB, default=None)
     raw_json: Mapped[dict | None] = mapped_column(JSONB, default=None)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    analysis_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    analysis_next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None, index=True
+    )
+    analysis_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    analysis_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )

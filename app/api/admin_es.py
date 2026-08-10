@@ -8,7 +8,8 @@ from app.models.doc_chunk import DocChunk
 from app.models.index_job import IndexJob
 from app.models.user import User
 from app.rag.keyword_store import get_keyword_store
-from app.scheduler.tasks import rebuild_elasticsearch_alias_task
+from app.rag.vector_store import get_vector_store
+from app.scheduler.tasks import rebuild_elasticsearch_alias_task, reconcile_index_jobs_task
 
 router = APIRouter(prefix="/api/admin/es", tags=["admin-es"])
 
@@ -26,9 +27,14 @@ def es_stats(
     jobs: dict[str, dict[str, int]] = {}
     for target, status, count in job_rows:
         jobs.setdefault(target, {})[status] = int(count or 0)
+    vector_store = get_vector_store()
     return {
         "elasticsearch": store.stats(),
         "doc_chunks": db.execute(select(func.count()).select_from(DocChunk)).scalar() or 0,
+        "vector_store": {
+            "public_signals": vector_store.count("public_signals"),
+            "user_documents": vector_store.count("user_documents"),
+        },
         "index_jobs": jobs,
     }
 
@@ -93,4 +99,13 @@ def rebuild_es_alias(
         target_index=target_index,
         switch_alias=switch_alias,
     )
+    return {"task_id": task.id, "status": "queued"}
+
+
+@router.post("/reconcile")
+def reconcile_indexes(
+    batch_size: int = Query(default=1000, ge=1, le=10000),
+    _admin: User = Depends(get_current_admin),
+) -> dict:
+    task = reconcile_index_jobs_task.delay(batch_size=batch_size)
     return {"task_id": task.id, "status": "queued"}

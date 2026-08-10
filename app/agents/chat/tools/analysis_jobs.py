@@ -4,7 +4,6 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 
-from app.celery_app import celery
 from app.core.config import settings
 from app.core.rate_limit import enforce_user_limit
 from app.models.blogger import Blogger
@@ -16,6 +15,7 @@ from app.services.analysis_job_service import (
     create_analysis_job,
     list_confirmable_analysis_jobs_by_batch,
 )
+from app.services.outbox_service import enqueue_outbox_event
 
 ALL_HANDLES = ("all", "全部", "所有")
 
@@ -111,11 +111,10 @@ def confirm_tweet_analysis_impl(
             limit=daily_limit,
             window=24 * 60 * 60,
         )
-        celery.send_task(
-            "app.scheduler.tasks.user_analysis_job_task",
-            args=[str(job.id)],
-            task_id=str(job.id),
-            queue="analysis",
+        enqueue_outbox_event(
+            db,
+            "analysis.job_requested",
+            {"job_id": str(job.id), "task_id": str(job.id)},
         )
         return str(job.id)
 

@@ -68,7 +68,7 @@ CLASSIFY_MAX_TOTAL_CHARS = 6000      # 整批推文拼接后的最大字符数
 # ------------------------------------------------------------
 # 1) 拼装受控长度的推文文本；
 # 2) 调用 LLM 产出结构化分类结果；
-# 3) LLM 失败时降级为 market_commentary（保守选择，不触发风险路径）。
+# 3) LLM 双重失败时强制进入风险路径，并标记 degraded。
 # ============================================================
 @traced_node("supervisor_classify")
 def supervisor_classify_node(state: SupervisorState) -> dict:
@@ -115,7 +115,7 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
                 has_investment_content=raw_json.get("has_investment_content", True),
             ).model_dump()
         except Exception as fallback_err:
-            # 最终降级：默认 market_commentary + 不触发风险分析，置信度低
+            # 金融安全降级：分类不可用时不静默视为低风险，强制执行风险评估。
             logger.warning(
                 "Supervisor classify failed (primary: {}, fallback: {}), using defaults",
                 e, fallback_err,
@@ -124,14 +124,45 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
                 "classifications": [
                     {
                         "tweet_id": t["id"],
-                        "category": "market_commentary",
-                        "needs_risk_analysis": False,
-                        "confidence": 0.3,
+                        "category": "risk_warning",
+                        "needs_risk_analysis": True,
+                        "confidence": 0.5,
                     }
                     for t in tweets
                 ],
                 "has_investment_content": True,
+                "degraded": True,
+                "degraded_reason": "classifier_unavailable",
             }
+
+    classifications = classification.get("classifications") or []
+    classified_ids = {
+        str(item.get("tweet_id"))
+        for item in classifications
+        if item.get("tweet_id")
+    }
+    missing_tweets = [
+        tweet for tweet in tweets if str(tweet["id"]) not in classified_ids
+    ]
+    if missing_tweets:
+        classifications.extend(
+            {
+                "tweet_id": tweet["id"],
+                "category": "risk_warning",
+                "needs_risk_analysis": True,
+                "confidence": 0.5,
+            }
+            for tweet in missing_tweets
+        )
+        classification["classifications"] = classifications
+        classification["has_investment_content"] = True
+        classification["degraded"] = True
+        classification["degraded_reason"] = "classifier_missing_tweet_ids"
+        logger.warning(
+            "Supervisor classifier omitted {} of {} tweet ids; using conservative routing",
+            len(missing_tweets),
+            len(tweets),
+        )
 
     return {"classification": classification, "phase": "classify"}
 
@@ -151,9 +182,14 @@ def route_after_classification(state: SupervisorState) -> list[Send]:
     has_investment = classification.get("has_investment_content", False)
     trace_id = state.get("_trace_conv_id", "")
 
-    # 整批都是非金融 → 直接结束，节省所有下游成本
+    # 整批非金融内容仍交给 analysis_agent 生成明确的跳过结果，
+    # 否则上层无法把推文从 pending 终结为 analyzed。
     if not has_investment:
-        return [Send("supervisor_finalize", state)]
+        return [Send("analysis_agent", {
+            "tweets": state["tweets"],
+            "classifications": classifications,
+            "_trace_conv_id": trace_id,
+        })]
 
     # 通过 id 快速回查原始推文
     tweet_map = {t["id"]: t for t in state["tweets"]}
@@ -217,6 +253,11 @@ def supervisor_merge_node(state: SupervisorState) -> dict:
 
     merged = []
     for analysis in partial_analyses:
+        if state.get("classification", {}).get("degraded"):
+            analysis["routing_degraded"] = True
+            analysis["routing_degraded_reason"] = state["classification"].get(
+                "degraded_reason", "classifier_unavailable"
+            )
         tweet_id = analysis.get("tweet_id")
         if tweet_id in risk_map:
             assessment = risk_map[tweet_id]

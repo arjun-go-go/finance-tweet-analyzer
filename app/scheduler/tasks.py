@@ -27,9 +27,47 @@ from app.scheduler.locks import (
     release_fetch_lock,
 )
 from app.services.analysis_job_service import run_user_analysis_job
-from app.services.analysis_service import analyze_by_blogger, analyze_single_tweet
+from app.services.analysis_service import (
+    analysis_eligible_clause,
+    analyze_by_blogger,
+    analyze_single_tweet,
+    reset_analysis_state,
+)
 
 logger = get_task_logger(__name__)
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.dispatch_outbox_events_task",
+    acks_late=True,
+    ignore_result=True,
+)
+def dispatch_outbox_events_task(self, batch_size: int | None = None) -> dict:
+    from datetime import datetime, timezone
+
+    from app.core.config import settings as cfg
+    from app.scheduler.locks import _get_redis
+    from app.services.outbox_service import dispatch_pending_outbox_events
+
+    db = SessionLocal()
+    try:
+        result = dispatch_pending_outbox_events(
+            db,
+            send_task=self.app.send_task,
+            batch_size=batch_size,
+        )
+        _get_redis().setex(
+            "health:celery_pipeline",
+            cfg.celery_pipeline_heartbeat_ttl_seconds,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _record_index_jobs(
@@ -57,8 +95,8 @@ def _record_index_jobs(
                 error_message=error_message,
             )
         )
-    if hasattr(db, "commit"):
-        db.commit()
+    if hasattr(db, "flush"):
+        db.flush()
 
 
 def _best_effort_upsert_es_chunks(chunks, user_id=None, db=None) -> dict:
@@ -159,14 +197,22 @@ def auto_analysis_task(self) -> dict:
     logger.info("[Celery] Auto-analysis task started")
 
     db = SessionLocal()
-    stats = {"total_bloggers": 0, "analyzed": 0, "skipped": 0, "errors": 0}
+    stats = {
+        "total_bloggers": 0,
+        "attempted": 0,
+        "analyzed": 0,
+        "retrying": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
 
     try:
         handles = [
             row[0]
             for row in db.execute(
                 select(Tweet.author_handle)
-                .where(Tweet.status == "pending")
+                .where(analysis_eligible_clause())
                 .group_by(Tweet.author_handle)
             ).all()
         ]
@@ -191,7 +237,10 @@ def auto_analysis_task(self) -> dict:
                     "[Celery] Done %s: analyzed=%d",
                     handle, result["analyzed"],
                 )
-                stats["analyzed"] += 1
+                stats["attempted"] += result.get("attempted", 0)
+                stats["analyzed"] += result.get("analyzed", 0)
+                stats["retrying"] += result.get("retrying", 0)
+                stats["failed"] += result.get("failed", 0)
             except Exception as e:
                 logger.error("[Celery] Error analyzing %s: %s", handle, e)
                 stats["errors"] += 1
@@ -232,7 +281,15 @@ def manual_analysis_task(
     )
 
     db = SessionLocal()
-    stats = {"total_bloggers": 0, "analyzed": 0, "skipped": 0, "errors": 0}
+    stats = {
+        "total_bloggers": 0,
+        "attempted": 0,
+        "analyzed": 0,
+        "retrying": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
 
     try:
         since_dt = None
@@ -243,8 +300,6 @@ def manual_analysis_task(
             if delta:
                 since_dt = datetime.now(timezone.utc) - delta
 
-        statuses = ["pending", "analyzed"] if reanalyze else ["pending"]
-
         for handle in blogger_handles:
             acquired, lock_token = try_acquire(handle)
             if not acquired:
@@ -253,26 +308,27 @@ def manual_analysis_task(
                 continue
 
             try:
-                query = (
-                    select(Tweet)
-                    .where(Tweet.author_handle == handle, Tweet.status.in_(statuses))
-                )
-                if since_dt:
-                    query = query.where(Tweet.published_at >= since_dt)
+                if reanalyze:
+                    query = select(Tweet).where(Tweet.author_handle == handle)
+                    if since_dt:
+                        query = query.where(Tweet.published_at >= since_dt)
+                    tweets_to_reset = db.execute(query).scalars().all()
+                    if not tweets_to_reset:
+                        stats["skipped"] += 1
+                        continue
+                    for tweet in tweets_to_reset:
+                        reset_analysis_state(tweet)
+                    db.commit()
 
-                tweets_to_reset = db.execute(query).scalars().all()
-
-                if not tweets_to_reset:
+                result = analyze_by_blogger(db, handle, since=since_dt)
+                if result.get("attempted", 0) == 0:
                     stats["skipped"] += 1
                     continue
-
-                for t in tweets_to_reset:
-                    t.status = "pending"
-                db.commit()
-
-                result = analyze_by_blogger(db, handle)
                 logger.info("[Celery] Manual done %s: analyzed=%d", handle, result["analyzed"])
-                stats["analyzed"] += 1
+                stats["attempted"] += result.get("attempted", 0)
+                stats["analyzed"] += result.get("analyzed", 0)
+                stats["retrying"] += result.get("retrying", 0)
+                stats["failed"] += result.get("failed", 0)
             except Exception as e:
                 db.rollback()
                 logger.error("[Celery] Manual error %s: %s", handle, e)
@@ -454,11 +510,6 @@ def prediction_batch_task(self) -> dict:
         db.commit()
         stats["processed"] = len(pending_analyses)
 
-        # 预测完成后异步触发分析结果向量化，入库到 public_signals
-        for ar in pending_analyses:
-            if ar.prediction_status == "done":
-                embed_signal_task.delay("analysis", str(ar.id))
-
     except Exception as e:
         db.rollback()
         logger.error("[Celery] Prediction batch error: %s", e)
@@ -565,24 +616,49 @@ def ingest_document_task(self, document_id: str) -> dict:
         db.add_all(rows)
         db.flush()
 
-        repo = UserDocumentRepository(get_vector_store(), get_embedder())
-        vector_ids = repo.add_chunks(
-            user_id=doc.user_id,
-            document_id=doc.id,
-            chunks=[
-                Chunk(chunk_index=r.chunk_index, content=r.content, metadata=r.metadata_)
-                for r in rows
-            ],
-        )
-        for r, vid in zip(rows, vector_ids):
-            r.vector_id = vid
-
+        for row in rows:
+            row.vector_id = f"{doc.id}:{row.chunk_index}"
         doc.chunk_count = len(rows)
-        doc.status = "indexed"
-        _record_index_jobs(db, rows, target="milvus", status="success", attempts=1)
+        doc.status = "indexing"
+        _record_index_jobs(db, rows, target="milvus", status="pending", attempts=0)
+        _record_index_jobs(db, rows, target="elasticsearch", status="pending", attempts=0)
         db.commit()
+
+        milvus_error = None
+        try:
+            repo = UserDocumentRepository(get_vector_store(), get_embedder())
+            repo.add_chunks(
+                user_id=doc.user_id,
+                document_id=doc.id,
+                chunks=[
+                    Chunk(chunk_index=r.chunk_index, content=r.content, metadata=r.metadata_)
+                    for r in rows
+                ],
+            )
+            _record_index_jobs(db, rows, target="milvus", status="success", attempts=1)
+        except Exception as exc:
+            milvus_error = str(exc)[:1000]
+            _record_index_jobs(
+                db,
+                rows,
+                target="milvus",
+                status="failed",
+                attempts=1,
+                error_message=milvus_error,
+            )
+
         es_stats = _best_effort_upsert_es_chunks(rows, user_id=doc.user_id, db=db)
-        return {"document_id": str(doc.id), "chunks": len(rows), "es": es_stats}
+        doc.status = "indexed" if not milvus_error and not es_stats["errors"] else "partial"
+        doc.error_detail = milvus_error or (
+            "Elasticsearch indexing failed" if es_stats["errors"] else None
+        )
+        db.commit()
+        return {
+            "document_id": str(doc.id),
+            "chunks": len(rows),
+            "milvus": {"errors": len(rows) if milvus_error else 0},
+            "es": es_stats,
+        }
     except Exception as e:
         db.rollback()
         try:
@@ -739,17 +815,10 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         rows_to_index = []
         cleanup_stats = _delete_existing_source_chunks(db, source_type, source_id)
 
-        for i, (chunk_text, vec) in enumerate(zip(chunks, vectors)):
+        for i, chunk_text in enumerate(chunks):
             content_hash = sha256(chunk_text.encode("utf-8")).hexdigest()
             vector_id = f"{source_type}:{source_id}:{i}"
             meta = {**metadata_base, "ticker": tickers_str}
-            vs.add(
-                "public_signals",
-                ids=[vector_id],
-                texts=[chunk_text],
-                embeddings=[vec],
-                metadatas=[meta],
-            )
             row = DocChunk(
                 document_id=None,
                 chunk_index=i,
@@ -764,14 +833,46 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             indexed += 1
 
         db.flush()
-        _record_index_jobs(db, rows_to_index, target="milvus", status="success", attempts=1)
+        _record_index_jobs(db, rows_to_index, target="milvus", status="pending", attempts=0)
+        _record_index_jobs(db, rows_to_index, target="elasticsearch", status="pending", attempts=0)
         db.commit()
+
+        milvus_error = None
+        try:
+            for row, vec in zip(rows_to_index, vectors):
+                vs.add(
+                    "public_signals",
+                    ids=[row.vector_id],
+                    texts=[row.content],
+                    embeddings=[vec],
+                    metadatas=[row.metadata_],
+                )
+            _record_index_jobs(
+                db,
+                rows_to_index,
+                target="milvus",
+                status="success",
+                attempts=1,
+            )
+        except Exception as exc:
+            milvus_error = str(exc)[:1000]
+            _record_index_jobs(
+                db,
+                rows_to_index,
+                target="milvus",
+                status="failed",
+                attempts=1,
+                error_message=milvus_error,
+            )
+
         es_stats = _best_effort_upsert_es_chunks(rows_to_index, db=db)
+        db.commit()
         return {
             "source_type": source_type,
             "source_id": source_id,
             "indexed": indexed,
             "cleanup": cleanup_stats,
+            "milvus": {"errors": len(rows_to_index) if milvus_error else 0},
             "es": es_stats,
         }
     except Exception:
@@ -1053,33 +1154,83 @@ def reindex_elasticsearch_chunks_task(
             stats["indexed"] += result["indexed"]
             stats["errors"] += result["errors"]
 
+        db.commit()
         return stats
     finally:
         db.close()
 
 
+def _retry_milvus_chunk(db, chunk: DocChunk) -> None:
+    from app.rag.embeddings import get_embedder
+    from app.rag.vector_store import get_vector_store
+
+    metadata = dict(chunk.metadata_ or {})
+    if chunk.document_id:
+        document = db.get(Document, chunk.document_id)
+        if document is None:
+            raise ValueError("document missing")
+        collection = "user_documents"
+        metadata.update(
+            {
+                "user_id": str(document.user_id),
+                "document_id": str(document.id),
+                "chunk_index": chunk.chunk_index,
+            }
+        )
+        vector_id = chunk.vector_id or f"{document.id}:{chunk.chunk_index}"
+    else:
+        collection = "public_signals"
+        source_type = metadata.get("source_type")
+        source_id = metadata.get("source_id")
+        if not source_type or not source_id:
+            raise ValueError("source metadata missing")
+        vector_id = chunk.vector_id or f"{source_type}:{source_id}:{chunk.chunk_index}"
+
+    vector = get_embedder().embed_documents([chunk.content])[0]
+    get_vector_store().add(
+        collection,
+        ids=[vector_id],
+        texts=[chunk.content],
+        embeddings=[vector],
+        metadatas=[metadata],
+    )
+    chunk.vector_id = vector_id
+
+
 @shared_task(
     bind=True,
-    name="app.scheduler.tasks.retry_failed_es_index_jobs_task",
+    name="app.scheduler.tasks.retry_failed_index_jobs_task",
     acks_late=True,
 )
-def retry_failed_es_index_jobs_task(self, batch_size: int = 200) -> dict:
-    """Retry pending/failed Elasticsearch index jobs from the PG ledger."""
+def retry_failed_index_jobs_task(
+    self,
+    batch_size: int = 200,
+    target: str | None = None,
+) -> dict:
+    """Retry pending/failed Elasticsearch and Milvus projection jobs."""
     db = SessionLocal()
-    stats = {"scanned": 0, "attempted": 0, "indexed": 0, "errors": 0, "missing_chunks": 0}
+    stats = {
+        "scanned": 0,
+        "attempted": 0,
+        "indexed": 0,
+        "errors": 0,
+        "missing_chunks": 0,
+        "targets": {},
+    }
     try:
+        stmt = select(IndexJob).where(IndexJob.status.in_(["pending", "failed"]))
+        if target:
+            stmt = stmt.where(IndexJob.target == target)
         jobs = db.execute(
-            select(IndexJob)
-            .where(
-                IndexJob.target == "elasticsearch",
-                IndexJob.status.in_(["pending", "failed"]),
-            )
-            .order_by(IndexJob.updated_at.asc())
-            .limit(batch_size)
+            stmt.order_by(IndexJob.updated_at.asc()).limit(batch_size)
         ).scalars().all()
         stats["scanned"] = len(jobs)
 
         for job in jobs:
+            target_stats = stats["targets"].setdefault(
+                job.target,
+                {"attempted": 0, "indexed": 0, "errors": 0},
+            )
             chunk = db.get(DocChunk, job.doc_chunk_id)
             if not chunk:
                 job.status = "failed"
@@ -1088,18 +1239,105 @@ def retry_failed_es_index_jobs_task(self, batch_size: int = 200) -> dict:
                 stats["missing_chunks"] += 1
                 continue
 
-            user_id = None
-            if chunk.document_id:
-                doc = db.get(Document, chunk.document_id)
-                user_id = doc.user_id if doc else None
+            stats["attempted"] += 1
+            target_stats["attempted"] += 1
+            if job.target == "elasticsearch":
+                user_id = None
+                if chunk.document_id:
+                    doc = db.get(Document, chunk.document_id)
+                    user_id = doc.user_id if doc else None
+                result = _best_effort_upsert_es_chunks([chunk], user_id=user_id, db=db)
+                stats["indexed"] += result["indexed"]
+                stats["errors"] += result["errors"]
+                target_stats["indexed"] += result["indexed"]
+                target_stats["errors"] += result["errors"]
+            elif job.target == "milvus":
+                try:
+                    _retry_milvus_chunk(db, chunk)
+                    _record_index_jobs(
+                        db,
+                        [chunk],
+                        target="milvus",
+                        status="success",
+                        attempts=1,
+                    )
+                    stats["indexed"] += 1
+                    target_stats["indexed"] += 1
+                except Exception as exc:
+                    _record_index_jobs(
+                        db,
+                        [chunk],
+                        target="milvus",
+                        status="failed",
+                        attempts=1,
+                        error_message=str(exc)[:1000],
+                    )
+                    stats["errors"] += 1
+                    target_stats["errors"] += 1
+            else:
+                job.status = "failed"
+                job.error_message = f"unsupported index target: {job.target}"
+                job.attempts = (job.attempts or 0) + 1
+                stats["errors"] += 1
+                target_stats["errors"] += 1
 
-            result = _best_effort_upsert_es_chunks([chunk], user_id=user_id, db=db)
-            stats["attempted"] += result["attempted"]
-            stats["indexed"] += result["indexed"]
-            stats["errors"] += result["errors"]
+        db.commit()
+        return stats
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
-        if stats["missing_chunks"]:
-            db.commit()
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.reconcile_index_jobs_task",
+    acks_late=True,
+)
+def reconcile_index_jobs_task(self, batch_size: int = 1000) -> dict:
+    """Create missing ES/Milvus projection jobs and report storage count drift."""
+    from app.rag.vector_store import get_vector_store
+
+    db = SessionLocal()
+    stats = {
+        "doc_chunks": 0,
+        "created_jobs": {"elasticsearch": 0, "milvus": 0},
+        "elasticsearch_docs": None,
+        "milvus_vectors": None,
+    }
+    try:
+        stats["doc_chunks"] = int(
+            db.execute(select(sa.func.count()).select_from(DocChunk)).scalar() or 0
+        )
+        for target in ("elasticsearch", "milvus"):
+            missing = db.execute(
+                select(DocChunk)
+                .where(
+                    ~sa.exists().where(
+                        IndexJob.doc_chunk_id == DocChunk.id,
+                        IndexJob.target == target,
+                    )
+                )
+                .order_by(DocChunk.created_at.asc())
+                .limit(batch_size)
+            ).scalars().all()
+            _record_index_jobs(
+                db,
+                missing,
+                target=target,
+                status="pending",
+                attempts=0,
+            )
+            stats["created_jobs"][target] = len(missing)
+        db.commit()
+
+        stats["elasticsearch_docs"] = int(get_keyword_store().stats().get("total") or 0)
+        vector_store = get_vector_store()
+        stats["milvus_vectors"] = {
+            "public_signals": vector_store.count("public_signals"),
+            "user_documents": vector_store.count("user_documents"),
+        }
         return stats
     except Exception:
         db.rollback()
@@ -1428,21 +1666,25 @@ def fetch_blogger_tweets_task(self, handle: str) -> dict:
         import_items_raw = convert_tweets_to_import(raw_tweets)
         items = [TweetImportItem(**item) for item in import_items_raw]
 
-        imported, skipped, tweet_ids = import_tweets(db, items, return_ids=True)
+        imported, skipped, _tweet_ids = import_tweets(db, items, return_ids=True)
         stats["imported"] = imported
         stats["skipped"] = skipped
 
         # 更新抓取时间
         blogger.last_fetched_at = datetime.now(timezone.utc)
-        db.commit()
+        if imported > 0:
+            from app.services.outbox_service import enqueue_outbox_event
 
-        for tweet_id in tweet_ids:
-            embed_signal_task.delay("tweet", str(tweet_id))
+            enqueue_outbox_event(
+                db,
+                "blogger.analysis_requested",
+                {"blogger_handles": [handle]},
+            )
+        db.commit()
 
         # 有新推文则触发分析
         if imported > 0:
-            logger.info("[Celery] %d new tweets for %s, triggering analysis", imported, handle)
-            manual_analysis_task.delay([handle])
+            logger.info("[Celery] %d new tweets for %s, analysis queued", imported, handle)
 
         logger.info("[Celery] Fetch %s done: imported=%d skipped=%d", handle, imported, skipped)
 

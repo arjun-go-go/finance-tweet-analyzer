@@ -49,10 +49,6 @@ def generate_report(
         db, user.id, body.ticker, trigger_type="manual"
     )
 
-    import app.celery_app  # noqa: F401 — bind shared_task to configured Redis broker
-    from app.scheduler.tasks import report_streaming_task
-    report_streaming_task.delay(str(report.id), str(user.id), body.ticker)
-
     return ReportResponse.model_validate(report)
 
 
