@@ -79,14 +79,30 @@ def _frame_records(frame: Any) -> list[dict]:
 def _load_cn_prices(symbol: str, start_date: date, end_date: date) -> list[dict]:
     import akshare as ak
 
-    frame = ak.stock_zh_a_hist(
-        symbol=symbol.split(".")[0],
-        period="daily",
-        start_date=start_date.strftime("%Y%m%d"),
-        end_date=end_date.strftime("%Y%m%d"),
-        adjust="qfq",
-        timeout=settings.instrument_api_timeout_seconds,
-    )
+    code = symbol.split(".")[0]
+    try:
+        frame = ak.stock_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+            adjust="qfq",
+            timeout=settings.instrument_api_timeout_seconds,
+        )
+    except Exception as primary_error:
+        suffix = symbol.split(".")[1].upper() if "." in symbol else ""
+        prefix = "sh" if suffix == "SH" or code.startswith(("5", "6", "9")) else "bj" if suffix == "BJ" else "sz"
+        logger.warning(
+            "AKShare Eastmoney A-share prices failed for {}; using Sina fallback: {}",
+            symbol,
+            primary_error,
+        )
+        frame = ak.stock_zh_a_daily(
+            symbol=f"{prefix}{code}",
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
     return _frame_records(frame)
 
 
@@ -219,7 +235,7 @@ def _stock_price_window(
     query_end = last_completed_date + timedelta(days=1)
     if market == "CN":
         rows = _load_cn_prices(symbol, query_start, query_end)
-        source = "AKShare/Eastmoney A-share"
+        source = "AKShare A-share daily (Eastmoney/Sina fallback)"
     elif market == "HK":
         rows = _load_hk_prices(symbol, query_start, query_end)
         source = "AKShare Hong Kong daily (Eastmoney/Sina fallback)"

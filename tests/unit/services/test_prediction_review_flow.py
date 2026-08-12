@@ -221,3 +221,32 @@ def test_hk_prices_fall_back_to_second_akshare_provider(monkeypatch):
     )
 
     assert rows[0]["close"] == 510.0
+
+
+def test_cn_prices_fall_back_to_second_akshare_provider(monkeypatch):
+    class Frame:
+        empty = False
+
+        def to_dict(self, orient):
+            assert orient == "records"
+            return [{"date": "2026-07-01", "open": 1180.1, "close": 1193.01}]
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_zh_a_hist(**_kwargs):
+            raise ConnectionError("Eastmoney unavailable")
+
+        @staticmethod
+        def stock_zh_a_daily(**kwargs):
+            assert kwargs["symbol"] == "sh600519"
+            return Frame()
+
+    monkeypatch.setitem(__import__("sys").modules, "akshare", FakeAkshare)
+
+    rows = market_verification_service._load_cn_prices.__wrapped__(
+        "600519.SH",
+        datetime(2026, 7, 1).date(),
+        datetime(2026, 7, 10).date(),
+    )
+
+    assert rows[0]["close"] == 1193.01
