@@ -12,7 +12,7 @@ from app.services.market_verification_service import (
     _identity_gate,
     preview_prediction_identity,
 )
-from app.services import instrument_resolver
+from app.services import instrument_resolver, market_verification_service
 from app.services.prediction_service import _default_context_terms, save_predictions_batch
 
 
@@ -192,3 +192,32 @@ def test_spacex_wrong_equity_symbol_still_requires_correction():
 
     assert accepted is False
     assert "SPCX" in reason
+
+
+def test_hk_prices_fall_back_to_second_akshare_provider(monkeypatch):
+    class Frame:
+        empty = False
+
+        def to_dict(self, orient):
+            assert orient == "records"
+            return [{"date": "2026-07-01", "open": 500.0, "close": 510.0}]
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_hk_hist(**_kwargs):
+            raise ConnectionError("Eastmoney unavailable")
+
+        @staticmethod
+        def stock_hk_daily(**kwargs):
+            assert kwargs == {"symbol": "00700", "adjust": "qfq"}
+            return Frame()
+
+    monkeypatch.setitem(__import__("sys").modules, "akshare", FakeAkshare)
+
+    rows = market_verification_service._load_hk_prices.__wrapped__(
+        "00700.HK",
+        datetime(2026, 7, 1).date(),
+        datetime(2026, 7, 10).date(),
+    )
+
+    assert rows[0]["close"] == 510.0

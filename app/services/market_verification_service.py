@@ -98,13 +98,22 @@ def _load_cn_prices(symbol: str, start_date: date, end_date: date) -> list[dict]
 def _load_hk_prices(symbol: str, start_date: date, end_date: date) -> list[dict]:
     import akshare as ak
 
-    frame = ak.stock_hk_hist(
-        symbol=symbol.split(".")[0].zfill(5),
-        period="daily",
-        start_date=start_date.strftime("%Y%m%d"),
-        end_date=end_date.strftime("%Y%m%d"),
-        adjust="qfq",
-    )
+    normalized = symbol.split(".")[0].zfill(5)
+    try:
+        frame = ak.stock_hk_hist(
+            symbol=normalized,
+            period="daily",
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
+    except Exception as primary_error:
+        logger.warning(
+            "AKShare Eastmoney HK prices failed for {}; using Sina fallback: {}",
+            normalized,
+            primary_error,
+        )
+        frame = ak.stock_hk_daily(symbol=normalized, adjust="qfq")
     return _frame_records(frame)
 
 
@@ -213,7 +222,7 @@ def _stock_price_window(
         source = "AKShare/Eastmoney A-share"
     elif market == "HK":
         rows = _load_hk_prices(symbol, query_start, query_end)
-        source = "AKShare/Eastmoney Hong Kong"
+        source = "AKShare Hong Kong daily (Eastmoney/Sina fallback)"
     elif market == "US":
         rows = _load_us_prices(symbol)
         source = "AKShare US daily"
