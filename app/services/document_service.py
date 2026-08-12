@@ -122,13 +122,14 @@ def create_document_record(
         tickers=tickers or [],
         publish_date=publish_date,
         status="pending",
+        storage_backend=storage.backend,
     )
     db.add(doc)
     db.flush()  # materialise doc.id
 
     if raw_content:
-        ext = {"pdf": ".pdf", "docx": ".docx"}.get(source_type, ".bin")
-        storage.save(str(user_id), str(doc.id), raw_content, ext)
+        ext = {"pdf": ".pdf", "docx": ".docx", "md": ".md", "txt": ".txt"}.get(source_type, ".bin")
+        doc.storage_key = storage.save(str(user_id), str(doc.id), raw_content, ext)
 
     return doc
 
@@ -146,7 +147,7 @@ def delete_document(
     storage: DocumentStorage,
     repo: UserDocumentRepository,
 ) -> None:
-    """Soft-delete a document, purge its vectors and disk blobs."""
+    """Soft-delete a document, purge its vectors and stored blob."""
 
     doc = db.scalar(
         select(Document).where(
@@ -161,9 +162,13 @@ def delete_document(
     # Vector cleanup
     repo.delete_document(user_id=user_id, document_id=document_id)
 
-    # Disk cleanup
-    if doc.source_uri and doc.source_type in ("pdf", "docx"):
-        storage.delete(doc.source_uri)
+    if settings.rag_keyword_backend.lower().strip() == "elasticsearch":
+        from app.rag.keyword_store import get_keyword_store
+
+        get_keyword_store().delete_by_document_id(document_id)
+
+    if doc.storage_key:
+        storage.delete(doc.storage_key)
 
     db.commit()
 

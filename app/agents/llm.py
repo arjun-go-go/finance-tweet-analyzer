@@ -39,3 +39,16 @@ def get_report_llm() -> ChatOpenAI:
         timeout=120,
         http_client=httpx.Client(proxy=settings.http_proxy),
     )
+
+
+def get_vision_llm() -> ChatOpenAI:
+    """Multimodal model used to extract evidence from tweet text and images."""
+    return ChatOpenAI(
+        model=settings.vision_model,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        temperature=0.0,
+        max_tokens=settings.vision_max_output_tokens,
+        timeout=120,
+        http_client=httpx.Client(proxy=settings.http_proxy),
+    )

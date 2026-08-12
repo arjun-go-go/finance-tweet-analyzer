@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -10,6 +12,8 @@ from app.models.user import User
 from app.schemas.blogger import (
     BloggerDetail,
     BloggerListItem,
+    BloggerOnboardRequest,
+    BloggerOnboardResponse,
     BloggerProfile,
     BloggerRow,
 )
@@ -19,8 +23,57 @@ from app.services.blogger_service import (
     list_predictions_by_blogger,
     upsert_blogger,
 )
+from app.core.config import settings
+from app.services.outbox_service import enqueue_outbox_event
+from app.services.twitter_service import convert_profile_to_upsert, fetch_user_profile
+from app.services.user_resource_service import ResourceLimitExceeded, follow_blogger
 
 router = APIRouter(prefix="/api/bloggers", tags=["bloggers"])
+
+
+@router.post("/onboard", response_model=BloggerOnboardResponse)
+def onboard_blogger(
+    body: BloggerOnboardRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    handle = body.handle.strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+        raise HTTPException(status_code=422, detail="请输入有效的 Twitter Handle（1-15 位字母、数字或下划线）")
+
+    raw_profile = fetch_user_profile(handle)
+    if raw_profile is None:
+        raise HTTPException(status_code=404, detail=f"未找到 @{handle}，请检查用户名或账号状态")
+
+    profile = BloggerProfile(**convert_profile_to_upsert(raw_profile))
+    blogger = upsert_blogger(db, profile)
+    blogger.fetch_enabled = True
+    try:
+        follow_blogger(
+            db,
+            current_user.id,
+            blogger.id,
+            max_follows=settings.max_followed_bloggers_per_user,
+        )
+    except ResourceLimitExceeded as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="关注博主数量已达到上限") from exc
+
+    enqueue_outbox_event(
+        db,
+        "blogger.fetch_requested",
+        {"blogger_handle": blogger.handle},
+    )
+    db.commit()
+    return BloggerOnboardResponse(
+        id=str(blogger.id),
+        handle=blogger.handle,
+        name=blogger.name,
+        avatar_url=blogger.avatar_url,
+        followed=True,
+        fetch_enabled=True,
+        initial_fetch_queued=True,
+    )
 
 
 @router.get("", response_model=list[BloggerListItem])
@@ -71,7 +124,7 @@ class FetchToggleRequest(BaseModel):
 def toggle_fetch(
     handle: str,
     body: FetchToggleRequest,
-    _admin: User = Depends(get_current_admin),
+    _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """启用或禁用博主的定时推文抓取。"""

@@ -20,6 +20,7 @@ risk_factors 覆盖到对应的分析记录上，形成完整的投资信号。
     - asyncio.gather 批量并发，失败容忍
 """
 import asyncio
+import json
 import time
 from typing import Literal
 
@@ -165,6 +166,7 @@ async def _assess_one(structured_llm, tweet: dict, blogger_context: str, classif
             classification_hint=classification_hint,
             author_handle=tweet["author_handle"],
             content=tweet["content"],
+            media_context=json.dumps(tweet.get("media_context") or {}, ensure_ascii=False),
         ))
         result = await structured_llm.ainvoke(messages)
         latency_ms = int((time.perf_counter() - start) * 1000)

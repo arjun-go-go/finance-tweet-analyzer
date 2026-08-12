@@ -12,11 +12,16 @@ from app.models.outbox_event import OutboxEvent
 
 EVENT_TASKS: dict[str, tuple[str, str]] = {
     "tweet.index_requested": ("app.scheduler.tasks.embed_signal_task", "embed"),
+    "tweet.media_archive_requested": ("app.scheduler.tasks.archive_tweet_media_task", "ingest"),
+    "tweet.media_analyze_requested": ("app.scheduler.tasks.analyze_tweet_media_task", "vision"),
+    "tweet.analysis_requested": ("app.scheduler.tasks.analyze_tweet_task", "analysis"),
     "analysis.index_requested": ("app.scheduler.tasks.embed_signal_task", "embed"),
+    "intelligence.project_requested": ("app.scheduler.tasks.project_intelligence_event_task", "default"),
     "document.ingest_requested": ("app.scheduler.tasks.ingest_document_task", "ingest"),
     "report.generate_requested": ("app.scheduler.tasks.report_streaming_task", "report"),
     "analysis.job_requested": ("app.scheduler.tasks.user_analysis_job_task", "analysis"),
     "blogger.analysis_requested": ("app.scheduler.tasks.manual_analysis_task", "analysis"),
+    "blogger.fetch_requested": ("app.scheduler.tasks.fetch_blogger_tweets_task", "ingest"),
 }
 
 
@@ -35,8 +40,16 @@ def _task_message(event: OutboxEvent) -> tuple[str, str, list, dict, str]:
 
     if event.event_type == "tweet.index_requested":
         args = ["tweet", payload["tweet_id"]]
+    elif event.event_type == "tweet.media_archive_requested":
+        args = [payload["tweet_id"]]
+    elif event.event_type == "tweet.media_analyze_requested":
+        args = [payload["tweet_id"]]
+    elif event.event_type == "tweet.analysis_requested":
+        args = [payload["tweet_id"]]
     elif event.event_type == "analysis.index_requested":
         args = ["analysis", payload["analysis_result_id"]]
+    elif event.event_type == "intelligence.project_requested":
+        args = [payload["analysis_result_id"]]
     elif event.event_type == "document.ingest_requested":
         args = [payload["document_id"]]
     elif event.event_type == "report.generate_requested":
@@ -45,6 +58,8 @@ def _task_message(event: OutboxEvent) -> tuple[str, str, list, dict, str]:
         args = [payload["job_id"]]
     elif event.event_type == "blogger.analysis_requested":
         args = [payload["blogger_handles"]]
+    elif event.event_type == "blogger.fetch_requested":
+        args = [payload["blogger_handle"]]
     else:
         raise ValueError(f"Unsupported outbox event type: {event.event_type}")
 

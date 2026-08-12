@@ -4,11 +4,11 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 
-def test_memory_identity_default_removal_is_alembic_head():
+def test_memory_identity_default_removal_migration_metadata():
     config = Config("alembic.ini")
     scripts = ScriptDirectory.from_config(config)
-    head = scripts.get_revision(scripts.get_current_head())
+    migration = scripts.get_revision("c7b6e2d9f104")
 
-    assert head.down_revision == "a13c9f42b801"
-    assert "memory" in head.doc.lower()
-    assert Path(head.path).name.endswith("remove_memory_user_defaults.py")
+    assert migration.down_revision == "a13c9f42b801"
+    assert "memory" in migration.doc.lower()
+    assert Path(migration.path).name.endswith("remove_memory_user_defaults.py")

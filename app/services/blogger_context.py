@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from app.core.deps import SessionLocal
 from app.models.blogger import Blogger
 from app.models.prediction import Prediction
-from app.services.credibility import compute_score
+from app.services.credibility import SCORED_VERDICTS, compute_score
 
 
 def fetch_blogger_contexts(handles: list[str]) -> dict[str, str]:
@@ -36,7 +36,7 @@ def fetch_blogger_contexts(handles: list[str]) -> dict[str, str]:
             )
             .where(
                 Prediction.blogger_handle.in_(handles),
-                Prediction.verdict.is_not(None),
+                Prediction.verdict.in_(SCORED_VERDICTS),
             )
             .group_by(Prediction.blogger_handle, Prediction.sentiment)
         ).all()
@@ -49,7 +49,7 @@ def fetch_blogger_contexts(handles: list[str]) -> dict[str, str]:
             )
             .where(
                 Prediction.blogger_handle.in_(handles),
-                Prediction.verdict.is_not(None),
+                Prediction.verdict.in_(SCORED_VERDICTS),
             )
             .group_by(Prediction.blogger_handle)
         ).all()

@@ -2,9 +2,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, text
-
-from app.core.database_guard import resolve_test_database_url
+from sqlalchemy import text
 
 
 def _column_default(connection, table_name: str):
@@ -22,21 +20,17 @@ def _column_default(connection, table_name: str):
     ).scalar_one()
 
 
-def test_memory_user_id_defaults_downgrade_and_upgrade():
-    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+def test_memory_user_id_defaults_downgrade_and_upgrade(engine):
+    config = Config("alembic.ini")
+    scripts = ScriptDirectory.from_config(config)
     migration = scripts.get_revision("c7b6e2d9f104").module
-    engine = create_engine(resolve_test_database_url())
+    with engine.connect() as connection, connection.begin():
+        migration.op = Operations(MigrationContext.configure(connection))
 
-    try:
-        with engine.connect() as connection, connection.begin():
-            migration.op = Operations(MigrationContext.configure(connection))
+        migration.downgrade()
+        assert _column_default(connection, "user_preferences") is not None
+        assert _column_default(connection, "user_profile") is not None
 
-            migration.downgrade()
-            assert _column_default(connection, "user_preferences") is not None
-            assert _column_default(connection, "user_profile") is not None
-
-            migration.upgrade()
-            assert _column_default(connection, "user_preferences") is None
-            assert _column_default(connection, "user_profile") is None
-    finally:
-        engine.dispose()
+        migration.upgrade()
+        assert _column_default(connection, "user_preferences") is None
+        assert _column_default(connection, "user_profile") is None

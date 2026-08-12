@@ -7,7 +7,9 @@ from app.core.deps import get_db
 from app.core.auth import get_current_user
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
+from app.models.tweet_media_asset import TweetMediaAsset
 from app.models.user import User
+from app.schemas.tweet import TweetMediaItem
 
 router = APIRouter(prefix="/api", tags=["analysis-results"])
 
@@ -22,6 +24,7 @@ class TweetAnalysisItem(BaseModel):
     confidence: float
     created_at: str
     published_at: str
+    media: list[TweetMediaItem] = []
 
 
 class TweetAnalysesResponse(BaseModel):
@@ -70,6 +73,26 @@ def list_tweet_analyses(
     total = db.execute(count_query).scalar() or 0
 
     rows = db.execute(query.limit(limit).offset(offset)).all()
+    media_map: dict[str, list[TweetMediaItem]] = {}
+    if rows:
+        assets = db.execute(
+            select(TweetMediaAsset)
+            .where(
+                TweetMediaAsset.tweet_id.in_([tweet.id for _, tweet in rows]),
+                TweetMediaAsset.status == "downloaded",
+                TweetMediaAsset.object_key.is_not(None),
+            )
+            .order_by(TweetMediaAsset.created_at.asc())
+        ).scalars().all()
+        for asset in assets:
+            media_map.setdefault(str(asset.tweet_id), []).append(
+                TweetMediaItem(
+                    id=str(asset.id),
+                    width=asset.width,
+                    height=asset.height,
+                    content_type=asset.content_type,
+                )
+            )
 
     items = [
         TweetAnalysisItem(
@@ -82,6 +105,7 @@ def list_tweet_analyses(
             confidence=ar.confidence,
             created_at=ar.created_at.isoformat() if ar.created_at else "",
             published_at=tw.published_at.isoformat() if tw.published_at else "",
+            media=media_map.get(str(tw.id), []),
         )
         for ar, tw in rows
     ]

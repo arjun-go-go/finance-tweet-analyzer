@@ -21,6 +21,9 @@ class FakeRedis:
     def ping(self):
         return True
 
+    def get(self, key):
+        return b"ok"
+
 
 class FakeVectorStore:
     def count(self, collection):
@@ -46,7 +49,7 @@ def test_elasticsearch_health_check_is_optional(monkeypatch):
 
     result = router_module.health_check()
 
-    assert result["status"] == "ok"
+    assert result["status"] == "degraded"
     assert result["checks"]["database"] == "ok"
     assert result["checks"]["redis"] == "ok"
     assert result["checks"]["vector_store"] == "ok"

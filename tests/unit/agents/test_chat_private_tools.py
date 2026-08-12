@@ -3,6 +3,7 @@ import uuid
 from types import SimpleNamespace
 
 from app.agents import chat_agent
+from app.agents.chat.tools import definitions
 from app.services import report_service, tracking_service, user_resource_service
 
 
@@ -14,7 +15,7 @@ class _Db:
 def test_generate_tracking_report_passes_authenticated_user(monkeypatch):
     user_id = uuid.uuid4()
     captured = {}
-    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+    monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
     def create_report(db, passed_user_id, ticker, trigger_type):
         captured.update(
@@ -46,7 +47,7 @@ def test_generate_tracking_report_passes_authenticated_user(monkeypatch):
 def test_generate_tracking_report_requires_explicit_confirmation(monkeypatch):
     user_id = uuid.uuid4()
     called = False
-    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+    monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
     def create_report(db, passed_user_id, ticker, trigger_type):
         nonlocal called
@@ -70,7 +71,7 @@ def test_generate_tracking_report_requires_explicit_confirmation(monkeypatch):
 def test_list_tracked_tickers_passes_authenticated_user(monkeypatch):
     user_id = uuid.uuid4()
     captured = {}
-    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+    monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
     def list_items(db, passed_user_id):
         captured["user_id"] = passed_user_id
@@ -89,7 +90,7 @@ def test_list_tracked_tickers_passes_authenticated_user(monkeypatch):
 def test_list_followed_bloggers_passes_authenticated_user(monkeypatch):
     user_id = uuid.uuid4()
     captured = {}
-    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+    monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
     def list_items(db, passed_user_id, *, limit, offset):
         captured.update(user_id=passed_user_id, limit=limit, offset=offset)
@@ -120,7 +121,7 @@ def test_list_followed_bloggers_passes_authenticated_user(monkeypatch):
 
 
 def test_private_tools_fail_closed_without_user_identity(monkeypatch):
-    monkeypatch.setattr(chat_agent, "SessionLocal", _Db)
+    monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
     report_result = chat_agent.generate_tracking_report.invoke(
         {"ticker": "TSLA", "time_range": "1w"}, config={"metadata": {}}

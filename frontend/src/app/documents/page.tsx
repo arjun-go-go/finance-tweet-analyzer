@@ -15,6 +15,7 @@ import { formatDateTime } from "@/lib/datetime";
 import FileUploadZone from "@/components/FileUploadZone";
 import StatusBadge from "@/components/StatusBadge";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { MetricStrip, Pagination, SectionTitle, WorkspacePageHeader } from "@/components/WorkspacePage";
 
 type TabType = "upload" | "url" | "paste";
 
@@ -30,6 +31,7 @@ export default function DocumentsPage() {
 
   // Upload form state
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadZoneKey, setUploadZoneKey] = useState(0);
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadTickers, setUploadTickers] = useState("");
 
@@ -163,6 +165,7 @@ export default function DocumentsPage() {
       await uploadDocument(uploadFile, uploadTitle || undefined, tickers.length > 0 ? tickers : undefined);
       setFormSuccess("文件上传成功");
       setUploadFile(null);
+      setUploadZoneKey((value) => value + 1);
       setUploadTitle("");
       setUploadTickers("");
       await loadDocuments();
@@ -243,8 +246,8 @@ export default function DocumentsPage() {
 
   const tabClass = (tab: TabType) =>
     activeTab === tab
-      ? "bg-blue-600 text-white px-4 py-2 rounded-lg text-sm"
-      : "bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-200";
+      ? "is-active"
+      : "";
 
   if (loading) {
     return (
@@ -284,138 +287,126 @@ export default function DocumentsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">文档管理</h1>
+    <div className="product-page">
+      <WorkspacePageHeader eyebrow="Private Research" title="私人资料" subtitle="把研报、网页和研究笔记纳入只属于你的检索范围，与市场观点联合分析。" />
+      <MetricStrip items={[{ label: "资料总量", value: total, note: "私人研究库" }, { label: "本页已索引", value: documents.filter((doc) => doc.status === "indexed" || doc.status === "ready").length, note: "可用于研究助手" }, { label: "处理中", value: documents.filter((doc) => doc.status === "pending" || doc.status === "processing").length, note: "解析与索引" }]} />
 
       {/* Upload Area */}
-      <div className="bg-white rounded-lg shadow p-4">
-        {/* Tabs */}
-        <div className="flex gap-2 mb-4">
-          <button className={tabClass("upload")} onClick={() => { setActiveTab("upload"); setFormError(null); setFormSuccess(null); }}>
-            文件上传
-          </button>
-          <button className={tabClass("url")} onClick={() => { setActiveTab("url"); setFormError(null); setFormSuccess(null); }}>
-            URL提交
-          </button>
-          <button className={tabClass("paste")} onClick={() => { setActiveTab("paste"); setFormError(null); setFormSuccess(null); }}>
-            文本粘贴
-          </button>
+      <section className="library-ingest">
+        <div className="library-ingest-header">
+          <div className="library-intro"><p className="page-eyebrow">Add evidence</p><h2>添加研究资料</h2><p>资料处理完成后，将自动进入个人检索范围。</p></div>
+          {/* Tabs */}
+          <div className="segmented-control library-tabs" role="tablist" aria-label="资料录入方式">
+            <button type="button" role="tab" aria-selected={activeTab === "upload"} className={tabClass("upload")} onClick={() => { setActiveTab("upload"); setFormError(null); setFormSuccess(null); }}>
+              文件上传
+            </button>
+            <button type="button" role="tab" aria-selected={activeTab === "url"} className={tabClass("url")} onClick={() => { setActiveTab("url"); setFormError(null); setFormSuccess(null); }}>
+              URL 提交
+            </button>
+            <button type="button" role="tab" aria-selected={activeTab === "paste"} className={tabClass("paste")} onClick={() => { setActiveTab("paste"); setFormError(null); setFormSuccess(null); }}>
+              文本粘贴
+            </button>
+          </div>
         </div>
 
-        {/* Error/Success Messages */}
-        {formError && <p className="text-red-600 text-sm mt-2 mb-2">{formError}</p>}
-        {formSuccess && <p className="text-green-600 text-sm mt-2 mb-2">{formSuccess}</p>}
+        <div className="library-ingest-body">
+          {/* Error/Success Messages */}
+          {formError && <p className="form-message is-error">{formError}</p>}
+          {formSuccess && <p className="form-message is-success">{formSuccess}</p>}
 
-        {/* Tab 1: File Upload */}
-        {activeTab === "upload" && (
-          <div className="space-y-3">
-            <FileUploadZone
-              onFileSelected={(file) => setUploadFile(file)}
-              disabled={submitting}
-            />
-            <input
-              type="text"
-              placeholder="文档标题（可选）"
-              value={uploadTitle}
-              onChange={(e) => setUploadTitle(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <input
-              type="text"
-              placeholder="关联标的，逗号分隔（可选）"
-              value={uploadTickers}
-              onChange={(e) => setUploadTickers(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <button
-              onClick={handleUploadSubmit}
-              disabled={submitting}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              {submitting ? "上传中..." : "上传"}
-            </button>
-          </div>
-        )}
+          {/* Tab 1: File Upload */}
+          {activeTab === "upload" && (
+            <div className="library-form" role="tabpanel">
+              <div className="library-form-primary">
+                <FileUploadZone
+                  key={uploadZoneKey}
+                  onFileSelected={(file) => setUploadFile(file)}
+                  disabled={submitting}
+                />
+              </div>
+              <label className="library-field">
+                <span>资料标题 <small>可选</small></span>
+                <input
+                  type="text"
+                  placeholder="例如：英伟达 2026 年二季度研究"
+                  value={uploadTitle}
+                  onChange={(e) => setUploadTitle(e.target.value)}
+                  className="field-input"
+                  disabled={submitting}
+                />
+              </label>
+              <label className="library-field">
+                <span>关联标的 <small>可选，逗号分隔</small></span>
+                <input
+                  type="text"
+                  placeholder="例如：NVDA, AMD"
+                  value={uploadTickers}
+                  onChange={(e) => setUploadTickers(e.target.value)}
+                  className="field-input"
+                  disabled={submitting}
+                />
+              </label>
+              <div className="library-form-actions">
+                <p>支持 PDF、DOCX、Markdown、TXT，单个文件最大 10 MB。</p>
+                <button onClick={handleUploadSubmit} disabled={submitting || !uploadFile} className="button-primary">
+                  {submitting ? "上传中..." : "上传并建立索引"}
+                </button>
+              </div>
+            </div>
+          )}
 
-        {/* Tab 2: URL Submit */}
-        {activeTab === "url" && (
-          <div className="space-y-3">
-            <input
-              type="url"
-              placeholder="https://..."
-              value={urlValue}
-              onChange={(e) => setUrlValue(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <input
-              type="text"
-              placeholder="文档标题（可选）"
-              value={urlTitle}
-              onChange={(e) => setUrlTitle(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <input
-              type="text"
-              placeholder="关联标的，逗号分隔（可选）"
-              value={urlTickers}
-              onChange={(e) => setUrlTickers(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <button
-              onClick={handleUrlSubmit}
-              disabled={submitting}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              {submitting ? "提交中..." : "提交"}
-            </button>
-          </div>
-        )}
+          {/* Tab 2: URL Submit */}
+          {activeTab === "url" && (
+            <div className="library-form" role="tabpanel">
+              <label className="library-field library-form-primary">
+                <span>网页地址</span>
+                <input type="url" inputMode="url" placeholder="https://example.com/research" value={urlValue} onChange={(e) => setUrlValue(e.target.value)} className="field-input" disabled={submitting} />
+              </label>
+              <label className="library-field">
+                <span>资料标题 <small>可选</small></span>
+                <input type="text" placeholder="不填写时自动读取网页标题" value={urlTitle} onChange={(e) => setUrlTitle(e.target.value)} className="field-input" disabled={submitting} />
+              </label>
+              <label className="library-field">
+                <span>关联标的 <small>可选，逗号分隔</small></span>
+                <input type="text" placeholder="例如：AAPL, MSFT" value={urlTickers} onChange={(e) => setUrlTickers(e.target.value)} className="field-input" disabled={submitting} />
+              </label>
+              <div className="library-form-actions">
+                <p>系统将读取网页正文，并纳入你的私人检索范围。</p>
+                <button onClick={handleUrlSubmit} disabled={submitting || !urlValue.trim()} className="button-primary">
+                  {submitting ? "提交中..." : "提交并解析网页"}
+                </button>
+              </div>
+            </div>
+          )}
 
-        {/* Tab 3: Paste */}
-        {activeTab === "paste" && (
-          <div className="space-y-3">
-            <input
-              type="text"
-              placeholder="文档标题"
-              value={pasteTitle}
-              onChange={(e) => setPasteTitle(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <textarea
-              placeholder="粘贴文本内容..."
-              rows={6}
-              value={pasteContent}
-              onChange={(e) => setPasteContent(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-              disabled={submitting}
-            />
-            <input
-              type="text"
-              placeholder="关联标的，逗号分隔（可选）"
-              value={pasteTickers}
-              onChange={(e) => setPasteTickers(e.target.value)}
-              className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={submitting}
-            />
-            <button
-              onClick={handlePasteSubmit}
-              disabled={submitting}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              {submitting ? "保存中..." : "保存"}
-            </button>
-          </div>
-        )}
-      </div>
+          {/* Tab 3: Paste */}
+          {activeTab === "paste" && (
+            <div className="library-form" role="tabpanel">
+              <label className="library-field">
+                <span>资料标题</span>
+                <input type="text" placeholder="例如：苹果供应链调研笔记" value={pasteTitle} onChange={(e) => setPasteTitle(e.target.value)} className="field-input" disabled={submitting} />
+              </label>
+              <label className="library-field">
+                <span>关联标的 <small>可选，逗号分隔</small></span>
+                <input type="text" placeholder="例如：AAPL, 00700.HK" value={pasteTickers} onChange={(e) => setPasteTickers(e.target.value)} className="field-input" disabled={submitting} />
+              </label>
+              <label className="library-field library-form-primary">
+                <span>文本内容</span>
+                <textarea placeholder="粘贴研报摘要、会议纪要或自己的研究笔记…" rows={8} value={pasteContent} onChange={(e) => setPasteContent(e.target.value)} className="field-input" disabled={submitting} />
+              </label>
+              <div className="library-form-actions">
+                <p>{pasteContent.length > 0 ? `已输入 ${pasteContent.length.toLocaleString("zh-CN")} 个字符` : "文本只会进入你的私人资料库。"}</p>
+                <button onClick={handlePasteSubmit} disabled={submitting || !pasteTitle.trim() || !pasteContent.trim()} className="button-primary">
+                  {submitting ? "保存中..." : "保存并建立索引"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* Document List */}
-      <div className="bg-white rounded-lg shadow p-4">
+      <section className="library-list"><SectionTitle icon="documents" title="资料索引" meta={`${total} 项`} />
         {documents.length === 0 ? (
           <div className="text-center py-14">
             <div className="text-5xl mb-3">📁</div>
@@ -482,30 +473,10 @@ export default function DocumentsPage() {
             </div>
 
             {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-4 mt-4">
-                <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                  className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50"
-                >
-                  上一页
-                </button>
-                <span className="text-sm text-gray-600">
-                  第 {page} 页 / 共 {totalPages} 页
-                </span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page >= totalPages}
-                  className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50"
-                >
-                  下一页
-                </button>
-              </div>
-            )}
+            <Pagination page={page} pages={totalPages} onChange={setPage} />
           </>
         )}
-      </div>
+      </section>
 
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog

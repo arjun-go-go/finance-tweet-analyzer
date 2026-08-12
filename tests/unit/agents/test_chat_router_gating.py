@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents import chat_agent
+from app.agents.chat import graph
 
 
 def _state(message: str, **extra):
@@ -39,7 +40,7 @@ def test_route_tools_opens_analysis_tools_for_explicit_analysis_intent():
     result = chat_agent.route_tools_node(_state("预览并确认分析我关注博主的待分析推文"), {})
 
     assert result["tool_route"] == "analysis"
-    assert "preview_tweet_analysis" in result["allowed_tool_names"]
+    assert "preview_tweet_analysis" not in result["allowed_tool_names"]
     assert "confirm_tweet_analysis" in result["allowed_tool_names"]
     assert "generate_tracking_report" not in result["allowed_tool_names"]
 
@@ -55,9 +56,9 @@ def test_agent_node_binds_only_route_allowed_tools(monkeypatch):
         def invoke(self, messages):
             return AIMessage(content="ok")
 
-    monkeypatch.setattr(chat_agent, "get_report_llm", lambda: _LLM())
-    monkeypatch.setattr(chat_agent, "get_prompt", lambda name: "system")
-    monkeypatch.setattr(chat_agent.settings, "agent_max_tokens_per_turn", 100000)
+    monkeypatch.setattr(graph, "get_report_llm", lambda: _LLM())
+    monkeypatch.setattr(graph, "get_prompt", lambda name: "system")
+    monkeypatch.setattr(graph.settings, "agent_max_tokens_per_turn", 100000)
 
     result = chat_agent.agent_node(
         _state("查我的关注", allowed_tool_names=["query_database", "list_my_followed_bloggers"]),

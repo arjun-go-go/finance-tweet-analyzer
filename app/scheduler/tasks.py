@@ -10,6 +10,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 import sqlalchemy as sa
 from sqlalchemy import select, update
+from uuid import UUID
 
 from app.core.deps import SessionLocal
 from app.models.analysis import AnalysisResult
@@ -35,6 +36,105 @@ from app.services.analysis_service import (
 )
 
 logger = get_task_logger(__name__)
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.analyze_tweet_task",
+    acks_late=True,
+)
+def analyze_tweet_task(self, tweet_id: str) -> dict:
+    """Run the text and media-fused analysis for one ready tweet."""
+    db = SessionLocal()
+    try:
+        tweet = db.get(Tweet, UUID(tweet_id))
+        if tweet is None:
+            return {"tweet_id": tweet_id, "status": "skipped", "reason": "not_found"}
+        if tweet.status == "analyzed":
+            return {"tweet_id": tweet_id, "status": "skipped", "reason": "already_analyzed"}
+        return analyze_single_tweet(db, tweet_id)
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.analyze_tweet_media_task",
+    acks_late=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=3,
+)
+def analyze_tweet_media_task(self, tweet_id: str) -> dict:
+    """Extract structured evidence from a tweet and all archived images."""
+    from app.services.tweet_media_analysis_service import analyze_tweet_media
+
+    db = SessionLocal()
+    try:
+        return analyze_tweet_media(db, tweet_id)
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.archive_tweet_media_task",
+    acks_late=True,
+)
+def archive_tweet_media_task(self, tweet_id: str) -> dict:
+    """Download and archive one tweet's original images to object storage."""
+    from app.services.tweet_media_service import archive_tweet_media
+
+    db = SessionLocal()
+    try:
+        return archive_tweet_media(db, tweet_id)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.project_intelligence_event_task",
+    acks_late=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=120,
+    max_retries=3,
+)
+def project_intelligence_event_task(self, analysis_result_id: str) -> dict:
+    """Idempotently project one analysis result into the intelligence event store."""
+    from app.services.intelligence_projection_service import project_analysis_to_intelligence_event
+
+    db = SessionLocal()
+    try:
+        result = project_analysis_to_intelligence_event(db, analysis_result_id)
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.backfill_intelligence_events_task",
+    acks_late=True,
+)
+def backfill_intelligence_events_task(self) -> dict:
+    """Backfill or refresh persistent intelligence events from historical analyses."""
+    from app.services.intelligence_projection_service import backfill_intelligence_events
+
+    db = SessionLocal()
+    try:
+        return backfill_intelligence_events(db)
+    finally:
+        db.close()
 
 
 @shared_task(
@@ -379,6 +479,29 @@ def user_analysis_job_task(self, job_id: str) -> dict:
 
 @shared_task(
     bind=True,
+    name="app.scheduler.tasks.auto_verify_predictions_task",
+    acks_late=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=2,
+)
+def auto_verify_predictions_task(self, batch_size: int | None = None) -> dict:
+    """Verify due predictions from completed public market bars."""
+    from app.services.market_verification_service import run_due_market_verifications
+
+    db = SessionLocal()
+    try:
+        return run_due_market_verifications(db, batch_size=batch_size)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
     name="app.scheduler.tasks.prediction_batch_task",
     acks_late=True,
     autoretry_for=(Exception,),
@@ -525,25 +648,37 @@ def prediction_batch_task(self) -> dict:
 def _resolve_text(doc) -> str:
     """Resolve the document's text content based on its source_type.
 
-    - paste/markdown/url: text stored as .txt on disk by the API layer
-    - pdf/docx: raw binary stored on disk, re-parsed here
+    - paste/url/txt: UTF-8 text stored in object storage
+    - md/pdf/docx: original file stored in object storage and parsed here
     """
     from app.core.config import settings
     from app.rag.parsers.docx_parser import parse_docx
+    from app.rag.parsers.markdown_parser import parse_markdown
+    from app.rag.parsers.paste_parser import parse_paste
     from app.rag.parsers.pdf_parser import parse_pdf
     from app.rag.storage import DocumentStorage
 
-    storage = DocumentStorage(settings.document_storage_root)
-    base = storage.root / str(doc.user_id) / str(doc.id)
-
-    if doc.source_type in ("paste", "markdown", "url"):
-        return base.with_suffix(".txt").read_bytes().decode("utf-8")
-    elif doc.source_type == "pdf":
-        return parse_pdf(base.with_suffix(".pdf").read_bytes()).text
-    elif doc.source_type == "docx":
-        return parse_docx(base.with_suffix(".docx").read_bytes()).text
-    else:
+    storage = DocumentStorage()
+    extension = {
+        "paste": ".txt",
+        "url": ".txt",
+        "txt": ".txt",
+        "md": ".md",
+        "markdown": ".md",
+        "pdf": ".pdf",
+        "docx": ".docx",
+    }.get(doc.source_type)
+    if extension is None:
         raise ValueError(f"Unknown source_type: {doc.source_type}")
+    key = doc.storage_key or storage.derived_key(doc.user_id, doc.id, extension)
+    content = storage.load(key)
+    if doc.source_type in ("paste", "url", "txt"):
+        return parse_paste(content.decode("utf-8")).text
+    if doc.source_type in ("md", "markdown"):
+        return parse_markdown(content).text
+    if doc.source_type == "pdf":
+        return parse_pdf(content).text
+    return parse_docx(content).text
 
 
 @shared_task(
@@ -693,6 +828,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
     from app.rag.chunking import chunk_analysis, chunk_tweet
     from app.rag.embeddings import get_embedder
     from app.rag.vector_store import get_vector_store
+    from app.services.instrument_resolver import is_downstream_verified_ticker
 
     db = SessionLocal()
     try:
@@ -714,7 +850,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             # horizon 是 per-ticker 字段，取第一个有效值
             horizon = "unknown"
             for t in (tickers or []):
-                if isinstance(t, dict) and t.get("horizon", "unknown") != "unknown":
+                if is_downstream_verified_ticker(t) and t.get("horizon", "unknown") != "unknown":
                     horizon = t["horizon"]
                     break
             metadata_base = {
@@ -739,16 +875,21 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             parts: list[str] = []
             if result_data.get("reasoning"):
                 parts.append(result_data["reasoning"])
+            if result_data.get("media_summary"):
+                parts.append("图片摘要：" + result_data["media_summary"])
+            if result_data.get("media_evidence"):
+                parts.append("图片证据：" + "；".join(result_data["media_evidence"]))
+            if result_data.get("text_image_consistency") not in (None, "no_media"):
+                parts.append("图文关系：" + result_data["text_image_consistency"])
             if result_data.get("key_points"):
                 parts.append("核心观点：" + "；".join(result_data["key_points"]))
             if result_data.get("tickers"):
                 ticker_descs = []
                 for t in result_data["tickers"]:
-                    if isinstance(t, dict):
+                    if is_downstream_verified_ticker(t):
                         ticker_descs.append(f"{t.get('symbol', '')}({t.get('sentiment', '')})")
-                    else:
-                        ticker_descs.append(str(t))
-                parts.append("标的：" + "、".join(ticker_descs))
+                if ticker_descs:
+                    parts.append("标的：" + "、".join(ticker_descs))
             if result_data.get("risk_factors"):
                 parts.append("风险：" + "；".join(result_data["risk_factors"]))
             summary_text = "\n".join(parts) if parts else result_data.get("overall_sentiment", "neutral")
@@ -759,7 +900,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             sentiment = result_data.get("overall_sentiment", "neutral")
             horizon = "unknown"
             for t in (tickers or []):
-                if isinstance(t, dict) and t.get("horizon", "unknown") != "unknown":
+                if is_downstream_verified_ticker(t) and t.get("horizon", "unknown") != "unknown":
                     horizon = t["horizon"]
                     break
             metadata_base = {
@@ -782,9 +923,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         # Normalize tickers: can be ["BTC"] or [{"symbol": "NOK", ...}]
         ticker_symbols: list[str] = []
         for t in (tickers or []):
-            if isinstance(t, str):
-                ticker_symbols.append(t)
-            elif isinstance(t, dict) and "symbol" in t:
+            if is_downstream_verified_ticker(t):
                 ticker_symbols.append(t["symbol"])
 
         # Store tickers as comma-joined string (ChromaDB doesn't support array metadata)
@@ -1672,14 +1811,6 @@ def fetch_blogger_tweets_task(self, handle: str) -> dict:
 
         # 更新抓取时间
         blogger.last_fetched_at = datetime.now(timezone.utc)
-        if imported > 0:
-            from app.services.outbox_service import enqueue_outbox_event
-
-            enqueue_outbox_event(
-                db,
-                "blogger.analysis_requested",
-                {"blogger_handles": [handle]},
-            )
         db.commit()
 
         # 有新推文则触发分析

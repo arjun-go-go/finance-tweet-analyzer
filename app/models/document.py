@@ -31,6 +31,8 @@ class Document(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
     source_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    storage_backend: Mapped[str] = mapped_column(String(20), nullable=False, server_default="local")
     content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     chunk_count: Mapped[int] = mapped_column(Integer, server_default="0")

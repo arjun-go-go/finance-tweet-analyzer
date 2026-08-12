@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     # ----- Models -----
     signal_model: str = "qwen/qwen3.7-max"
     report_model: str = "qwen/qwen3.7-max"
+    vision_model: str = "qwen/qwen3.7-plus"
+    vision_prompt_version: str = "v1"
+    vision_max_images_per_tweet: int = 4
+    vision_max_image_dimension: int = 1600
+    vision_jpeg_quality: int = 85
+    vision_max_output_tokens: int = 5000
 
     # ----- LangSmith -----
     langsmith_api_key: str = ""
@@ -37,6 +43,16 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
     celery_task_serializer: str = "json"
     celery_prediction_interval_minutes: int = 5
+    auto_verification_enabled: bool = False
+    auto_verification_interval_minutes: int = 60
+    auto_verification_batch_size: int = 50
+    auto_verification_short_return_threshold: float = 0.03
+    auto_verification_medium_return_threshold: float = 0.05
+    auto_verification_long_return_threshold: float = 0.10
+    gold_verification_short_return_threshold: float = 0.015
+    gold_verification_medium_return_threshold: float = 0.03
+    gold_verification_long_return_threshold: float = 0.06
+    auto_verification_retry_hours: int = 6
     outbox_dispatch_batch_size: int = 100
     outbox_dispatch_interval_seconds: int = 2
     outbox_retry_base_seconds: int = 5
@@ -187,6 +203,13 @@ class Settings(BaseSettings):
 
     # ----- Storage -----
     document_storage_root: str = "./uploads"
+    object_storage_backend: str = "local"
+    minio_endpoint: str = ""
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket_documents: str = "finance-documents"
+    minio_bucket_tweet_media: str = "finance-tweet-media"
+    tweet_media_max_size_mb: int = 10
 
     # ----- Twitter API -----
     twitter_auth_token: str = ""
@@ -198,6 +221,24 @@ class Settings(BaseSettings):
     twitter_fetch_interval_minutes: int = 60
     twitter_fetch_max_pages: int = 2
     twitter_fetch_batch_size: int = 5
+
+    # ----- Financial instrument validation -----
+    instrument_validation_enabled: bool = True
+    instrument_catalog_cache_seconds: int = 43200
+    instrument_api_timeout_seconds: float = 10.0
+    akshare_validation_enabled: bool = True
+    openfigi_validation_enabled: bool = True
+    openfigi_base_url: str = "https://api.openfigi.com/v3"
+    openfigi_api_key: str = ""
+    sec_edgar_validation_enabled: bool = True
+    sec_company_tickers_url: str = "https://www.sec.gov/files/company_tickers_exchange.json"
+    sec_user_agent: str = "finance-tweet-analyzer/0.1 contact@example.invalid"
+    binance_validation_enabled: bool = True
+    binance_exchange_info_url: str = "https://data-api.binance.vision/api/v3/exchangeInfo"
+    binance_klines_url: str = "https://data-api.binance.vision/api/v3/klines"
+    eia_api_key: str = ""
+    eia_base_url: str = "https://api.eia.gov/v2"
+    eia_wti_series_id: str = "PET.RWTC.D"
 
     # ----- mem0 long-term memory (self-hosted OSS mode) -----
     mem0_enabled: bool = True
@@ -223,6 +264,8 @@ class Settings(BaseSettings):
     log_sensitive_keys: list[str] = [
         "password", "passwd", "token", "access_token", "refresh_token",
         "authorization", "api_key", "apikey", "secret", "openrouter_api_key",
+        "openfigi_api_key",
+        "minio_access_key", "minio_secret_key",
         "cookie", "set-cookie",
     ]
     log_skip_paths: list[str] = ["/health", "/api/health", "/docs", "/openapi.json", "/favicon.ico"]
@@ -263,8 +306,12 @@ class Settings(BaseSettings):
             "twitter_auth_token",
             "twitter_ct0",
             "twitter_bearer_token",
+            "openfigi_api_key",
+            "eia_api_key",
             "milvus_token",
             "elasticsearch_password",
+            "minio_access_key",
+            "minio_secret_key",
         }
         for name, value in super().__repr_args__():
             yield name, "**********" if name in sensitive_fields else value

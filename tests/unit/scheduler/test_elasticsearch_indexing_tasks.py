@@ -96,6 +96,7 @@ def test_best_effort_upsert_es_chunks_records_failure_job(monkeypatch):
 def test_retry_failed_es_index_jobs_task_reindexes_failed_jobs(monkeypatch):
     job = EsIndexJob(
         doc_chunk_id=Chunk.id,
+        target="elasticsearch",
         status="failed",
         attempts=2,
         error_message="old error",
@@ -123,6 +124,12 @@ def test_retry_failed_es_index_jobs_task_reindexes_failed_jobs(monkeypatch):
         def close(self):
             pass
 
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
     def fake_upsert(chunks, user_id=None, db=None):
         calls.append((list(chunks), user_id, db))
         return {"attempted": 1, "indexed": 1, "errors": 0}
@@ -130,9 +137,16 @@ def test_retry_failed_es_index_jobs_task_reindexes_failed_jobs(monkeypatch):
     monkeypatch.setattr(tasks, "SessionLocal", lambda: FakeSession())
     monkeypatch.setattr(tasks, "_best_effort_upsert_es_chunks", fake_upsert)
 
-    result = tasks.retry_failed_es_index_jobs_task.run(batch_size=10)
+    result = tasks.retry_failed_index_jobs_task.run(batch_size=10, target="elasticsearch")
 
-    assert result == {"scanned": 1, "attempted": 1, "indexed": 1, "errors": 0, "missing_chunks": 0}
+    assert result == {
+        "scanned": 1,
+        "attempted": 1,
+        "indexed": 1,
+        "errors": 0,
+        "missing_chunks": 0,
+        "targets": {"elasticsearch": {"attempted": 1, "indexed": 1, "errors": 0}},
+    }
     assert calls[0][1] == UUID("10000000-0000-0000-0000-000000000001")
 
 

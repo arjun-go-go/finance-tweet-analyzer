@@ -27,6 +27,9 @@ class _FakeSession:
         if isinstance(row, Tweet) and row.id is None:
             row.id = uuid.uuid4()
 
+    def flush(self):
+        pass
+
     def commit(self):
         self.committed = True
 

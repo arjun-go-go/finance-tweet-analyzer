@@ -2,6 +2,101 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 import { authFetch, getAccessToken } from "./auth";
 
+function apiErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") return fallback;
+  const detail = (payload as { detail?: unknown }).detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+    const error = (detail as { error?: unknown }).error;
+    if (error === "duplicate_prediction_after_correction") {
+      return "同一博主 24 小时内已有相同标的和方向的预测，请保留较早记录并排除当前重复项";
+    }
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => (item && typeof item === "object" ? (item as { msg?: unknown }).msg : null))
+      .filter((item): item is string => typeof item === "string");
+    if (messages.length) return messages.join("；");
+  }
+  return fallback;
+}
+
+export interface IntelligenceEvidence {
+  source_type: string;
+  source_id: string;
+  author: string;
+  published_at: string;
+  excerpt: string;
+  source_url: string;
+}
+
+export interface IntelligenceFeedItem {
+  id: string;
+  kind: "opinion" | "risk";
+  title: string;
+  summary: string;
+  direction: string;
+  tickers: string[];
+  author: string;
+  confidence: number;
+  source_credibility: number;
+  importance_score: number;
+  score_breakdown: {
+    relevance: number;
+    freshness: number;
+    confidence: number;
+    credibility: number;
+    risk: number;
+    corroboration: number;
+    quality_penalty: number;
+    total: number;
+  };
+  score_explanation: string[];
+  risk_factors: string[];
+    key_points: string[];
+    published_at: string;
+    first_seen_at: string;
+    last_seen_at: string;
+    time_bucket: string;
+    lifecycle: "new" | "developing" | "confirmed" | "reversed" | "expired";
+    event_count: number;
+    match_reasons: string[];
+  feed_bucket: "personalized" | "market_risk" | "discovery";
+  corroboration_count: number;
+  evidence: IntelligenceEvidence;
+  supporting_evidence: IntelligenceEvidence[];
+}
+
+export interface IntelligenceFeedResponse {
+  items: IntelligenceFeedItem[];
+  total: number;
+  context: {
+    followed_bloggers: number;
+    tracked_tickers: number;
+    personalized: boolean;
+    fallback_to_market: boolean;
+    candidate_total: number;
+    personalized_candidates: number;
+    market_candidates: number;
+    window: "24h" | "3d" | "7d";
+    kind: "all" | "risk" | "opinion";
+    generated_at: string;
+  };
+}
+
+export async function fetchIntelligenceFeed(
+  limit = 20,
+  window: "24h" | "3d" | "7d" = "24h",
+  kind: "all" | "risk" | "opinion" = "all",
+): Promise<IntelligenceFeedResponse> {
+  const params = new URLSearchParams({ limit: String(limit), window, kind });
+  const res = await authFetch(`${API_BASE}/api/intelligence/feed?${params.toString()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("无法加载今日情报，请检查后端服务或稍后重试。");
+  return res.json() as Promise<IntelligenceFeedResponse>;
+}
+
 export async function fetchDashboard() {
   const res = await authFetch(`${API_BASE}/api/dashboard/overview`, {
     cache: "no-store",
@@ -69,6 +164,38 @@ export async function fetchBloggers(params?: {
   });
   if (!res.ok) throw new Error("Failed to fetch bloggers");
   return res.json();
+}
+
+export async function fetchTweetMediaBlob(tweetId: string, assetId: string): Promise<Blob> {
+  const res = await authFetch(
+    `${API_BASE}/api/tweets/${encodeURIComponent(tweetId)}/media/${encodeURIComponent(assetId)}`,
+    { cache: "force-cache" },
+  );
+  if (!res.ok) throw new Error("Failed to fetch tweet media");
+  return res.blob();
+}
+
+export interface BloggerOnboardResult {
+  id: string;
+  handle: string;
+  name: string;
+  avatar_url: string | null;
+  followed: boolean;
+  fetch_enabled: boolean;
+  initial_fetch_queued: boolean;
+}
+
+export async function onboardBlogger(handle: string): Promise<BloggerOnboardResult> {
+  const res = await authFetch(`${API_BASE}/api/bloggers/onboard`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ handle }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(payload?.detail || "新增信息源失败，请稍后重试");
+  }
+  return res.json() as Promise<BloggerOnboardResult>;
 }
 
 export async function fetchBloggerDetail(handle: string) {
@@ -186,7 +313,128 @@ export async function toggleBloggerFetch(handle: string, fetch_enabled: boolean)
       body: JSON.stringify({ fetch_enabled }),
     },
   );
-  if (!res.ok) throw new Error("Failed to toggle blogger fetch");
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || "更新定时抓取状态失败");
+  }
+  return res.json();
+}
+
+export async function excludePrediction(id: string, reason: string) {
+  const res = await authFetch(`${API_BASE}/api/predictions/${id}/exclude`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) throw new Error("排除预测失败");
+  return res.json();
+}
+
+export type InstrumentCorrection = {
+  symbol: string;
+  name: string;
+  asset_type: "equity" | "crypto" | "commodity";
+  market: "CN" | "HK" | "US" | "CRYPTO" | "COMMODITY";
+  reason: string;
+  context_terms?: string[];
+};
+
+export type InstrumentValidation = {
+  accepted: boolean;
+  reason: string;
+  instrument?: Record<string, unknown>;
+};
+
+export async function validatePredictionInstrument(
+  correction: Omit<InstrumentCorrection, "reason" | "context_terms">,
+): Promise<InstrumentValidation> {
+  const res = await authFetch(`${API_BASE}/api/predictions/instruments/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(correction),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(apiErrorMessage(data, "标的校验失败"));
+  return data as InstrumentValidation;
+}
+
+export async function correctPredictionInstrument(
+  id: string,
+  correction: InstrumentCorrection,
+) {
+  const res = await authFetch(
+    `${API_BASE}/api/predictions/${id}/correct-instrument`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(correction),
+    },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(data, "修正标的失败"));
+  }
+  return res.json();
+}
+
+export type MarketVerificationEvidence = {
+  id: string;
+  status: "ready" | "tracking" | "manual_review" | "market_data_unavailable" | "excluded_non_directional" | "excluded_duplicate";
+  provider: string | null;
+  provider_symbol: string | null;
+  market: string | null;
+  start_observed_at: string | null;
+  start_price: number | null;
+  end_observed_at: string | null;
+  end_price: number | null;
+  raw_return: number | null;
+  directional_return: number | null;
+  threshold: number | null;
+  proposed_verdict: string | null;
+  proposed_score: number | null;
+  rule_version: string;
+  reason: string | null;
+  review_type?: "instrument_identity" | "non_directional" | "market_data" | "duplicate_prediction" | null;
+  identity?: {
+    symbol?: string | null;
+    original_name?: string | null;
+    resolved_name?: string | null;
+    market?: string | null;
+    validation_status?: string | null;
+    validation_sources?: string[];
+  } | null;
+  identity_reason: string | null;
+  price_proxy?: {
+    business_symbol: string;
+    provider_symbol: string;
+    disclosure: string;
+  } | null;
+  applied: boolean;
+  created_at: string;
+};
+
+export type PredictionReviewStats = {
+  manual_review: number;
+  market_data_unavailable: number;
+  due_pending: number;
+  tracking: number;
+  auto_verified: number;
+};
+
+export async function fetchPredictionReviewQueue(params?: {
+  status?: "all" | "manual_review" | "market_data_unavailable";
+  limit?: number;
+  offset?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.offset) sp.set("offset", String(params.offset));
+  const res = await authFetch(
+    `${API_BASE}/api/predictions/review-queue?${sp.toString()}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error("人工复核队列加载失败");
   return res.json();
 }
 
@@ -899,6 +1147,35 @@ export interface EsAdminStats {
     user_documents: number;
   };
   index_jobs: Record<string, Record<string, number>>;
+}
+
+export interface RuntimeStats {
+  queues: Record<string, number>;
+  outbox: {
+    statuses: Record<string, number>;
+    oldest_pending_age_seconds: number;
+  };
+  index_jobs: Record<string, Record<string, number>>;
+  tweet_analysis: Record<string, number>;
+  vision: {
+    statuses: Record<string, number>;
+    attempts: number;
+    average_confidence: number;
+    assets: Record<string, number>;
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      provider_cost_usd: number;
+    };
+  };
+  database_pool: string;
+}
+
+export async function fetchRuntimeStats(): Promise<RuntimeStats> {
+  const res = await authFetch(`${API_BASE}/api/admin/runtime/stats`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch runtime stats");
+  return res.json() as Promise<RuntimeStats>;
 }
 
 export interface IndexJobItem {

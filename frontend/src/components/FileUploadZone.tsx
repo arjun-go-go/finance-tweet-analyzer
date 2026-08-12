@@ -88,13 +88,13 @@ export default function FileUploadZone({
   };
 
   return (
-    <div>
+    <div className="file-upload-control">
       <div
         onClick={handleClick}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`border-2 border-dashed rounded-lg p-8 flex flex-col items-center justify-center cursor-pointer transition-colors ${
+        className={`file-upload-zone ${
           disabled
             ? "opacity-50 cursor-not-allowed border-gray-300 bg-gray-50"
             : dragOver
@@ -103,7 +103,7 @@ export default function FileUploadZone({
         }`}
       >
         {selectedFile ? (
-          <div className="flex items-center gap-2 text-gray-700">
+          <div className="file-upload-selected">
             <svg
               className="w-5 h-5 text-gray-500"
               fill="none"
@@ -121,7 +121,7 @@ export default function FileUploadZone({
             <span className="text-gray-500">· {formatSize(selectedFile.size)}</span>
           </div>
         ) : (
-          <div className="flex flex-col items-center gap-2 text-gray-500">
+          <div className="file-upload-empty">
             <svg
               className="w-10 h-10"
               fill="none"
@@ -136,6 +136,7 @@ export default function FileUploadZone({
               />
             </svg>
             <span className="text-sm">拖拽文件到此处，或点击选择</span>
+            <small>PDF、DOCX、MD、TXT · 最大 {maxSizeMB} MB</small>
           </div>
         )}
       </div>

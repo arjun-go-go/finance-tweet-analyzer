@@ -3,8 +3,8 @@ import "./globals.css";
 import AuthGuard from "@/components/AuthGuard";
 
 export const metadata: Metadata = {
-  title: "Finance Tweet Analyzer",
-  description: "AI-powered financial tweet analysis platform",
+  title: "Signal Desk · AI 投资情报工作台",
+  description: "把分散的市场观点，变成有证据的投资情报。",
 };
 
 export default function RootLayout({
@@ -14,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
-      <body className="bg-gray-50 min-h-screen">
+      <body>
         <AuthGuard>{children}</AuthGuard>
       </body>
     </html>

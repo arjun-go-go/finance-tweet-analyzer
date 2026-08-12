@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -8,7 +10,9 @@ from app.core.auth import get_current_admin, get_current_user
 from app.models.user import User
 from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
-from app.schemas.tweet import TweetImportRequest, TweetImportResponse
+from app.models.tweet_media_asset import TweetMediaAsset
+from app.rag.storage import TweetMediaStorage
+from app.schemas.tweet import TweetImportRequest, TweetImportResponse, TweetMediaItem
 from app.services.tweet_service import import_tweets
 
 router = APIRouter(prefix="/api/tweets", tags=["tweets"])
@@ -29,6 +33,7 @@ class TweetListItem(BaseModel):
     analysis_completed_at: str | None = None
     metrics: dict | None = None
     analysis: dict | None = None
+    media: list[TweetMediaItem] = []
 
 
 class TweetListResponse(BaseModel):
@@ -64,6 +69,26 @@ def list_tweets(
 
     # If include_analysis, batch-fetch related analysis_results
     analysis_map: dict[str, dict] = {}
+    media_map: dict[str, list[TweetMediaItem]] = {}
+    if rows:
+        assets = db.execute(
+            select(TweetMediaAsset)
+            .where(
+                TweetMediaAsset.tweet_id.in_([tweet.id for tweet in rows]),
+                TweetMediaAsset.status == "downloaded",
+                TweetMediaAsset.object_key.is_not(None),
+            )
+            .order_by(TweetMediaAsset.created_at.asc())
+        ).scalars().all()
+        for asset in assets:
+            media_map.setdefault(str(asset.tweet_id), []).append(
+                TweetMediaItem(
+                    id=str(asset.id),
+                    width=asset.width,
+                    height=asset.height,
+                    content_type=asset.content_type,
+                )
+            )
     if include_analysis and rows:
         tweet_ids = [t.id for t in rows]
         analysis_rows = db.execute(
@@ -107,6 +132,7 @@ def list_tweets(
             ),
             metrics=t.metrics,
             analysis=analysis_map.get(str(t.id)),
+            media=media_map.get(str(t.id), []),
         )
         for t in rows
     ]
@@ -126,3 +152,29 @@ def import_tweets_endpoint(
         return_ids=True,
     )
     return TweetImportResponse(imported=imported, skipped=skipped)
+
+
+@router.get("/{tweet_id}/media/{asset_id}")
+def get_tweet_media(
+    tweet_id: UUID,
+    asset_id: UUID,
+    _current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    asset = db.execute(
+        select(TweetMediaAsset).where(
+            TweetMediaAsset.id == asset_id,
+            TweetMediaAsset.tweet_id == tweet_id,
+            TweetMediaAsset.status == "downloaded",
+            TweetMediaAsset.object_key.is_not(None),
+        )
+    ).scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Tweet media not found")
+
+    content = TweetMediaStorage().load(asset.object_key)
+    return Response(
+        content=content,
+        media_type=asset.content_type or "application/octet-stream",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )

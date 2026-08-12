@@ -3,6 +3,7 @@ from langchain_core.messages import ToolMessage
 
 from app.agents import chat_agent
 from app.agents.chat import observability
+from app.agents.chat.nodes import tool_executor
 
 
 def test_route_tools_node_records_structured_route_decision(monkeypatch):
@@ -11,7 +12,7 @@ def test_route_tools_node_records_structured_route_decision(monkeypatch):
     def fake_record(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr(chat_agent, "_record_tool_route_decision", fake_record)
+    monkeypatch.setattr(tool_executor, "record_tool_route_decision", fake_record)
 
     result = chat_agent.route_tools_node(
         {"messages": [HumanMessage(content="生成一份 TSLA 日报")]},
@@ -88,9 +89,9 @@ def test_tools_node_records_route_link_for_actual_tool_call(monkeypatch):
     def fake_record(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr(chat_agent, "_record_tool_call_route_link", fake_record)
+    monkeypatch.setattr(tool_executor, "record_tool_call_route_link", fake_record)
     monkeypatch.setattr(
-        chat_agent._tool_node,
+        tool_executor.tool_node,
         "invoke",
         lambda state: {
             "messages": [

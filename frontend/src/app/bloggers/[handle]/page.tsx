@@ -53,6 +53,7 @@ export default function BloggerDetailPage({
   const [loading, setLoading] = useState(true);
   const [predictionsLoading, setPredictionsLoading] = useState(false);
   const [fetchToggling, setFetchToggling] = useState(false);
+  const [fetchNotice, setFetchNotice] = useState("");
 
   const loadDetail = async () => {
     try {
@@ -104,11 +105,15 @@ export default function BloggerDetailPage({
   const handleToggleFetch = async () => {
     if (!detail) return;
     setFetchToggling(true);
+    setFetchNotice("");
     try {
-      await toggleBloggerFetch(decodedHandle, !detail.fetch_enabled);
-      setDetail((d) => d ? { ...d, fetch_enabled: !d.fetch_enabled } : d);
+      const nextEnabled = !detail.fetch_enabled;
+      await toggleBloggerFetch(decodedHandle, nextEnabled);
+      setDetail((d) => d ? { ...d, fetch_enabled: nextEnabled } : d);
+      setFetchNotice(nextEnabled ? "已开启定时抓取" : "已关闭定时抓取");
     } catch (e) {
       console.error(e);
+      setFetchNotice(e instanceof Error ? e.message : "更新失败，请稍后重试");
     } finally {
       setFetchToggling(false);
     }
@@ -158,6 +163,7 @@ export default function BloggerDetailPage({
                   ? "定时抓取已启用"
                   : "定时抓取"}
             </button>
+            {fetchNotice && <span className="text-xs text-gray-500">{fetchNotice}</span>}
           </div>
           <p className="text-sm text-gray-600">{detail.name}</p>
           {detail.bio && (

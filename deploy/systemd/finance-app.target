@@ -1,6 +1,6 @@
 [Unit]
 Description=Finance Tweet Analyzer Application
-Wants=finance-backend.service finance-worker-analysis.service finance-worker-index.service finance-worker-ingest.service finance-worker-default.service finance-worker-jobs.service finance-beat.service finance-frontend.service
+Wants=finance-backend.service finance-worker-analysis.service finance-worker-vision.service finance-worker-index.service finance-worker-ingest.service finance-worker-default.service finance-worker-jobs.service finance-beat.service finance-frontend.service
 After=network-online.target
 
 [Install]

@@ -3,9 +3,9 @@ import uuid
 from datetime import datetime, timezone
 
 from app.agents import chat_agent
-from app.celery_app import celery
+from app.agents.chat.tools import definitions
 from app.core.config import settings
-from app.models import AnalysisJob, Blogger, Tweet, User, UserBloggerFollow
+from app.models import AnalysisJob, Blogger, OutboxEvent, Tweet, User, UserBloggerFollow
 
 
 class _SessionProxy:
@@ -45,15 +45,7 @@ def test_chat_analysis_confirmation_creates_and_dispatches_durable_jobs(
     db_session.flush()
 
     monkeypatch.setattr(settings, "user_analysis_requests_enabled", True)
-    monkeypatch.setattr(chat_agent, "SessionLocal", lambda: _SessionProxy(db_session))
-    sent = []
-    monkeypatch.setattr(
-        celery,
-        "send_task",
-        lambda name, *, args, task_id, queue: sent.append(
-            (name, args, task_id, queue)
-        ),
-    )
+    monkeypatch.setattr(definitions, "SessionLocal", lambda: _SessionProxy(db_session))
 
     preview = chat_agent.preview_tweet_analysis.invoke(
         {"blogger_handle": blogger.handle},
@@ -78,11 +70,10 @@ def test_chat_analysis_confirmation_creates_and_dispatches_durable_jobs(
     assert "已提交分析任务" in result
     assert awaiting.status == "queued"
     assert awaiting.celery_task_id == str(awaiting.id)
-    assert sent == [
-        (
-            "app.scheduler.tasks.user_analysis_job_task",
-            [str(awaiting.id)],
-            str(awaiting.id),
-            "analysis",
-        )
-    ]
+    event = (
+        db_session.query(OutboxEvent)
+        .filter_by(event_type="analysis.job_requested")
+        .one()
+    )
+    assert event.payload["job_id"] == str(awaiting.id)
+    assert event.payload["task_id"] == str(awaiting.id)

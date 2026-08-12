@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.models.blogger import Blogger
 from app.models.prediction import Prediction
+from app.models.prediction_market_verification import PredictionMarketVerification
 from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
-from app.services.credibility import compute_score
+from app.services.credibility import SCORED_VERDICTS, compute_score
 
 
 def upsert_blogger(db: Session, profile: BloggerProfile) -> Blogger:
@@ -69,7 +70,7 @@ def ensure_blogger(db: Session, handle: str, name: str) -> None:
 
 def _stats_subquery():
     """Per-blogger aggregate over predictions."""
-    verified_filter = Prediction.verdict.is_not(None)
+    verified_filter = Prediction.verdict.in_(SCORED_VERDICTS)
     return (
         select(
             Prediction.blogger_handle.label("handle"),
@@ -141,7 +142,7 @@ def get_blogger_detail(db: Session, handle: str) -> dict | None:
 
     verified_filter = and_(
         Prediction.blogger_handle == handle,
-        Prediction.verdict.is_not(None),
+        Prediction.verdict.in_(SCORED_VERDICTS),
     )
     pending_filter = and_(
         Prediction.blogger_handle == handle,
@@ -259,7 +260,7 @@ def list_predictions_by_blogger(
     if status == "pending":
         base = base.where(Prediction.verdict.is_(None))
     elif status == "verified":
-        base = base.where(Prediction.verdict.is_not(None))
+        base = base.where(Prediction.verdict.in_(SCORED_VERDICTS))
     if ticker:
         base = base.where(Prediction.ticker == ticker)
 
@@ -271,7 +272,7 @@ def list_predictions_by_blogger(
     if status == "pending":
         count_q = count_q.where(Prediction.verdict.is_(None))
     elif status == "verified":
-        count_q = count_q.where(Prediction.verdict.is_not(None))
+        count_q = count_q.where(Prediction.verdict.in_(SCORED_VERDICTS))
     if ticker:
         count_q = count_q.where(Prediction.ticker == ticker)
 
@@ -280,16 +281,69 @@ def list_predictions_by_blogger(
     rows = db.execute(
         base.order_by(Prediction.published_at.desc()).limit(limit).offset(offset)
     ).all()
+    prediction_ids = [prediction.id for prediction, _tweet in rows]
+    latest_verifications: dict = {}
+    if prediction_ids:
+        verifications = db.execute(
+            select(PredictionMarketVerification)
+            .where(PredictionMarketVerification.prediction_id.in_(prediction_ids))
+            .order_by(
+                PredictionMarketVerification.prediction_id,
+                PredictionMarketVerification.created_at.desc(),
+            )
+        ).scalars().all()
+        for verification in verifications:
+            latest_verifications.setdefault(verification.prediction_id, verification)
 
     return {
-        "items": [_serialize_prediction(p, t) for p, t in rows],
+        "items": [
+            _serialize_prediction(p, t, latest_verifications.get(p.id))
+            for p, t in rows
+        ],
         "total": int(total),
     }
 
 
-def _serialize_prediction(p: Prediction, t: Tweet) -> dict:
+def _serialize_market_verification(
+    verification: PredictionMarketVerification | None,
+) -> dict | None:
+    if verification is None:
+        return None
+    evidence = verification.evidence or {}
+    return {
+        "id": str(verification.id),
+        "status": verification.status,
+        "provider": verification.provider,
+        "provider_symbol": verification.provider_symbol,
+        "market": verification.market,
+        "start_observed_at": verification.start_observed_at,
+        "start_price": verification.start_price,
+        "end_observed_at": verification.end_observed_at,
+        "end_price": verification.end_price,
+        "raw_return": verification.raw_return,
+        "directional_return": verification.directional_return,
+        "threshold": verification.threshold,
+        "proposed_verdict": verification.proposed_verdict,
+        "proposed_score": verification.proposed_score,
+        "rule_version": verification.rule_version,
+        "reason": evidence.get("reason") or verification.error_message,
+        "review_type": evidence.get("review_type"),
+        "identity": evidence.get("identity"),
+        "identity_reason": evidence.get("identity_reason"),
+        "price_proxy": evidence.get("price_proxy"),
+        "applied": verification.applied,
+        "created_at": verification.created_at.isoformat(),
+    }
+
+
+def _serialize_prediction(
+    p: Prediction,
+    t: Tweet,
+    verification: PredictionMarketVerification | None = None,
+) -> dict:
     return {
         "id": str(p.id),
+        "blogger_handle": p.blogger_handle,
         "ticker": p.ticker,
         "sentiment": p.sentiment,
         "investment_horizon": p.investment_horizon,
@@ -300,6 +354,8 @@ def _serialize_prediction(p: Prediction, t: Tweet) -> dict:
         "verified_at": p.verified_at.isoformat() if p.verified_at else None,
         "verified_by": p.verified_by,
         "note": p.note,
+        "instrument_snapshot": p.instrument_snapshot,
+        "market_verification": _serialize_market_verification(verification),
         "tweet": {
             "id": str(t.id),
             "content": t.content,

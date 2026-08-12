@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from app.api import me
 from app.core.config import settings
-from app.models import AnalysisJob, Blogger, Tweet, User, UserBloggerFollow
+from app.models import AnalysisJob, Blogger, OutboxEvent, Tweet, User, UserBloggerFollow
 from app.services.analysis_job_service import create_analysis_job
 
 
@@ -32,9 +32,6 @@ def test_disabled_and_limited_requests_never_dispatch(
     client, db_session, auth, monkeypatch
 ):
     _, target = _user_and_tweet(db_session, auth, "limited")
-    calls = []
-    monkeypatch.setattr(me.celery, "send_task", lambda *a, **k: calls.append(1))
-
     monkeypatch.setattr(settings, "user_analysis_requests_enabled", False)
     response = client.post(
         "/api/me/analysis-jobs",
@@ -56,7 +53,7 @@ def test_disabled_and_limited_requests_never_dispatch(
     )
 
     assert response.status_code == 429
-    assert calls == []
+    assert db_session.query(OutboxEvent).count() == 0
 
 
 def test_create_get_list_and_dispatch_failure(
@@ -65,12 +62,6 @@ def test_create_get_list_and_dispatch_failure(
     user, target = _user_and_tweet(db_session, auth, "owner")
     monkeypatch.setattr(settings, "user_analysis_requests_enabled", True)
     monkeypatch.setattr(me, "enforce_user_limit", lambda *a, **k: None)
-    sent = []
-
-    def send_task(name, *, args, task_id, queue):
-        sent.append((name, args, task_id, queue))
-
-    monkeypatch.setattr(me.celery, "send_task", send_task)
     response = client.post(
         "/api/me/analysis-jobs",
         json={"kind": "tweet_analysis", "target_id": str(target.id)},
@@ -81,14 +72,8 @@ def test_create_get_list_and_dispatch_failure(
     body = response.json()
     assert "celery_task_id" not in body
     job_id = body["id"]
-    assert sent == [
-        (
-            "app.scheduler.tasks.user_analysis_job_task",
-            [job_id],
-            job_id,
-            "analysis",
-        )
-    ]
+    event = db_session.query(OutboxEvent).filter_by(event_type="analysis.job_requested").one()
+    assert event.payload == {"job_id": job_id, "task_id": job_id}
     assert db_session.get(AnalysisJob, UUID(job_id)).celery_task_id == job_id
     assert (
         client.get(
@@ -106,7 +91,7 @@ def test_create_get_list_and_dispatch_failure(
     def fail_dispatch(*args, **kwargs):
         raise RuntimeError("secret broker details")
 
-    monkeypatch.setattr(me.celery, "send_task", fail_dispatch)
+    monkeypatch.setattr(me, "enqueue_outbox_event", fail_dispatch)
     response = client.post(
         "/api/me/analysis-jobs",
         json={"kind": "tweet_analysis", "target_id": str(target.id)},
@@ -141,7 +126,6 @@ def test_blogger_job_requires_current_user_follow(
     db_session.flush()
     monkeypatch.setattr(settings, "user_analysis_requests_enabled", True)
     monkeypatch.setattr(me, "enforce_user_limit", lambda *a, **k: None)
-    monkeypatch.setattr(me.celery, "send_task", lambda *a, **k: None)
 
     response = client.post(
         "/api/me/analysis-jobs",
@@ -190,16 +174,8 @@ def test_confirm_analysis_jobs_dispatches_only_current_user_jobs(
         status="awaiting_confirmation",
     )
     db_session.commit()
-    sent = []
     monkeypatch.setattr(settings, "user_analysis_requests_enabled", True)
     monkeypatch.setattr(me, "enforce_user_limit", lambda *a, **k: None)
-    monkeypatch.setattr(
-        me.celery,
-        "send_task",
-        lambda name, *, args, task_id, queue: sent.append(
-            (name, args, task_id, queue)
-        ),
-    )
 
     response = client.post(
         "/api/me/analysis-jobs/confirm",
@@ -214,11 +190,5 @@ def test_confirm_analysis_jobs_dispatches_only_current_user_jobs(
     assert own_job.status == "queued"
     assert own_job.celery_task_id == str(own_job.id)
     assert other_job.status == "awaiting_confirmation"
-    assert sent == [
-        (
-            "app.scheduler.tasks.user_analysis_job_task",
-            [str(own_job.id)],
-            str(own_job.id),
-            "analysis",
-        )
-    ]
+    events = db_session.query(OutboxEvent).filter_by(event_type="analysis.job_requested").all()
+    assert [event.payload["job_id"] for event in events] == [str(own_job.id)]

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
+import AuthFrame from "@/components/AuthFrame";
 import { register } from "@/lib/auth";
 
 export default function RegisterPage() {
@@ -13,83 +13,29 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setError("");
     setLoading(true);
-
     try {
       await register(email, username, password);
-      router.push("/chat");
-    } catch (err: any) {
-      setError(err.message || "注册失败");
+      router.push("/");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "注册失败");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      <div className="w-full max-w-md p-8 bg-gray-800 rounded-xl shadow-lg">
-        <h1 className="text-2xl font-bold text-white text-center mb-6">
-          注册
-        </h1>
-        {error && (
-          <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded text-red-300 text-sm">
-            {error}
-          </div>
-        )}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">邮箱</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              placeholder="your@email.com"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">用户名</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              minLength={2}
-              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              placeholder="至少 2 个字符"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">密码</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              placeholder="至少 6 位"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-lg font-medium transition"
-          >
-            {loading ? "注册中..." : "注册"}
-          </button>
-        </form>
-        <p className="mt-4 text-center text-sm text-gray-400">
-          已有账号？{" "}
-          <Link href="/login" className="text-blue-400 hover:underline">
-            登录
-          </Link>
-        </p>
-      </div>
-    </div>
+    <AuthFrame mode="register">
+      {error && <div className="auth-error">{error}</div>}
+      <form onSubmit={handleSubmit} className="auth-form">
+        <label>邮箱<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="your@email.com" /></label>
+        <label>用户名<input type="text" value={username} onChange={(event) => setUsername(event.target.value)} required minLength={2} placeholder="至少 2 个字符" /></label>
+        <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} placeholder="至少 6 位" /></label>
+        <button type="submit" disabled={loading}>{loading ? "正在创建…" : "创建工作台"}</button>
+      </form>
+    </AuthFrame>
   );
 }

@@ -17,6 +17,7 @@ from app.api.me import router as me_router
 from app.api.admin_traces import router as admin_traces_router
 from app.api.admin_es import router as admin_es_router
 from app.api.admin_runtime import router as admin_runtime_router
+from app.api.intelligence import router as intelligence_router
 from app.core.config import settings
 
 
@@ -37,6 +38,7 @@ def build_api_router() -> APIRouter:
     router.include_router(admin_traces_router)
     router.include_router(admin_es_router)
     router.include_router(admin_runtime_router)
+    router.include_router(intelligence_router)
     if settings.debug_mode:
         from app.api.debug import router as debug_router
 
@@ -88,6 +90,14 @@ def health_check():
         logger.warning("[Health] vector store check failed: {}", e)
         checks["vector_store"] = f"error: {e}"
 
+    try:
+        from app.rag.storage import DocumentStorage
+
+        checks["object_storage"] = "ok" if DocumentStorage().health_check() else "error: unavailable"
+    except Exception as e:
+        logger.warning("[Health] object storage check failed: {}", e)
+        checks["object_storage"] = f"error: {e}"
+
     # Optional Elasticsearch keyword read model connectivity
     if settings.rag_keyword_backend.lower().strip() == "elasticsearch" or settings.elasticsearch_url:
         try:
@@ -101,6 +111,8 @@ def health_check():
             checks["elasticsearch"] = f"error: {e}"
 
     hard_checks = ["database", "redis", "celery_pipeline", "vector_store"]
+    if settings.object_storage_backend.lower().strip() == "minio":
+        hard_checks.append("object_storage")
     if settings.rag_keyword_backend.lower().strip() == "elasticsearch":
         hard_checks.append("elasticsearch")
     overall = "ok" if all(checks.get(name) == "ok" for name in hard_checks) else "degraded"

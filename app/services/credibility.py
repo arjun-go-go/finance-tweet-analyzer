@@ -13,6 +13,7 @@ from app.models.prediction import Prediction
 ALPHA = 5
 BETA = 5
 NEUTRAL_PRIOR = 50.0
+SCORED_VERDICTS = ("correct", "partial", "incorrect")
 
 
 def compute_score(correct_sum: float, total: int) -> float:
@@ -33,7 +34,7 @@ def recompute_blogger(db: Session, handle: str) -> None:
             func.coalesce(func.sum(Prediction.score), 0.0).label("correct_sum"),
         ).where(
             Prediction.blogger_handle == handle,
-            Prediction.verdict.is_not(None),
+            Prediction.verdict.in_(SCORED_VERDICTS),
         )
     ).one()
 

@@ -22,6 +22,20 @@ class BloggerProfile(BaseModel):
     profile_url: str | None = None
 
 
+class BloggerOnboardRequest(BaseModel):
+    handle: str
+
+
+class BloggerOnboardResponse(BaseModel):
+    id: str
+    handle: str
+    name: str
+    avatar_url: str | None = None
+    followed: bool
+    fetch_enabled: bool
+    initial_fetch_queued: bool
+
+
 class BloggerListItem(BaseModel):
     id: str
     handle: str

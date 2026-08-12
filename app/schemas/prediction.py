@@ -1,12 +1,32 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class VerifyRequest(BaseModel):
     verdict: Literal["correct", "partial", "incorrect"]
     note: str | None = None
+
+
+class ExcludePredictionRequest(BaseModel):
+    reason: str
+
+
+class CorrectInstrumentRequest(BaseModel):
+    symbol: str
+    name: str
+    asset_type: Literal["equity", "crypto", "commodity"]
+    market: Literal["CN", "HK", "US", "CRYPTO", "COMMODITY"]
+    reason: str
+    context_terms: list[str] = Field(default_factory=list)
+
+
+class ValidateInstrumentRequest(BaseModel):
+    symbol: str
+    name: str
+    asset_type: Literal["equity", "crypto", "commodity"]
+    market: Literal["CN", "HK", "US", "CRYPTO", "COMMODITY"]
 
 
 class PredictionTweet(BaseModel):
@@ -17,6 +37,7 @@ class PredictionTweet(BaseModel):
 
 class PredictionItem(BaseModel):
     id: str
+    blogger_handle: str | None = None
     ticker: str
     sentiment: str
     investment_horizon: str
@@ -27,6 +48,8 @@ class PredictionItem(BaseModel):
     verified_at: datetime | None = None
     verified_by: str | None = None
     note: str | None = None
+    instrument_snapshot: dict | None = None
+    market_verification: dict | None = None
     tweet: PredictionTweet
 
 

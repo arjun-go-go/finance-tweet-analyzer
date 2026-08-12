@@ -1,3 +1,4 @@
+import json
 import operator
 from typing import Annotated, TypedDict
 
@@ -78,7 +79,20 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
     tweet_lines = []
     for t in tweets:
         content = t["content"][:CLASSIFY_MAX_CHARS_PER_TWEET]
-        tweet_lines.append(f"[ID: {t['id']}] 博主: {t['author_handle']}\n内容: {content}")
+        media = t.get("media_context") or {}
+        media_for_classification = {
+            "summary": media.get("combined_summary", ""),
+            "tickers": media.get("tickers", []),
+            "key_points": media.get("key_points", []),
+            "risk_signals": media.get("risk_signals", []),
+            "sentiment": media.get("sentiment", "unclear"),
+            "text_image_consistency": media.get("text_image_consistency", "unclear"),
+        }
+        media_text = json.dumps(media_for_classification, ensure_ascii=False) if media else "无图片证据"
+        tweet_lines.append(
+            f"[ID: {t['id']}] 博主: {t['author_handle']}\n"
+            f"推文文字: {content}\n图片识别证据: {media_text}"
+        )
 
     # 整批再做一次总长度兜底
     tweets_text = "\n\n".join(tweet_lines)
@@ -98,7 +112,6 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
         # 尝试降级：用普通 JSON 模式解析
         try:
             from app.agents.llm import get_report_llm as _get_llm
-            import json
             _llm = _get_llm().bind(response_format={"type": "json_object"})
             _messages = _to_lc_messages(get_chat_prompt("supervisor/classify", tweets_text=tweets_text))
             raw_result = _llm.invoke(_messages)
@@ -247,6 +260,11 @@ def route_after_classification(state: SupervisorState) -> list[Send]:
 def supervisor_merge_node(state: SupervisorState) -> dict:
     partial_analyses = state.get("partial_analyses", [])
     risk_assessments = state.get("risk_assessments", [])
+    media_context_map = {
+        tweet["id"]: tweet.get("media_context")
+        for tweet in state.get("tweets", [])
+        if tweet.get("media_context")
+    }
 
     # tweet_id -> 风险评估结果索引，O(n) 合并
     risk_map = {r["tweet_id"]: r for r in risk_assessments}
@@ -259,6 +277,23 @@ def supervisor_merge_node(state: SupervisorState) -> dict:
                 "degraded_reason", "classifier_unavailable"
             )
         tweet_id = analysis.get("tweet_id")
+        media_context = media_context_map.get(tweet_id)
+        if media_context:
+            evidence: list[str] = []
+            for image in media_context.get("images", []):
+                evidence.extend(image.get("visual_evidence", []))
+                evidence.extend(image.get("numeric_facts", []))
+            analysis["media_summary"] = media_context.get("combined_summary", "")
+            analysis["media_evidence"] = evidence[:12]
+            analysis["text_image_consistency"] = media_context.get(
+                "text_image_consistency", "unclear"
+            )
+            analysis["media_confidence"] = media_context.get("confidence", 0.0)
+        else:
+            analysis["media_summary"] = ""
+            analysis["media_evidence"] = []
+            analysis["text_image_consistency"] = "no_media"
+            analysis["media_confidence"] = 0.0
         if tweet_id in risk_map:
             assessment = risk_map[tweet_id]
             raw_factors = assessment.get("risk_factors", [])

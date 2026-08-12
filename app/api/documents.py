@@ -48,12 +48,13 @@ def _enqueue_document_ingest(db: Session, document_id: UUID) -> None:
     )
 
 
-def _handle_duplicate(doc, parsed_text, storage, user):
+def _handle_duplicate(doc, content, extension, storage, user):
     """If a duplicate document exists and previously failed, retry ingestion."""
     if doc.status == "failed":
         doc.status = "pending"
         doc.error_detail = None
-        storage.save(str(user.id), str(doc.id), parsed_text.encode("utf-8"), ".txt")
+        doc.storage_key = storage.save(str(user.id), str(doc.id), content, extension)
+        doc.storage_backend = storage.backend
         db_session = object_session(doc)
         if db_session:
             _enqueue_document_ingest(db_session, doc.id)
@@ -67,7 +68,7 @@ def _check_rag_enabled():
 
 
 def _get_storage() -> DocumentStorage:
-    return DocumentStorage(settings.document_storage_root)
+    return DocumentStorage()
 
 
 # 1. POST /upload — file upload (pdf, docx, md, txt)
@@ -110,17 +111,14 @@ async def upload_document(
             title=title or file.filename or "Untitled",
             text=parsed.text,
             source_type=ext.lstrip("."),
-            raw_content=raw if ext in (".pdf", ".docx") else None,
+            raw_content=raw,
             tickers=ticker_list,
             storage=storage,
         )
-        # For text-based types, also save the parsed text as .txt for the Celery task
-        if ext not in (".pdf", ".docx"):
-            storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
         _enqueue_document_ingest(db, doc.id)
         db.commit()
     except DuplicateDocument as e:
-        return _handle_duplicate(e.document, parsed.text, storage, user)
+        return _handle_duplicate(e.document, raw, ext, storage, user)
     except QuotaExceeded as e:
         raise HTTPException(429, detail=e.reason)
 
@@ -148,11 +146,12 @@ def paste_document(
             publish_date=body.publish_date,
             storage=storage,
         )
-        storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        doc.storage_key = storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        doc.storage_backend = storage.backend
         _enqueue_document_ingest(db, doc.id)
         db.commit()
     except DuplicateDocument as e:
-        return _handle_duplicate(e.document, parsed.text, storage, user)
+        return _handle_duplicate(e.document, parsed.text.encode("utf-8"), ".txt", storage, user)
     except QuotaExceeded as e:
         raise HTTPException(429, detail=e.reason)
 
@@ -197,11 +196,12 @@ def ingest_url(
             publish_date=publish_date,
             storage=storage,
         )
-        storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        doc.storage_key = storage.save(str(user.id), str(doc.id), parsed.text.encode("utf-8"), ".txt")
+        doc.storage_backend = storage.backend
         _enqueue_document_ingest(db, doc.id)
         db.commit()
     except DuplicateDocument as e:
-        return _handle_duplicate(e.document, parsed.text, storage, user)
+        return _handle_duplicate(e.document, parsed.text.encode("utf-8"), ".txt", storage, user)
     except QuotaExceeded as e:
         raise HTTPException(429, detail=e.reason)
 

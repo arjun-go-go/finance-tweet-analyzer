@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { formatDateTime } from "@/lib/datetime";
 import AnalysisInline from "./AnalysisInline";
+import TweetMediaGallery, { type TweetMediaItem } from "./TweetMediaGallery";
 
 interface TweetMetrics {
   likes?: number;
@@ -16,6 +17,11 @@ interface AnalysisData {
     original_name: string;
     sentiment: string;
     horizon: string;
+    market?: string;
+    asset_type?: string;
+    tradable?: boolean;
+    validation_status?: string;
+    validation_sources?: string[];
     risks?: Array<{
       category: string;
       description: string;
@@ -32,6 +38,10 @@ interface AnalysisData {
   confidence: number;
   is_investment_related: boolean;
   reasoning?: string;
+  media_summary?: string;
+  media_evidence?: string[];
+  text_image_consistency?: string;
+  media_confidence?: number;
 }
 
 interface TweetAnalysisCardProps {
@@ -45,19 +55,13 @@ interface TweetAnalysisCardProps {
   metrics?: TweetMetrics | null;
   analysis?: AnalysisData | null;
   twitterTweetId?: string;
+  media?: TweetMediaItem[];
   onTriggerAnalysis?: (tweetId: string, handle: string) => void;
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   analyzed: { label: "已分析", color: "bg-green-100 text-green-700" },
   pending: { label: "待分析", color: "bg-yellow-100 text-yellow-700" },
-};
-
-const SENTIMENT_BADGE: Record<string, string> = {
-  bullish: "bg-green-200 text-green-900",
-  bearish: "bg-red-200 text-red-900",
-  neutral: "bg-gray-200 text-gray-900",
-  mixed: "bg-yellow-200 text-yellow-900",
 };
 
 const SENTIMENT_LABEL: Record<string, string> = {
@@ -77,6 +81,7 @@ export default function TweetAnalysisCard({
   metrics,
   analysis,
   twitterTweetId,
+  media = [],
   onTriggerAnalysis,
 }: TweetAnalysisCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -84,36 +89,42 @@ export default function TweetAnalysisCard({
 
   const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
   const isAnalyzed = status === "analyzed";
+  const verifiedTickers = (analysis?.tickers || []).filter(
+    (ticker) => ticker.validation_status === "verified" && ticker.tradable === true,
+  );
 
   // Extract quick summary from analysis for card header
   const quickSummary = analysis?.is_investment_related
     ? {
         sentiment: analysis.overall_sentiment,
-        tickers: analysis.tickers.slice(0, 3).map((t) => t.symbol),
-        horizon: analysis.tickers[0]?.horizon,
+        tickers: verifiedTickers.slice(0, 3).map((t) => t.symbol),
+        remainingTickerCount: Math.max(0, verifiedTickers.length - 3),
       }
     : null;
 
   return (
-    <div className="bg-white rounded-lg shadow p-4 space-y-2">
+    <article className={`tweet-card ${isAnalyzed ? "is-analyzed" : "is-pending"}`}>
       {/* Header row */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-medium text-blue-600">{authorHandle}</span>
+      <div className="tweet-card-header">
+        <div className="tweet-author">
+          <span>{authorHandle}</span>
           {authorName && (
-            <span className="text-sm text-gray-500">({authorName})</span>
+            <small>{authorName}</small>
           )}
-          <span className={`text-xs px-2 py-0.5 rounded ${statusCfg.color}`}>
+          <span className="status-pill">
             {statusCfg.label}
           </span>
           {isAnalyzed && quickSummary && (
             <>
-              <span className={`text-xs px-2 py-0.5 rounded font-semibold ${SENTIMENT_BADGE[quickSummary.sentiment] || SENTIMENT_BADGE.neutral}`}>
+              <span className={`direction direction-${quickSummary.sentiment}`}>
                 {SENTIMENT_LABEL[quickSummary.sentiment] || quickSummary.sentiment}
               </span>
               {quickSummary.tickers.length > 0 && (
-                <span className="text-xs text-gray-500">
-                  {quickSummary.tickers.join(", ")}
+                <span className="tweet-tickers" aria-label="已核验标的">
+                  {quickSummary.tickers.map((ticker) => (
+                    <b key={ticker} title="已通过公开数据源核验">{ticker}<i>已核验</i></b>
+                  ))}
+                  {quickSummary.remainingTickerCount > 0 && <em>+{quickSummary.remainingTickerCount}</em>}
                 </span>
               )}
             </>
@@ -122,24 +133,26 @@ export default function TweetAnalysisCard({
       </div>
 
       {/* Tweet content */}
-      <p className={`text-gray-800 whitespace-pre-wrap ${expanded ? "" : "line-clamp-3"}`}>
+      <p className={`tweet-content ${expanded ? "" : "line-clamp-3"}`}>
         {content}
       </p>
       {content.length > 200 && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="text-xs text-blue-500 hover:underline"
+          className="text-action"
         >
           {expanded ? "收起" : "展开全部"}
         </button>
       )}
 
+      <TweetMediaGallery tweetId={id} media={media} />
+
       {/* Inline analysis (expandable) */}
       {isAnalyzed && analysis && (
-        <div>
+        <div className="tweet-analysis-toggle">
           <button
             onClick={() => setAnalysisExpanded(!analysisExpanded)}
-            className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+            className="text-action"
           >
             <span>{analysisExpanded ? "▲" : "▼"}</span>
             {analysisExpanded ? "收起分析详情" : "展开分析详情"}
@@ -149,8 +162,8 @@ export default function TweetAnalysisCard({
       )}
 
       {/* Footer */}
-      <div className="flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-gray-100">
-        <div className="flex items-center gap-3 text-xs text-gray-500">
+      <footer className="tweet-card-footer">
+        <div>
           <span>{formatDateTime(publishedAt)}</span>
           {metrics && (
             <>
@@ -160,13 +173,13 @@ export default function TweetAnalysisCard({
             </>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="tweet-card-actions">
           {twitterTweetId && (
             <a
               href={`https://x.com/${authorHandle.replace("@", "")}/status/${twitterTweetId}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-blue-500 hover:underline"
+              className="text-action"
             >
               查看原文
             </a>
@@ -174,13 +187,13 @@ export default function TweetAnalysisCard({
           {!isAnalyzed && onTriggerAnalysis && (
             <button
               onClick={() => onTriggerAnalysis(id, authorHandle)}
-              className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              className="text-action"
             >
               触发分析
             </button>
           )}
         </div>
-      </div>
-    </div>
+      </footer>
+    </article>
   );
 }

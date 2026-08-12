@@ -76,22 +76,11 @@ class UserDocumentRepository:
         return self._vs.query(self.COLLECTION, emb, k=k, filter=flt)
 
     def delete_document(self, *, user_id: uuid.UUID, document_id: uuid.UUID) -> None:
-        """Delete all chunks for a document. Queries by metadata to enforce ownership."""
-        # Use the vector store's query to get all chunk ids belonging to this doc
-        # then delete them. Since Chroma's where filter supports "$and",
-        # we filter by both user_id and document_id for safety.
+        """Delete all chunks for a document using an ownership-scoped metadata filter."""
         flt = {
             "$and": [
                 {"user_id": str(user_id)},
                 {"document_id": str(document_id)},
             ]
         }
-        # Query with a high k to get all chunks (docs rarely have > 1000 chunks)
-        hits = self._vs.query(
-            self.COLLECTION,
-            query_embedding=[0.0] * 1024,  # dummy embedding, we filter by metadata
-            k=10000,
-            filter=flt,
-        )
-        if hits:
-            self._vs.delete(self.COLLECTION, [h.id for h in hits])
+        self._vs.delete_where(self.COLLECTION, flt)

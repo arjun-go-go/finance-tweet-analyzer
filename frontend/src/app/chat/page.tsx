@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import AppIcon from "@/components/AppIcon";
 import {
   createConversation,
   listConversations,
@@ -12,7 +13,7 @@ import {
   getAccessToken,
   type ConversationListItem,
 } from "@/lib/api";
-import { isAuthenticated, logout, fetchMe, refreshAccessToken, type AuthUser } from "@/lib/auth";
+import { isAuthenticated, fetchMe, refreshAccessToken, type AuthUser } from "@/lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -311,165 +312,84 @@ export default function ChatPage() {
     }
   };
 
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant" && message.content);
+  const evidenceTools = latestAssistant
+    ? Array.from(new Set(Array.from(latestAssistant.content.matchAll(/【tool:([^】]+)】/g), (match) => match[1])))
+    : [];
+  const evidenceLabels: Record<string, string> = {
+    query_database: "结构化数据库",
+    search_public_signals: "公共信号库",
+    search_my_documents: "私人文档",
+    list_my_tracked_tickers: "个人 Watchlist",
+    list_my_followed_bloggers: "正式关注关系",
+    fetch_and_save_tweets: "实时推文采集",
+    fetch_and_save_profile: "博主公开资料",
+  };
+
   return (
-    <div className="flex h-[calc(100vh-120px)] -mx-6 -my-8">
-      {/* Sidebar */}
-      <div className="w-72 bg-gray-900 text-white flex flex-col border-r border-gray-700">
-        <div className="p-4 border-b border-gray-700">
-          <button
-            onClick={handleNewConversation}
-            className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors"
-          >
-            + 新建会话
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {sidebarLoading ? (
-            <p className="text-gray-400 text-sm text-center py-4">加载中...</p>
-          ) : conversations.length === 0 ? (
-            <p className="text-gray-400 text-sm text-center py-4">
-              暂无会话，点击上方新建
-            </p>
-          ) : (
-            conversations.map((conv) => (
-              <div
-                key={conv.id}
-                onClick={() => selectConversation(conv.id)}
-                className={`group flex items-center gap-2 px-4 py-3 cursor-pointer border-b border-gray-800 hover:bg-gray-800 transition-colors ${
-                  activeConvId === conv.id ? "bg-gray-800" : ""
-                }`}
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm truncate">
-                    {conv.title || "新对话"}
-                  </p>
-                  <p className="text-xs text-gray-400 truncate">
-                    {conv.last_message_preview || "暂无消息"}
-                  </p>
-                </div>
-                <button
-                  onClick={(e) => handleDeleteConversation(conv.id, e)}
-                  className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-400 text-xs transition-opacity"
-                  title="删除"
-                >
-                  ✕
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-
-        {user && (
-          <div className="p-3 border-t border-gray-700 flex items-center justify-between">
-            <span className="text-xs text-gray-400">{user.username}</span>
-            <button
-              onClick={logout}
-              className="px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
-              title="退出登录"
-            >
-              退出
+    <div className="chat-workspace">
+      <aside className="chat-conversations">
+        <div className="chat-side-header"><span>研究会话</span><button onClick={handleNewConversation}>新建</button></div>
+        <div className="chat-conversation-list">
+          {sidebarLoading ? <p className="chat-muted">正在加载会话</p> : conversations.length === 0 ? <p className="chat-muted">还没有研究会话</p> : conversations.map((conv) => (
+            <button key={conv.id} onClick={() => selectConversation(conv.id)} className={`chat-conversation ${activeConvId === conv.id ? "is-active" : ""}`}>
+              <span><strong>{conv.title || "未命名研究"}</strong><small>{conv.last_message_preview || "暂无消息"}</small></span>
+              <span onClick={(event) => handleDeleteConversation(conv.id, event)} className="chat-delete" title="删除会话">×</span>
             </button>
-          </div>
-        )}
-      </div>
-
-      {/* Chat area */}
-      <div className="flex-1 flex flex-col bg-white">
-        <div className="px-6 py-3 border-b flex items-center justify-between">
-          <h1 className="text-lg font-semibold">
-            {activeConvId
-              ? conversations.find((c) => c.id === activeConvId)?.title || "新对话"
-              : "智能助手"}
-          </h1>
-          <p className="text-xs text-gray-400">
-            输入 Twitter 用户名获取博主信息，或查询分析数据
-          </p>
+          ))}
         </div>
+        <div className="chat-user"><span>{user?.username || "研究账户"}</span><small>私人工作空间</small></div>
+      </aside>
 
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+      <section className="chat-stage">
+        <header className="chat-stage-header">
+          <div><p>Research copilot</p><h1>{activeConvId ? conversations.find((item) => item.id === activeConvId)?.title || "新研究" : "研究助手"}</h1></div>
+          <select className="chat-mobile-select" value={activeConvId || ""} onChange={(event) => event.target.value ? selectConversation(event.target.value) : handleNewConversation()} aria-label="选择会话">
+            <option value="">新建研究</option>{conversations.map((conv) => <option key={conv.id} value={conv.id}>{conv.title || "未命名研究"}</option>)}
+          </select>
+          <span className="chat-grounded"><span />证据约束已开启</span>
+        </header>
+
+        <div className="chat-messages">
           {messages.length === 0 && (
-            <div className="text-center text-gray-400 py-20">
-              <p className="text-lg mb-2">开始新的对话</p>
-              <p className="text-sm">
-                试试: "获取 qinbafrank 的推文" / "有哪些博主" / "分析 BTC 相关推文"
-              </p>
+            <div className="research-empty">
+              <span className="empty-radar"><span /></span>
+              <h2>从一个研究问题开始</h2>
+              <p>助手会检索你的关注关系、私人文档和公共市场信号，并在具体事实后标明来源。</p>
+              <div className="research-starters">
+                {["我关注的博主最近有哪些重要观点？", "总结 BTC 最近的市场情绪", "我的私人文档如何评价 NVDA？", "哪些标的出现了新的风险信号？"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}<AppIcon name="arrow" /></button>)}
+              </div>
             </div>
           )}
           {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`px-4 py-2 rounded-lg max-w-[80%] ${
-                  msg.role === "user"
-                    ? "bg-blue-600 text-white whitespace-pre-wrap"
-                    : "bg-gray-100 text-gray-800"
-                }`}
-              >
-                {msg.role === "user" ? (
-                  msg.content || "思考中..."
-                ) : (
-                  <div className="markdown-body prose prose-sm max-w-none
-                    [&_table]:border-collapse [&_table]:w-full [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-gray-200 [&_th]:text-left [&_th]:text-xs
-                    [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_td]:text-xs
-                    [&_tr:hover]:bg-blue-50
-                    [&_strong]:font-semibold
-                    [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1
-                    [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:my-1
-                    [&_li]:my-0.5
-                    [&_p]:my-1
-                    [&_code]:bg-gray-200 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
-                    [&_pre]:bg-gray-800 [&_pre]:text-gray-100 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:my-2
-                    [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-xs
-                    [&_blockquote]:border-l-4 [&_blockquote]:border-blue-400 [&_blockquote]:pl-3 [&_blockquote]:text-gray-600
-                    [&_h1]:text-lg [&_h1]:font-bold [&_h1]:mt-3 [&_h1]:mb-1
-                    [&_h2]:text-base [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1
-                    [&_h3]:text-sm [&_h3]:font-bold [&_h3]:mt-2 [&_h3]:mb-1
-                    [&_hr]:border-gray-300 [&_hr]:my-2
-                  ">
-                    {msg.content ? (
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {msg.content}
-                      </ReactMarkdown>
-                    ) : (
-                      "思考中..."
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
+            <article key={msg.id} className={`research-message is-${msg.role} ${msg.role === "assistant" && /出错|失败|无法连接/.test(msg.content) ? "is-error" : ""}`}>
+              <div className="research-message-label">{msg.role === "user" ? "你" : "Signal Desk"}</div>
+              {msg.role === "user" ? <p>{msg.content}</p> : (
+                <div className="research-markdown">
+                  {msg.content ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown> : <span className="thinking-line"><span />正在核对来源</span>}
+                </div>
+              )}
+            </article>
           ))}
-          {toolStatus && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-blue-50 border border-blue-100">
-              <span className="inline-block w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-blue-600">{toolStatus}</span>
-            </div>
-          )}
+          {toolStatus && <div className="tool-progress"><span className="signal-loader" /><div><strong>{toolStatus}</strong><small>正在检索并验证证据</small></div></div>}
           <div ref={bottomRef} />
         </div>
 
-        <div className="px-6 py-4 border-t">
-          <div className="flex gap-2">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-              placeholder="输入消息..."
-              className="flex-1 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={loading}
-            />
-            <button
-              onClick={handleSend}
-              disabled={loading || !input.trim()}
-              className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              {loading ? "处理中..." : "发送"}
-            </button>
+        <footer className="chat-composer">
+          <div className="chat-scope-row"><span>研究范围</span><b>我的关注</b><b>公共信号</b><b>私人文档</b></div>
+          <div className="chat-input-wrap">
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); handleSend(); } }} placeholder="询问一个标的、博主或研究资料…" disabled={loading} rows={2} />
+            <button onClick={handleSend} disabled={loading || !input.trim()} aria-label="发送研究问题"><AppIcon name="arrow" /></button>
           </div>
-        </div>
-      </div>
+          <small>Enter 发送 · Shift + Enter 换行 · 金融结论仅供研究参考</small>
+        </footer>
+      </section>
+
+      <aside className="chat-evidence-rail">
+        <div className="chat-rail-heading"><AppIcon name="evidence" /><div><strong>本轮证据</strong><small>回答使用的数据范围</small></div></div>
+        {evidenceTools.length > 0 ? <div className="chat-evidence-list">{evidenceTools.map((tool) => <div key={tool}><span /><strong>{evidenceLabels[tool] || tool}</strong><small>已用于最近回答</small></div>)}</div> : <div className="chat-evidence-empty"><p>提出问题后，这里会显示最近回答使用的数据源。</p></div>}
+        <div className="chat-rail-note"><span>证据规则</span><p>账户数据、博主观点和市场事实必须来自工具结果；证据不足时助手会停止推断。</p></div>
+      </aside>
     </div>
   );
 }

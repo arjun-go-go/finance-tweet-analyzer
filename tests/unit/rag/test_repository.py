@@ -66,27 +66,10 @@ def test_add_chunks_empty():
 
 def test_delete_document_filters_by_user_and_doc():
     repo, vs, embedder = _make_repo()
-    hit1 = MagicMock()
-    hit1.id = "chunk1"
-    hit2 = MagicMock()
-    hit2.id = "chunk2"
-    vs.query.return_value = [hit1, hit2]
     uid = uuid.uuid4()
     did = uuid.uuid4()
     repo.delete_document(user_id=uid, document_id=did)
-    # Verify filter contains $and with both user_id and document_id
-    call_args = vs.query.call_args
-    # The call is positional: (collection, query_embedding, k, filter)
-    # or keyword. Check both.
-    if call_args[1]:
-        flt = call_args[1].get("filter") or call_args[1].get("k")
-    else:
-        flt = None
-    # Actually the implementation uses positional args in vs.query(collection, emb, k=..., filter=...)
-    # Let's just verify via kwargs
-    flt = call_args.kwargs.get("filter", call_args.args[3] if len(call_args.args) > 3 else None)
-    assert flt is not None
-    assert "$and" in flt
-    assert {"user_id": str(uid)} in flt["$and"]
-    assert {"document_id": str(did)} in flt["$and"]
-    vs.delete.assert_called_once_with("user_documents", ["chunk1", "chunk2"])
+    vs.delete_where.assert_called_once_with(
+        "user_documents",
+        {"$and": [{"user_id": str(uid)}, {"document_id": str(did)}]},
+    )

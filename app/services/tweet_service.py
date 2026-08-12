@@ -48,7 +48,7 @@ def import_tweets(
             metrics=item.metrics,
             media_urls=item.media_urls,
             raw_json=item.raw_json,
-            status="pending",
+            status="media_pending" if isinstance(item.media_urls, list) and item.media_urls else "pending",
         )
         db.add(tweet)
         imported_tweets.append(tweet)
@@ -63,6 +63,18 @@ def import_tweets(
             "tweet.index_requested",
             {"tweet_id": str(tweet.id)},
         )
+        if isinstance(tweet.media_urls, list) and tweet.media_urls:
+            enqueue_outbox_event(
+                db,
+                "tweet.media_archive_requested",
+                {"tweet_id": str(tweet.id)},
+            )
+        else:
+            enqueue_outbox_event(
+                db,
+                "tweet.analysis_requested",
+                {"tweet_id": str(tweet.id)},
+            )
 
     db.commit()
     logger.info("Tweet import: {} imported, {} skipped", imported, skipped)

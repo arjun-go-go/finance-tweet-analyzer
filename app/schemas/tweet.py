@@ -37,3 +37,10 @@ class TweetImportResponse(BaseModel):
     imported: int
     skipped: int
     errors: list[str] = []
+
+
+class TweetMediaItem(BaseModel):
+    id: str
+    width: int | None = None
+    height: int | None = None
+    content_type: str | None = None

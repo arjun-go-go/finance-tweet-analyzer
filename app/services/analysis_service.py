@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.models.analysis import AnalysisResult
 from app.models.prediction import Prediction
 from app.models.tweet import Tweet
+from app.models.tweet_media_analysis import TweetMediaAnalysis
+from app.services.instrument_resolver import resolve_analysis_tickers
 from app.services.trace_service import write_trace_immediate
 
 BATCH_SIZE = 10
@@ -210,6 +212,11 @@ def _enqueue_analysis_indexing(db: Session, analysis_result_ids: list[uuid.UUID]
             "analysis.index_requested",
             {"analysis_result_id": str(analysis_result_id)},
         )
+        enqueue_outbox_event(
+            db,
+            "intelligence.project_requested",
+            {"analysis_result_id": str(analysis_result_id)},
+        )
 
 
 def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict:
@@ -238,12 +245,20 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
         _mark_analysis_started(batch_tweets)
         db.commit()
         attempted_count += len(batch_tweets)
+        media_rows = db.execute(
+            select(TweetMediaAnalysis).where(
+                TweetMediaAnalysis.tweet_id.in_([tweet.id for tweet in batch_tweets]),
+                TweetMediaAnalysis.status == "completed",
+            )
+        ).scalars().all()
+        media_context_by_tweet = {row.tweet_id: row.result for row in media_rows if row.result}
         tweet_dicts = [
             {
                 "id": str(t.id),
                 "content": t.content,
                 "author_handle": t.author_handle,
                 "published_at": t.published_at,
+                "media_context": media_context_by_tweet.get(t.id),
             }
             for t in batch_tweets
         ]
@@ -256,6 +271,9 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 "ticker_summaries": [],
                 "_trace_conv_id": str(batch_id),
             })
+            state["analyses"] = resolve_analysis_tickers(
+                state.get("analyses", []), db=db
+            )
         except Exception as e:
             logger.error("Batch {}-{} supervisor failed: {}", i, i + len(batch_tweets), e)
             retrying, failed = _mark_analysis_failed(

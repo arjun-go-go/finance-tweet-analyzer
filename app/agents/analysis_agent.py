@@ -11,6 +11,7 @@
     3. asyncio.gather 并发：所有推文的 LLM 调用并行执行，批处理延迟等于最慢单条。
 """
 import asyncio
+import json
 import time
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -53,6 +54,7 @@ async def _analyze_one(structured_llm, tweet: dict, blogger_context: str) -> dic
             blogger_context=blogger_context,
             author_handle=tweet["author_handle"],
             content=tweet["content"],
+            media_context=json.dumps(tweet.get("media_context") or {}, ensure_ascii=False),
         ))
         result = await structured_llm.ainvoke(messages)
         latency_ms = int((time.perf_counter() - start) * 1000)

@@ -8,8 +8,14 @@ class TickerDetail(BaseModel):
 
     每个标的独立 sentiment/horizon，支持"看多BTC同时看空ETH"的多标的分化场景。
     """
-    symbol: str = Field(..., description="标准化金融代码(如 BTC, AAPL, 600519.SH, XAUUSD)")
+    symbol: str = Field(..., description="标准化金融代码(如 BTC, AAPL, 600519.SH, XAU, WTI)")
     original_name: str = Field(default="", description="推文中出现的原始名称/黑话(如 大饼, 茅台, 纳指)")
+    asset_type: Literal["equity", "crypto", "commodity", "unknown"] = Field(
+        default="unknown", description="Candidate asset class hint for deterministic validation"
+    )
+    market_hint: Literal["CN", "HK", "US", "CRYPTO", "COMMODITY", "unknown"] = Field(
+        default="unknown", description="Candidate market hint for selecting a validation source"
+    )
     sentiment: Literal["bullish", "bearish", "neutral"] = Field(
         default="neutral", description="针对该标的的具体情绪"
     )
@@ -60,6 +66,18 @@ class TweetAnalysis(BaseModel):
         default=0.0, ge=0.0, le=1.0,
         description="分析置信度(0-1)。非投资/纯闲聊/反讽难断/低信誉博主应<0.3",
     )
+    media_summary: str = Field(
+        default="", description="结合图片识别证据形成的图片信息摘要；无图片时为空"
+    )
+    media_evidence: list[str] = Field(
+        default_factory=list, description="支持最终判断的可核对图片证据"
+    )
+    text_image_consistency: Literal[
+        "consistent", "complementary", "conflict", "image_only", "unclear", "no_media"
+    ] = Field(default="no_media", description="推文文字与图片表达关系")
+    media_confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="图片证据提取置信度"
+    )
 
     # ----------------------------------------------------------
     # LLM 输出容错 validators
@@ -70,7 +88,7 @@ class TweetAnalysis(BaseModel):
         """兼容 LLM 偶尔返回 null 或非数组。"""
         return v if isinstance(v, list) else []
 
-    @field_validator("key_points", "risk_factors", mode="before")
+    @field_validator("key_points", "risk_factors", "media_evidence", mode="before")
     @classmethod
     def _ensure_str_list(cls, v):
         """确保列表字段为字符串列表，过滤 None 和空串。"""

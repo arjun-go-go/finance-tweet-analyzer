@@ -42,6 +42,7 @@ from app.services.analysis_job_service import (
     create_analysis_job,
     get_analysis_job,
     list_analysis_jobs,
+    mark_analysis_job_dispatch_failed,
     mark_analysis_job_dispatched,
 )
 from app.services.outbox_service import enqueue_outbox_event
@@ -266,6 +267,16 @@ def create_analysis_job_endpoint(
         raise HTTPException(status_code=404, detail="Resource not found")
     except AnalysisJobForbidden:
         raise HTTPException(status_code=403, detail="Forbidden")
+    except Exception:
+        if "job" in locals():
+            mark_analysis_job_dispatch_failed(db, job)
+            db.commit()
+        else:
+            db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis queue unavailable",
+        )
 
     return _analysis_job_response(job)
 

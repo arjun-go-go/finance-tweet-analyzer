@@ -98,3 +98,5 @@ prompts:
     human: |
       博主: @{{ author_handle }}
       推文内容: {{ content }}
+      图片识别证据: {{ media_context }}
+      风险判断必须同时考虑推文文字与图片中可见的数字、图表、持仓和风险提示。

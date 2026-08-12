@@ -2,7 +2,7 @@ import uuid
 from types import SimpleNamespace
 
 from app.services.analysis_service import (
-    _dispatch_analysis_indexing,
+    _enqueue_analysis_indexing,
     _mark_successful_tweets,
 )
 
@@ -39,17 +39,19 @@ def test_mark_successful_tweets_ignores_unknown_analysis_ids():
     assert tweet.status == "pending"
 
 
-def test_dispatch_analysis_indexing_uses_analysis_source_type(monkeypatch):
+def test_enqueue_analysis_indexing_uses_transactional_outbox(monkeypatch):
     analysis_id = uuid.uuid4()
-    dispatched = []
+    enqueued = []
 
-    class FakeEmbedTask:
-        @staticmethod
-        def delay(source_type, source_id):
-            dispatched.append((source_type, source_id))
+    def fake_enqueue(db, event_type, payload):
+        enqueued.append((db, event_type, payload))
 
-    monkeypatch.setattr("app.scheduler.tasks.embed_signal_task", FakeEmbedTask)
+    monkeypatch.setattr("app.services.outbox_service.enqueue_outbox_event", fake_enqueue)
+    fake_db = object()
 
-    _dispatch_analysis_indexing([analysis_id])
+    _enqueue_analysis_indexing(fake_db, [analysis_id])
 
-    assert dispatched == [("analysis", str(analysis_id))]
+    assert enqueued == [
+        (fake_db, "analysis.index_requested", {"analysis_result_id": str(analysis_id)}),
+        (fake_db, "intelligence.project_requested", {"analysis_result_id": str(analysis_id)}),
+    ]

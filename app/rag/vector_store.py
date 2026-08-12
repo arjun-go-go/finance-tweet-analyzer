@@ -89,6 +89,8 @@ class VectorStoreClient(Protocol):
 
     def delete(self, collection: str, ids: list[str]) -> None: ...
 
+    def delete_where(self, collection: str, filter: dict) -> None: ...
+
     def count(self, collection: str) -> int: ...
 
 
@@ -175,6 +177,11 @@ class ChromaVectorStore:
         """按 ID 批量删除向量（用于 GC 任务清理已删除文档的向量）。"""
         if ids:
             self._col(collection).delete(ids=ids)
+
+    def delete_where(self, collection: str, filter: dict) -> None:
+        chroma_filter = self._build_chroma_filter(filter)
+        if chroma_filter:
+            self._col(collection)._collection.delete(where=chroma_filter)
 
     def count(self, collection: str) -> int:
         """返回 collection 中的向量总数（用于监控/健康检查）。"""
@@ -380,6 +387,16 @@ class MilvusVectorStore:
         self._client.delete(
             collection_name=self._physical_name(collection),
             ids=ids,
+            timeout=self._timeout_sec,
+        )
+
+    def delete_where(self, collection: str, filter: dict) -> None:
+        expression = self._filter_to_expr(filter)
+        if not expression:
+            raise ValueError("Vector delete filter is required")
+        self._client.delete(
+            collection_name=self._physical_name(collection),
+            filter=expression,
             timeout=self._timeout_sec,
         )
 

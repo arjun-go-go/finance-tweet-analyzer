@@ -6,6 +6,10 @@ import { fetchTweets, fetchAnalyses, triggerAnalysis, analyzeBlogger, analyzeSin
 import TweetAnalysisCard from "@/components/TweetAnalysisCard";
 import FilterBar from "@/components/FilterBar";
 import SkeletonCard from "@/components/SkeletonCard";
+import AppIcon from "@/components/AppIcon";
+import { PageEmpty } from "@/components/PageState";
+import { MetricStrip, Pagination, SectionTitle, WorkspacePageHeader } from "@/components/WorkspacePage";
+import type { TweetMediaItem } from "@/components/TweetMediaGallery";
 
 // ============================================================
 // Types
@@ -23,6 +27,15 @@ interface AnalysisData {
     original_name: string;
     sentiment: string;
     horizon: string;
+    market?: string;
+    exchange?: string;
+    asset_type?: string;
+    listing_status?: string;
+    tradable?: boolean;
+    validation_status?: string;
+    validation_sources?: string[];
+    external_ids?: Record<string, string>;
+    validated_at?: string;
     risks?: Array<{
       category: string;
       description: string;
@@ -39,6 +52,10 @@ interface AnalysisData {
   confidence: number;
   is_investment_related: boolean;
   reasoning?: string;
+  media_summary?: string;
+  media_evidence?: string[];
+  text_image_consistency?: string;
+  media_confidence?: number;
 }
 
 interface TweetItem {
@@ -51,10 +68,12 @@ interface TweetItem {
   status: string;
   metrics: TweetMetrics | null;
   analysis?: AnalysisData | null;
+  media?: TweetMediaItem[];
 }
 
 interface AnalysisItem {
   id: string;
+  tweet_id: string;
   twitter_tweet_id?: string;
   author_handle: string;
   content: string;
@@ -62,6 +81,7 @@ interface AnalysisItem {
   created_at: string;
   analysis: AnalysisData;
   confidence: number;
+  media?: TweetMediaItem[];
 }
 
 interface DisplayItem {
@@ -75,6 +95,7 @@ interface DisplayItem {
   metrics?: TweetMetrics | null;
   analysis?: AnalysisData | null;
   twitterTweetId?: string;
+  media?: TweetMediaItem[];
 }
 
 // ============================================================
@@ -118,12 +139,13 @@ function tweetToDisplay(item: TweetItem): DisplayItem {
     metrics: item.metrics,
     analysis: item.analysis || null,
     twitterTweetId: item.tweet_id,
+    media: item.media || [],
   };
 }
 
 function analysisToDisplay(item: AnalysisItem): DisplayItem {
   return {
-    id: item.id,
+    id: item.tweet_id,
     tweetId: item.twitter_tweet_id || item.id,
     authorHandle: item.author_handle,
     content: item.content,
@@ -132,6 +154,7 @@ function analysisToDisplay(item: AnalysisItem): DisplayItem {
     metrics: null,
     analysis: item.analysis,
     twitterTweetId: item.twitter_tweet_id,
+    media: item.media || [],
   };
 }
 
@@ -293,20 +316,15 @@ function TweetsPageInner() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">推文 & 分析</h1>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-500">共 {total} 条</span>
-          <button
+    <div className="product-page">
+      <WorkspacePageHeader eyebrow="Raw Intelligence" title="推文情报" subtitle="保留原始观点、分析状态和模型判断，让每条市场信号都可以回到来源。" actions={<button
             onClick={() => handleTriggerAnalysis("", "")}
             disabled={analyzing}
-            className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="button-primary"
           >
-            {analyzing ? "分析中..." : "批量分析待分析推文"}
-          </button>
-        </div>
-      </div>
+            <AppIcon name="research" className="h-4 w-4" />{analyzing ? "分析中..." : "分析待处理推文"}
+          </button>} />
+      <MetricStrip items={[{ label: "当前结果", value: total, note: "符合当前筛选" }, { label: "视图", value: ALL_TABS.find((tab) => tab.value === activeTab)?.label ?? "全部", note: "分析状态与观点" }, { label: "每页展示", value: PAGE_SIZE, note: "按发布时间排序" }]} />
 
       {/* Filter bar */}
       <FilterBar
@@ -319,21 +337,17 @@ function TweetsPageInner() {
       />
 
       {/* Tabs */}
-      <div className="flex flex-wrap gap-2">
+      <div className="content-toolbar"><SectionTitle icon="tweets" title="情报流" meta={`${total} 条结果`} /><div className="signal-tabs">
         {ALL_TABS.map((tab) => (
           <button
             key={tab.value}
             onClick={() => handleTabChange(tab.value)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              activeTab === tab.value
-                ? "bg-blue-600 text-white"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
+            className={activeTab === tab.value ? "is-active" : ""}
           >
             {tab.label}
           </button>
         ))}
-      </div>
+      </div></div>
 
       {/* Content */}
       {loading ? (
@@ -343,25 +357,13 @@ function TweetsPageInner() {
           <SkeletonCard />
         </div>
       ) : items.length === 0 ? (
-        <div className="text-center py-14 bg-white rounded-lg shadow">
-          <div className="text-5xl mb-3">
-            {isSentimentTab(activeTab) ? "📊" : activeTab === "pending" ? "📭" : activeTab === "analyzed" ? "✅" : "📝"}
-          </div>
-          <p className="text-gray-500 text-lg font-medium mb-1">
-            {isSentimentTab(activeTab)
+        <PageEmpty title={isSentimentTab(activeTab)
               ? `暂无${SENTIMENT_TABS.find((t) => t.value === activeTab)?.label || ""}态度的分析结果`
               : activeTab === "pending"
                 ? "暂无待分析推文"
                 : activeTab === "analyzed"
                   ? "暂无已分析推文"
-                  : "暂无推文数据"}
-          </p>
-          {activeTab === "pending" && (
-            <p className="text-gray-400 text-sm">
-              所有推文已分析完毕，或尚未抓取新推文
-            </p>
-          )}
-        </div>
+                  : "暂无推文数据"} detail={activeTab === "pending" ? "所有推文已分析完毕，或尚未采集到新推文。" : "调整筛选范围，或者等待新的数据进入。"} />
       ) : (
         <div className="space-y-3">
           {items.map((item) => (
@@ -377,6 +379,7 @@ function TweetsPageInner() {
               metrics={item.metrics}
               analysis={item.analysis}
               twitterTweetId={item.twitterTweetId}
+              media={item.media}
               onTriggerAnalysis={
                 item.status !== "analyzed"
                   ? handleTriggerAnalysis
@@ -388,29 +391,7 @@ function TweetsPageInner() {
       )}
 
       {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-4 py-4">
-          <button
-            onClick={() => handlePageChange(Math.max(0, page - 1))}
-            disabled={page === 0}
-            className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-colors"
-          >
-            上一页
-          </button>
-          <span className="text-sm text-gray-600">
-            第 {page + 1} 页 / 共 {totalPages} 页
-          </span>
-          <button
-            onClick={() =>
-              handlePageChange(Math.min(totalPages - 1, page + 1))
-            }
-            disabled={page >= totalPages - 1}
-            className="px-4 py-2 rounded-lg text-sm bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-colors"
-          >
-            下一页
-          </button>
-        </div>
-      )}
+      <Pagination page={page} pages={totalPages} onChange={handlePageChange} zeroBased />
     </div>
   );
 }

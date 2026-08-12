@@ -87,8 +87,8 @@ def test_milvus_add_projects_common_metadata_fields():
         [{"source_type": "tweet", "ticker": "NVDA", "ignored": None}],
     )
 
-    fake_client.insert.assert_called_once()
-    row = fake_client.insert.call_args.kwargs["data"][0]
+    fake_client.upsert.assert_called_once()
+    row = fake_client.upsert.call_args.kwargs["data"][0]
     assert row["id"] == "id1"
     assert row["content"] == "content"
     assert row["source_type"] == "tweet"

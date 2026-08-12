@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { isAuthenticated, fetchMe } from "@/lib/auth";
-import Navbar from "@/components/Navbar";
-import Breadcrumb from "@/components/Breadcrumb";
+import AppShell from "@/components/AppShell";
 
 const PUBLIC_PATHS = ["/login", "/register"];
 
@@ -14,6 +13,13 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
+    // Recover from an absolute app URL accidentally appended to the current origin,
+    // e.g. /http:/192.168.31.156:3000/ after Next.js path normalization.
+    if (/^\/https?:\//i.test(pathname)) {
+      router.replace("/");
+      return;
+    }
+
     if (PUBLIC_PATHS.includes(pathname)) {
       setChecked(true);
       return;
@@ -24,13 +30,15 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    fetchMe().then((user) => {
-      if (!user) {
-        router.replace("/login");
-      } else {
-        setChecked(true);
-      }
-    });
+    fetchMe()
+      .then((user) => {
+        if (!user) {
+          router.replace("/login");
+        } else {
+          setChecked(true);
+        }
+      })
+      .catch(() => router.replace("/login"));
   }, [pathname, router]);
 
   if (PUBLIC_PATHS.includes(pathname)) {
@@ -39,17 +47,12 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (!checked) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-gray-400">验证登录状态...</p>
+      <div className="auth-loading">
+        <span className="workspace-brand-mark"><span /></span>
+        <p>正在进入投资情报工作台</p>
       </div>
     );
   }
 
-  return (
-    <>
-      <Navbar />
-      <Breadcrumb />
-      <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
-    </>
-  );
+  return <AppShell>{children}</AppShell>;
 }

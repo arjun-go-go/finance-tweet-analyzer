@@ -19,6 +19,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from app.schemas.signal import TickerSummary
+from app.services.instrument_resolver import is_downstream_verified_ticker
 
 # 投资周期 → 验证天数映射
 HORIZON_DAYS = {"short": 7, "medium": 30, "long": 180, "unknown": 30}
@@ -75,6 +76,8 @@ def _aggregate_tickers(analyses: list[dict]) -> list[dict]:
         raw_tickers = analysis.get("tickers", [])
 
         for ticker_item in raw_tickers:
+            if not is_downstream_verified_ticker(ticker_item):
+                continue
             symbol = ticker_item.get("symbol", "")
             sentiment = ticker_item.get("sentiment", "neutral")
 
@@ -182,11 +185,16 @@ def _generate_predictions(analyses: list[dict], tweets: list[dict]) -> list[dict
         raw_tickers = analysis.get("tickers", []) or []
 
         for ticker_item in raw_tickers:
+            if not is_downstream_verified_ticker(ticker_item):
+                continue
             ticker = ticker_item.get("symbol", "")
             sentiment = ticker_item.get("sentiment", "neutral")
             horizon = ticker_item.get("horizon", "unknown")
 
-            if not ticker:
+            # A prediction must have a direction that can be scored later.
+            # Neutral mentions remain in analysis/ticker summaries, but are not
+            # predictions and must never enter the review queue or hit-rate data.
+            if not ticker or sentiment not in {"bullish", "bearish"}:
                 continue
 
             days = HORIZON_DAYS.get(horizon, 30)
