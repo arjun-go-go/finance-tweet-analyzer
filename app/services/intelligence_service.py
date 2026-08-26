@@ -4,12 +4,19 @@ import math
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.models.analysis import AnalysisResult
 from app.models.blogger import Blogger
+from app.models.intelligence_correction import IntelligenceCorrection
 from app.models.intelligence_event import IntelligenceEvent, IntelligenceEvidence, IntelligenceTopic
+from app.models.prediction import Prediction
+from app.models.prediction_market_verification import PredictionMarketVerification
 from app.models.tracked_ticker import TrackedTicker
+from app.models.tweet import Tweet
+from app.models.tweet_media_analysis import TweetMediaAnalysis
+from app.models.tweet_media_asset import TweetMediaAsset
 from app.models.user_blogger_follow import UserBloggerFollow
 
 
@@ -104,8 +111,14 @@ def _topic_to_item(
         key=lambda pair: pair[1],
         reverse=True,
     )
-    age_hours = max(0.0, (datetime.now(timezone.utc) - _as_utc(topic.last_seen_at)).total_seconds() / 3600)
-    time_bucket = "今日" if age_hours <= 24 else "近 3 日" if age_hours <= 72 else "近 7 日"
+    age_hours = max(
+        0.0,
+        (datetime.now(timezone.utc) - _as_utc(topic.last_seen_at)).total_seconds()
+        / 3600,
+    )
+    time_bucket = (
+        "今日" if age_hours <= 24 else "近 3 日" if age_hours <= 72 else "近 7 日"
+    )
     evidence = [_evidence_dict(row) for row in evidence_rows[:5]]
     return {
         "id": str(topic.id),
@@ -129,13 +142,360 @@ def _topic_to_item(
         "lifecycle": topic.lifecycle,
         "event_count": topic.event_count,
         "match_reasons": match_reasons,
-        "feed_bucket": "personalized" if personalized_match else ("market_risk" if topic.kind == "risk" else "discovery"),
+        "feed_bucket": (
+            "personalized"
+            if personalized_match
+            else ("market_risk" if topic.kind == "risk" else "discovery")
+        ),
         "corroboration_count": topic.source_count,
         "evidence": evidence[0],
         "supporting_evidence": evidence,
         "_personalized": personalized_match,
         "_primary_ticker": topic.primary_ticker,
     }
+
+
+def _tweet_relationship(tweet: Tweet, primary: Tweet, event_tweet_ids: set[UUID]) -> str:
+    if tweet.id == primary.id:
+        return "primary"
+    if tweet.tweet_id == primary.in_reply_to_tweet_id:
+        return "parent"
+    if tweet.tweet_id == primary.quoted_tweet_id:
+        return "quoted"
+    if tweet.tweet_id == primary.reposted_tweet_id:
+        return "reposted"
+    if tweet.in_reply_to_tweet_id == primary.tweet_id:
+        return "reply"
+    if tweet.id in event_tweet_ids:
+        return "supporting"
+    return "thread"
+
+
+def _tweet_detail(tweet: Tweet, *, relationship: str) -> dict:
+    return {
+        "id": str(tweet.id),
+        "tweet_id": tweet.tweet_id,
+        "author_handle": tweet.author_handle,
+        "author_name": tweet.author_name or "",
+        "content": tweet.content,
+        "published_at": tweet.published_at,
+        "relationship": relationship,
+        "tweet_type": tweet.tweet_type or "original",
+        "conversation_tweet_id": tweet.conversation_tweet_id,
+        "in_reply_to_tweet_id": tweet.in_reply_to_tweet_id,
+        "quoted_tweet_id": tweet.quoted_tweet_id,
+        "reposted_tweet_id": tweet.reposted_tweet_id,
+        "referenced_tweets": tweet.referenced_tweets or [],
+        "source_url": (
+            f"https://x.com/{tweet.author_handle.lstrip('@')}/status/{tweet.tweet_id}"
+        ),
+    }
+
+
+def _analysis_detail(analysis: AnalysisResult) -> dict:
+    result = analysis.result or {}
+    keys = (
+        "thesis",
+        "reasoning",
+        "key_points",
+        "catalysts",
+        "risk_factors",
+        "entry_conditions",
+        "invalidation_conditions",
+        "overall_sentiment",
+        "statement_type",
+        "opinion_source",
+        "is_sponsored",
+        "text_evidence",
+        "media_evidence",
+        "media_summary",
+        "media_confidence",
+        "text_image_consistency",
+    )
+    return {
+        **{key: result.get(key) for key in keys},
+        "confidence": float(result.get("confidence") or analysis.confidence or 0),
+    }
+
+
+def _verification_detail(
+    verification: PredictionMarketVerification | None,
+) -> dict | None:
+    if verification is None:
+        return None
+    evidence = verification.evidence or {}
+    return {
+        "id": str(verification.id),
+        "status": verification.status,
+        "provider": verification.provider,
+        "provider_symbol": verification.provider_symbol,
+        "market": verification.market,
+        "start_observed_at": verification.start_observed_at,
+        "start_price": verification.start_price,
+        "end_observed_at": verification.end_observed_at,
+        "end_price": verification.end_price,
+        "directional_return": verification.directional_return,
+        "threshold": verification.threshold,
+        "proposed_verdict": verification.proposed_verdict,
+        "reason": evidence.get("reason") or verification.error_message,
+        "identity": evidence.get("identity"),
+        "identity_reason": evidence.get("identity_reason"),
+        "rule_version": verification.rule_version,
+        "applied": verification.applied,
+        "created_at": verification.created_at,
+    }
+
+
+def _prediction_detail(
+    prediction: Prediction,
+    verification: PredictionMarketVerification | None,
+) -> dict:
+    return {
+        "id": str(prediction.id),
+        "ticker": prediction.ticker,
+        "sentiment": prediction.sentiment,
+        "investment_horizon": prediction.investment_horizon,
+        "published_at": prediction.published_at,
+        "verifiable_at": prediction.verifiable_at,
+        "verdict": prediction.verdict,
+        "score": prediction.score,
+        "verified_at": prediction.verified_at,
+        "verified_by": prediction.verified_by,
+        "note": prediction.note,
+        "instrument_snapshot": prediction.instrument_snapshot,
+        "creation_rule_version": prediction.creation_rule_version,
+        "creation_evidence": prediction.creation_evidence,
+        "market_verification": _verification_detail(verification),
+    }
+
+
+def build_user_intelligence_detail(
+    db: Session,
+    user_id: UUID,
+    topic_id: UUID | str,
+) -> dict | None:
+    """Assemble one evidence-first topic detail without invoking an LLM."""
+    topic = db.get(IntelligenceTopic, UUID(str(topic_id)))
+    if topic is None:
+        return None
+
+    event_rows = db.execute(
+        select(IntelligenceEvent, AnalysisResult, Tweet)
+        .join(AnalysisResult, AnalysisResult.id == IntelligenceEvent.analysis_result_id)
+        .join(Tweet, Tweet.id == IntelligenceEvent.tweet_id)
+        .where(IntelligenceEvent.topic_id == topic.id)
+        .order_by(IntelligenceEvent.published_at.desc())
+    ).all()
+    if not event_rows:
+        return None
+
+    event_ids = [event.id for event, _analysis, _tweet in event_rows]
+    evidence_rows = list(
+        db.execute(
+            select(IntelligenceEvidence)
+            .where(IntelligenceEvidence.event_id.in_(event_ids))
+            .order_by(IntelligenceEvidence.published_at.desc())
+        ).scalars()
+    )
+    followed_handles = {
+        handle.lower()
+        for handle in db.execute(
+            select(Blogger.handle)
+            .join(UserBloggerFollow, UserBloggerFollow.blogger_id == Blogger.id)
+            .where(UserBloggerFollow.user_id == user_id)
+        ).scalars()
+    }
+    tracked_tickers = {
+        ticker.upper()
+        for ticker in db.execute(
+            select(TrackedTicker.ticker).where(
+                TrackedTicker.user_id == user_id,
+                TrackedTicker.status == "active",
+            )
+        ).scalars()
+    }
+    item = _topic_to_item(
+        topic,
+        evidence_rows,
+        followed_handles=followed_handles,
+        tracked_tickers=tracked_tickers,
+        window_hours=168,
+    )
+    if item is None:
+        return None
+    item.pop("_personalized", None)
+    item.pop("_primary_ticker", None)
+
+    primary_event, primary_analysis, primary_tweet = event_rows[0]
+    event_tweet_ids = {tweet.id for _event, _analysis, tweet in event_rows}
+    conversation_keys = {
+        value
+        for _event, _analysis, tweet in event_rows
+        for value in (tweet.conversation_tweet_id, tweet.tweet_id)
+        if value
+    }
+    referenced_ids = {
+        value
+        for value in (
+            primary_tweet.in_reply_to_tweet_id,
+            primary_tweet.quoted_tweet_id,
+            primary_tweet.reposted_tweet_id,
+        )
+        if value
+    }
+    thread_rows = list(
+        db.execute(
+            select(Tweet)
+            .where(
+                or_(
+                    Tweet.id.in_(event_tweet_ids),
+                    Tweet.conversation_tweet_id.in_(conversation_keys),
+                    Tweet.tweet_id.in_(conversation_keys | referenced_ids),
+                )
+            )
+            .order_by(Tweet.published_at.asc())
+        ).scalars()
+    )
+
+    media_analysis_rows = list(
+        db.execute(
+            select(TweetMediaAnalysis).where(
+                TweetMediaAnalysis.tweet_id.in_(event_tweet_ids)
+            )
+        ).scalars()
+    )
+    media_analysis_map = {row.tweet_id: row for row in media_analysis_rows}
+    media_assets = list(
+        db.execute(
+            select(TweetMediaAsset)
+            .where(TweetMediaAsset.tweet_id.in_(event_tweet_ids))
+            .order_by(TweetMediaAsset.tweet_id, TweetMediaAsset.created_at.asc())
+        ).scalars()
+    )
+    asset_indexes: dict[UUID, int] = {}
+    media: list[dict] = []
+    for asset in media_assets:
+        image_index = asset_indexes.get(asset.tweet_id, 0)
+        asset_indexes[asset.tweet_id] = image_index + 1
+        media_analysis = media_analysis_map.get(asset.tweet_id)
+        image_results = (
+            (media_analysis.result or {}).get("images") or []
+            if media_analysis is not None
+            else []
+        )
+        media.append(
+            {
+                "id": str(asset.id),
+                "tweet_id": str(asset.tweet_id),
+                "width": asset.width,
+                "height": asset.height,
+                "content_type": asset.content_type,
+                "status": asset.status,
+                "error_detail": asset.error_detail,
+                "analysis_status": media_analysis.status if media_analysis else None,
+                "analysis": (
+                    image_results[image_index]
+                    if image_index < len(image_results)
+                    else None
+                ),
+            }
+        )
+
+    predictions = list(
+        db.execute(
+            select(Prediction)
+            .where(Prediction.tweet_id.in_(event_tweet_ids))
+            .order_by(Prediction.published_at.desc())
+        ).scalars()
+    )
+    prediction_ids = [prediction.id for prediction in predictions]
+    latest_verifications: dict[UUID, PredictionMarketVerification] = {}
+    if prediction_ids:
+        verification_rows = db.execute(
+            select(PredictionMarketVerification)
+            .where(PredictionMarketVerification.prediction_id.in_(prediction_ids))
+            .order_by(
+                PredictionMarketVerification.prediction_id,
+                PredictionMarketVerification.created_at.desc(),
+            )
+        ).scalars()
+        for verification in verification_rows:
+            latest_verifications.setdefault(verification.prediction_id, verification)
+
+    primary_result = primary_analysis.result or {}
+    return {
+        "item": item,
+        "tweet": _tweet_detail(primary_tweet, relationship="primary"),
+        "thread": [
+            _tweet_detail(
+                tweet,
+                relationship=_tweet_relationship(
+                    tweet, primary_tweet, event_tweet_ids
+                ),
+            )
+            for tweet in thread_rows
+        ],
+        "media": media,
+        "analysis": _analysis_detail(primary_analysis),
+        "instruments": [
+            instrument
+            for instrument in (primary_result.get("tickers") or [])
+            if isinstance(instrument, dict)
+        ],
+        "predictions": [
+            _prediction_detail(
+                prediction, latest_verifications.get(prediction.id)
+            )
+            for prediction in predictions
+        ],
+        "audit": [
+            {
+                "event_id": str(event.id),
+                "analysis_id": str(analysis.id),
+                "tweet_id": str(tweet.id),
+                "model_used": analysis.model_used,
+                "pipeline_version": analysis.pipeline_version,
+                "projection_version": event.projection_version,
+                "analysis_created_at": analysis.created_at,
+                "projected_at": event.created_at,
+                "status": event.status,
+            }
+            for event, analysis, tweet in event_rows
+        ],
+    }
+
+
+def submit_intelligence_correction(
+    db: Session,
+    *,
+    user_id: UUID,
+    topic_id: UUID | str,
+    category: str,
+    note: str,
+) -> IntelligenceCorrection | None:
+    topic = db.get(IntelligenceTopic, UUID(str(topic_id)))
+    if topic is None:
+        return None
+    correction = IntelligenceCorrection(
+        topic_id=topic.id,
+        user_id=user_id,
+        category=category,
+        note=note.strip(),
+        snapshot={
+            "title": topic.title,
+            "summary": topic.summary,
+            "direction": topic.direction,
+            "tickers": topic.tickers or [],
+            "lifecycle": topic.lifecycle,
+            "topic_updated_at": (
+                topic.updated_at.isoformat() if topic.updated_at else None
+            ),
+        },
+    )
+    db.add(correction)
+    db.commit()
+    db.refresh(correction)
+    return correction
 
 
 def _select_with_quotas(candidates: list[dict], *, limit: int, personalized: bool) -> list[dict]:

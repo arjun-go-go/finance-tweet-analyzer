@@ -23,6 +23,7 @@ from app.models.analysis_job import AnalysisJob
 from app.models.index_job import IndexJob
 from app.models.outbox_event import OutboxEvent
 from app.models.intelligence_event import IntelligenceEvent, IntelligenceEvidence, IntelligenceTopic
+from app.models.intelligence_correction import IntelligenceCorrection
 from app.models.research import ResearchTopic, ResearchEvidence, ResearchConclusion
 from app.models.user_alert import UserAlert
 
@@ -54,6 +55,7 @@ __all__ = [
     "IntelligenceEvent",
     "IntelligenceEvidence",
     "IntelligenceTopic",
+    "IntelligenceCorrection",
     "ResearchTopic",
     "ResearchEvidence",
     "ResearchConclusion",

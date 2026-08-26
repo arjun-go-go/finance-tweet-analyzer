@@ -110,6 +110,54 @@ export interface IntelligenceDigestResponse {
   methodology: string;
 }
 
+export interface IntelligenceTweetDetail {
+  id: string;
+  tweet_id: string;
+  author_handle: string;
+  author_name: string;
+  content: string;
+  published_at: string;
+  relationship: string;
+  tweet_type: string;
+  conversation_tweet_id: string | null;
+  in_reply_to_tweet_id: string | null;
+  quoted_tweet_id: string | null;
+  reposted_tweet_id: string | null;
+  referenced_tweets: Array<Record<string, unknown>>;
+  source_url: string;
+}
+
+export interface IntelligenceMediaDetail {
+  id: string;
+  tweet_id: string;
+  width: number | null;
+  height: number | null;
+  content_type: string | null;
+  status: string;
+  error_detail: string | null;
+  analysis_status: string | null;
+  analysis: Record<string, unknown> | null;
+}
+
+export interface IntelligenceDetailResponse {
+  item: IntelligenceFeedItem;
+  tweet: IntelligenceTweetDetail;
+  thread: IntelligenceTweetDetail[];
+  media: IntelligenceMediaDetail[];
+  analysis: Record<string, unknown>;
+  instruments: Array<Record<string, unknown>>;
+  predictions: Array<Record<string, unknown>>;
+  audit: Array<Record<string, unknown>>;
+}
+
+export type IntelligenceCorrectionCategory =
+  | "author_attribution"
+  | "instrument"
+  | "direction"
+  | "context"
+  | "image"
+  | "other";
+
 export async function fetchIntelligenceFeed(
   limit = 20,
   window: "24h" | "3d" | "7d" = "24h",
@@ -125,6 +173,32 @@ export async function fetchIntelligenceDigest(): Promise<IntelligenceDigestRespo
   const res = await authFetch(`${API_BASE}/api/intelligence/digest`, { cache: "no-store" });
   if (!res.ok) throw new Error("无法加载 Twitter 投资情报日报，请稍后重试。");
   return res.json() as Promise<IntelligenceDigestResponse>;
+}
+
+export async function fetchIntelligenceDetail(id: string): Promise<IntelligenceDetailResponse> {
+  const res = await authFetch(
+    `${API_BASE}/api/intelligence/${encodeURIComponent(id)}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error("情报详情加载失败，请稍后重试。");
+  return res.json() as Promise<IntelligenceDetailResponse>;
+}
+
+export async function submitIntelligenceCorrection(
+  id: string,
+  data: { category: IntelligenceCorrectionCategory; note: string },
+): Promise<{ id: string; topic_id: string; category: string; status: string; created_at: string }> {
+  const res = await authFetch(
+    `${API_BASE}/api/intelligence/${encodeURIComponent(id)}/corrections`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    },
+  );
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(apiErrorMessage(payload, "反馈提交失败，请稍后重试。"));
+  return payload;
 }
 
 export async function fetchDashboard() {

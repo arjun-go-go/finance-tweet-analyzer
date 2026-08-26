@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class IntelligenceEvidence(BaseModel):
@@ -94,3 +95,63 @@ class IntelligenceDigestResponse(BaseModel):
     attention: list[IntelligenceFeedItem]
     context: IntelligenceFeedContext
     methodology: str
+
+
+class IntelligenceTweetDetail(BaseModel):
+    id: str
+    tweet_id: str
+    author_handle: str
+    author_name: str
+    content: str
+    published_at: datetime
+    relationship: str
+    tweet_type: str
+    conversation_tweet_id: str | None = None
+    in_reply_to_tweet_id: str | None = None
+    quoted_tweet_id: str | None = None
+    reposted_tweet_id: str | None = None
+    referenced_tweets: list[dict] = Field(default_factory=list)
+    source_url: str
+
+
+class IntelligenceMediaDetail(BaseModel):
+    id: str
+    tweet_id: str
+    width: int | None = None
+    height: int | None = None
+    content_type: str | None = None
+    status: str
+    error_detail: str | None = None
+    analysis_status: str | None = None
+    analysis: dict | None = None
+
+
+class IntelligenceDetailResponse(BaseModel):
+    item: IntelligenceFeedItem
+    tweet: IntelligenceTweetDetail
+    thread: list[IntelligenceTweetDetail]
+    media: list[IntelligenceMediaDetail]
+    analysis: dict
+    instruments: list[dict]
+    predictions: list[dict]
+    audit: list[dict]
+
+
+class IntelligenceCorrectionRequest(BaseModel):
+    category: Literal[
+        "author_attribution",
+        "instrument",
+        "direction",
+        "context",
+        "image",
+        "other",
+    ]
+    note: str = Field(min_length=2, max_length=1000)
+
+
+class IntelligenceCorrectionResponse(BaseModel):
+    id: str
+    topic_id: str
+    category: str
+    status: str
+    created_at: datetime

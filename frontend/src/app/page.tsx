@@ -1,184 +1,243 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AppIcon from "@/components/AppIcon";
 import IntelligenceCard from "@/components/IntelligenceCard";
 import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
-import { fetchDashboard, fetchIntelligenceDigest, fetchIntelligenceFeed, type IntelligenceDigestResponse, type IntelligenceFeedItem, type IntelligenceFeedResponse } from "@/lib/api";
+import {
+  fetchIntelligenceDigest,
+  fetchIntelligenceFeed,
+  type IntelligenceDigestResponse,
+  type IntelligenceFeedItem,
+  type IntelligenceFeedResponse,
+} from "@/lib/api";
 
-interface DashboardData {
-  analyzed_tweets: number;
-  total_analyses: number;
-  total_bloggers: number;
-  pending_tweets: number;
+type FeedView = "related" | "latest" | "watch";
+type WindowRange = "24h" | "3d" | "7d";
+
+function formatToday() {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  }).format(new Date());
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date(value));
+function formatEvidenceTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
-
-const SCORE_LABELS: Record<string, string> = { relevance: "与你相关", freshness: "新鲜度", confidence: "模型置信", credibility: "来源可信", risk: "风险强度", corroboration: "交叉印证" };
 
 export default function IntelligenceDashboard() {
   const [feed, setFeed] = useState<IntelligenceFeedResponse | null>(null);
   const [digest, setDigest] = useState<IntelligenceDigestResponse | null>(null);
-  const [stats, setStats] = useState<DashboardData | null>(null);
   const [selected, setSelected] = useState<IntelligenceFeedItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [windowRange, setWindowRange] = useState<"24h" | "3d" | "7d">("24h");
-  const [feedKind, setFeedKind] = useState<"all" | "risk" | "opinion" | "news">("all");
+  const [windowRange, setWindowRange] = useState<WindowRange>("24h");
+  const [view, setView] = useState<FeedView>("related");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [feedData, digestData, statsData] = await Promise.all([fetchIntelligenceFeed(20, windowRange, feedKind), fetchIntelligenceDigest(), fetchDashboard()]);
+      const [feedData, digestData] = await Promise.all([
+        fetchIntelligenceFeed(30, windowRange, "all"),
+        fetchIntelligenceDigest(),
+      ]);
       setFeed(feedData);
       setDigest(digestData);
-      setStats(statsData);
-      setSelected(feedData.items[0] || null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "无法加载今日情报。");
+      setSelected((current) =>
+        current
+          ? feedData.items.find((item) => item.id === current.id) || null
+          : null,
+      );
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "无法加载今日情报。");
     } finally {
       setLoading(false);
     }
-  }, [windowRange, feedKind]);
+  }, [windowRange]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  if (loading) return <PageLoading label="正在整理今天的市场观点" />;
-  if (error || !feed) return <PageError detail={error || "情报接口没有返回数据。"} onRetry={load} />;
+  const visibleItems = useMemo(() => {
+    if (!feed) return [];
+    if (view === "latest") {
+      return [...feed.items].sort(
+        (left, right) =>
+          new Date(right.published_at).getTime() - new Date(left.published_at).getTime(),
+      );
+    }
+    if (view === "watch") {
+      return feed.items.filter((item) =>
+        item.match_reasons.some((reason) => reason.startsWith("关注标的")),
+      );
+    }
+    if (!feed.context.personalized) return feed.items;
+    return feed.items.filter((item) => item.feed_bucket === "personalized");
+  }, [feed, view]);
 
-  const riskCount = feed.items.filter((item) => item.kind === "risk").length;
-  const opinionCount = feed.items.filter((item) => item.kind === "opinion").length;
-  const corroboratedCount = feed.items.filter((item) => item.corroboration_count > 1).length;
+  if (loading) return <PageLoading label="正在整理今天的重要观点" />;
+  if (error || !feed) {
+    return <PageError detail={error || "情报接口没有返回数据。"} onRetry={load} />;
+  }
+
+  const priority = digest?.highlights[0] || feed.items[0] || null;
+  const scopeReady = feed.context.personalized;
 
   return (
-    <div className="intelligence-dashboard-page">
-      <header className="page-header intelligence-hero">
+    <div className="product-page today-page-v5">
+      <header className="today-heading">
         <div>
-          <p className="page-eyebrow">Daily intelligence</p>
-          <h1 className="page-title">今日情报</h1>
-          <p className="page-subtitle">{formatDate(new Date().toISOString())} · 按重要性整理你关注的博主、标的与市场风险，每条结论都能回到原始证据。</p>
+          <p className="page-eyebrow">{formatToday()}</p>
+          <h1>今天</h1>
+          <p>
+            {visibleItems.length
+              ? `${visibleItems.length} 条值得看，按与你的关注范围和证据质量排序。`
+              : "暂时没有匹配当前范围的新情报。"}
+          </p>
         </div>
-        <div className="page-header-actions flex gap-2">
-          <Link href="/watch" className="button-secondary"><AppIcon name="watchlist" />管理标的监控</Link>
-          <Link href="/assistant" className="button-primary"><AppIcon name="research" />深入研究</Link>
+        <div className="today-heading-actions">
+          <span className="today-freshness"><i />刚刚更新</span>
+          <Link href="/assistant" className="button-primary">
+            <AppIcon name="research" />向助手追问
+          </Link>
         </div>
       </header>
 
-      <div className="research-scope-bar">
-        <div className="research-scope-state">
-          <span className={`scope-live-dot ${feed.context.personalized ? "is-live" : ""}`} />
-          <div><strong>{feed.context.personalized ? "个性化情报已开启" : "市场情报模式"}</strong><span>首页会根据你的关注范围自动筛选重要变化</span></div>
+      <section className={`today-scope ${scopeReady ? "is-live" : ""}`}>
+        <span className="today-scope-state"><i /><strong>{scopeReady ? "你的研究范围正在生效" : "当前显示市场补充情报"}</strong></span>
+        <p>{scopeReady ? "这里只保留与你关注的博主或标的相关的重要变化。" : "关注信息源或标的后，这里会自动切换为个性化情报。"}</p>
+        <div>
+          <Link href="/sources">{feed.context.followed_bloggers} 个信息源</Link>
+          <Link href="/watch">{feed.context.tracked_tickers} 个标的</Link>
         </div>
-        <div className="research-scope-links">
-          <Link href="/sources"><span>关注博主</span><b>{feed.context.followed_bloggers}</b></Link>
-          <Link href="/watch"><span>监控标的</span><b>{feed.context.tracked_tickers}</b></Link>
-          <Link href="/tweets?tab=analyzed"><span>已分析</span><b>{stats?.analyzed_tweets ?? 0}</b></Link>
-        </div>
-      </div>
+      </section>
 
-      {digest && (
-        <section className="daily-digest" aria-label="Twitter 投资情报日报">
-          <div className="daily-digest-copy">
-            <div className="daily-digest-heading">
-              <div>
-                <span>24 小时自动汇总</span>
-                <h2>{digest.title}</h2>
-              </div>
-              <b className={`daily-digest-status is-${digest.status}`}>
-                {digest.status === "ready" ? "已生成" : digest.status === "scope_empty" ? "待完善范围" : "暂无新增"}
-              </b>
-            </div>
-            <p>{digest.executive_summary}</p>
-            <small>{digest.methodology}</small>
+      {priority && (
+        <button className="today-priority" onClick={() => setSelected(priority)}>
+          <span>现在最重要</span>
+          <div>
+            <h2>{priority.title}</h2>
+            <p>{priority.summary}</p>
           </div>
-          <div className="daily-digest-metrics">
-            <div><span>有效情报</span><b>{digest.metrics.personalized_count}</b></div>
-            <div><span>独立来源</span><b>{digest.metrics.source_count}</b></div>
-            <div><span>风险线索</span><b>{digest.metrics.risk_count}</b></div>
-            <div><span>观点反转</span><b>{digest.metrics.reversal_count}</b></div>
-          </div>
-          {digest.highlights.length > 0 && (
-            <div className="daily-digest-highlights">
-              <strong>今日重点</strong>
-              {digest.highlights.slice(0, 3).map((item) => (
-                <button key={item.id} onClick={() => setSelected(feed.items.find((candidate) => candidate.id === item.id) || item)}>
-                  <span>@{item.author} · {item.tickers.join(", ") || "市场"}</span>
-                  <b>{item.title}</b>
-                  <i>{item.importance_score}</i>
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
+          <small>{priority.corroboration_count} 个来源 · 重要性 {priority.importance_score}</small>
+          <AppIcon name="arrow" />
+        </button>
       )}
 
-      <div className={`dashboard-grid ${selected ? "has-selection" : "is-focus"}`}>
-        <section className="dashboard-main">
-          <div className="intelligence-briefing" aria-label="本期情报摘要">
-            <div><span>博主有效观点</span><b>{opinionCount}</b></div>
-            <div><span>风险线索</span><b>{riskCount}</b></div>
-            <div><span>多源印证</span><b>{corroboratedCount}</b></div>
-            <p>仅展示投资相关、非赞助且完成来源归因的 Twitter 信息。</p>
-          </div>
-          <div className="feed-toolbar">
-            <div className="section-heading"><h2>与你相关的重要变化</h2><span>显示 {feed.items.length} / {feed.total} 条候选</span></div>
-            <div className="feed-filters">
-              <div className="feed-filter-group" aria-label="时间范围">
-                {([['24h', '24 小时'], ['3d', '近 3 日'], ['7d', '近 7 日']] as const).map(([value, label]) => <button key={value} className={windowRange === value ? "is-active" : ""} onClick={() => setWindowRange(value)}>{label}</button>)}
-              </div>
-              <div className="feed-filter-group" aria-label="情报类型">
-                {([['all', '全部'], ['opinion', '观点'], ['risk', '风险'], ['news', '动态']] as const).map(([value, label]) => <button key={value} className={feedKind === value ? "is-active" : ""} onClick={() => setFeedKind(value)}>{label}</button>)}
-              </div>
-            </div>
-          </div>
-          {(!feed.context.personalized || feed.context.fallback_to_market) && (
-            <div className="feed-mode-notice">
-              <AppIcon name="alerts" />
-              <span>{feed.context.fallback_to_market ? "暂时没有匹配关注范围的新内容，以下补充展示市场最新情报。" : "当前展示市场最新情报。关注博主或添加监控标的后，首页会切换为个性化情报。"}</span>
-              <Link href={feed.context.followed_bloggers === 0 ? "/sources" : "/watch"}>完善研究范围</Link>
-            </div>
-          )}
-          {feed.items.length === 0 ? (
-            <PageEmpty title="还没有与你相关的情报" detail="先关注一个博主或添加一个标的，系统会持续整理相关观点。" action={<Link className="button-primary mt-3" href="/sources">选择信息源</Link>} />
+      <div className="today-toolbar">
+        <div className="today-view-tabs" aria-label="情报范围">
+          {([
+            ["related", "与你相关"],
+            ["latest", "最新"],
+            ["watch", "仅关注标的"],
+          ] as Array<[FeedView, string]>).map(([value, label]) => (
+            <button
+              key={value}
+              className={view === value ? "is-active" : ""}
+              onClick={() => setView(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="today-window-tabs" aria-label="时间范围">
+          {([
+            ["24h", "24 小时"],
+            ["3d", "3 天"],
+            ["7d", "7 天"],
+          ] as Array<[WindowRange, string]>).map(([value, label]) => (
+            <button
+              key={value}
+              className={windowRange === value ? "is-active" : ""}
+              onClick={() => setWindowRange(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span>{visibleItems.length} 条</span>
+      </div>
+
+      {selected && <button className="today-preview-backdrop" aria-label="关闭证据预览" onClick={() => setSelected(null)} />}
+      <div className={`today-workspace ${selected ? "has-preview" : ""}`}>
+        <section className="today-feed" aria-label="今日情报列表">
+          {visibleItems.length === 0 ? (
+            <PageEmpty
+              title={view === "watch" ? "关注标的暂时没有新观点" : "当前范围没有新情报"}
+              detail="可以调整时间范围，或新增一个长期关注的信息源。"
+              action={<Link className="button-primary mt-3" href="/sources?add=1">新增信息源</Link>}
+            />
           ) : (
-            <div className="intelligence-list">
-              {feed.items.map((item) => <IntelligenceCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={() => setSelected(item)} />)}
-            </div>
+            visibleItems.map((item) => (
+              <IntelligenceCard
+                key={item.id}
+                item={item}
+                selected={selected?.id === item.id}
+                onSelect={() => setSelected(item)}
+              />
+            ))
           )}
         </section>
 
-        <aside className="dashboard-side" id="selected-evidence-panel" aria-live="polite">
-          {selected ? (
-            <div className="evidence-panel">
-              <div className="evidence-panel-header">
-                <div><span><AppIcon name="evidence" />Evidence trail</span><strong>{selected.title}</strong></div>
-                <button onClick={() => setSelected(null)} aria-label="关闭证据面板"><AppIcon name="close" /></button>
+        {selected && (
+          <aside className="today-preview" id="today-evidence-preview" aria-live="polite">
+            <header>
+              <div><span>Evidence preview</span><strong>判断依据</strong></div>
+              <button onClick={() => setSelected(null)} aria-label="关闭证据预览"><AppIcon name="close" /></button>
+            </header>
+            <div className="today-preview-body">
+              <div className="today-preview-meta">
+                <span>@{selected.evidence.author}</span>
+                <span>{formatEvidenceTime(selected.evidence.published_at)}</span>
+                <b>{Math.round(selected.confidence * 100)}% 置信度</b>
               </div>
-              <div className="evidence-panel-body">
-                <div className="evidence-source"><span>@{selected.evidence.author}</span><span>{selected.time_bucket} · 置信度 {Math.round(selected.confidence * 100)}%</span></div>
-                <p className="evidence-excerpt">{selected.evidence.excerpt}</p>
-                {(selected.risk_factors.length > 0 || selected.key_points.length > 0) && (
-                  <ul className="evidence-points">{(selected.kind === "risk" ? selected.risk_factors : selected.key_points).map((point) => <li key={point}>{point}</li>)}</ul>
-                )}
-                <div className="score-explain">
-                  <div className="score-explain-head"><strong>为什么排在这里</strong><b>{selected.importance_score}</b></div>
-                  <div className="score-bars">{Object.entries(selected.score_breakdown).filter(([key, value]) => key in SCORE_LABELS && value > 0).map(([key, value]) => <div key={key}><span>{SCORE_LABELS[key]}</span><i><i style={{ width: `${Math.min(100, Number(value) / 30 * 100)}%` }} /></i><b>+{value}</b></div>)}</div>
-                  <p>{selected.score_explanation.join(" · ")}</p>
-                </div>
-                {selected.supporting_evidence.length > 1 && <div className="supporting-sources"><strong>{selected.corroboration_count} 个独立来源交叉印证</strong>{selected.supporting_evidence.map((evidence, index) => <a key={evidence.source_id} href={evidence.source_url} target="_blank" rel="noreferrer"><span>{index + 1}</span><div><b>@{evidence.author}</b><small>{formatDate(evidence.published_at)}</small></div><AppIcon name="external" /></a>)}</div>}
-                <a href={selected.evidence.source_url} target="_blank" rel="noreferrer" className="evidence-link">查看原始推文 <AppIcon name="external" /></a>
-              </div>
+              <h2>{selected.title}</h2>
+              <p className="today-preview-thesis">{selected.summary}</p>
+              <section>
+                <span>原文证据</span>
+                <blockquote>{selected.evidence.excerpt}</blockquote>
+              </section>
+              {(selected.key_points.length > 0 || selected.risk_factors.length > 0) && (
+                <section>
+                  <span>{selected.kind === "risk" ? "风险边界" : "关键依据"}</span>
+                  <ul>
+                    {(selected.kind === "risk" ? selected.risk_factors : selected.key_points)
+                      .slice(0, 4)
+                      .map((point) => <li key={point}>{point}</li>)}
+                  </ul>
+                </section>
+              )}
+              <section className="today-preview-ranking">
+                <span>为什么显示</span>
+                <div>{selected.score_explanation.map((reason) => <b key={reason}>✓ {reason}</b>)}</div>
+              </section>
+              {selected.supporting_evidence.length > 1 && (
+                <section className="today-preview-sources">
+                  <span>{selected.corroboration_count} 个独立来源</span>
+                  {selected.supporting_evidence.slice(0, 4).map((evidence) => (
+                    <a key={evidence.source_id} href={evidence.source_url} target="_blank" rel="noreferrer">
+                      <b>@{evidence.author}</b><small>{formatEvidenceTime(evidence.published_at)}</small>
+                    </a>
+                  ))}
+                </section>
+              )}
             </div>
-          ) : (
-            <div className="dashboard-panel"><h3>选择一条情报</h3><p className="text-xs text-slate-500">查看它的原始来源和分析依据。</p></div>
-          )}
-
-        </aside>
+            <footer>
+              <a href={selected.evidence.source_url} target="_blank" rel="noreferrer" className="button-secondary">查看原推文</a>
+              <Link href={`/insights/${encodeURIComponent(selected.id)}`} className="button-primary">完整证据<AppIcon name="arrow" /></Link>
+            </footer>
+          </aside>
+        )}
       </div>
     </div>
   );
