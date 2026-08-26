@@ -5,9 +5,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
-    Integer,
     String,
-    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -26,13 +24,6 @@ class TrackedTicker(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)
-    frequency: Mapped[str] = mapped_column(String(20), nullable=False)
-    last_report_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    next_run_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="active"
     )
@@ -51,10 +42,5 @@ class TrackedTicker(Base):
             "ticker",
             unique=True,
             postgresql_where="status != 'deleted'",
-        ),
-        Index(
-            "ix_tracked_next_run",
-            "next_run_at",
-            postgresql_where="status = 'active'",
         ),
     )

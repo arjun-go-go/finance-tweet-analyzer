@@ -6,7 +6,6 @@ export type IconName =
   | "briefs"
   | "alerts"
   | "tweets"
-  | "documents"
   | "settings"
   | "admin"
   | "menu"
@@ -25,7 +24,6 @@ const paths: Record<IconName, React.ReactNode> = {
   briefs: <><path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5M9 12h7M9 16h7" /></>,
   alerts: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></>,
   tweets: <><path d="M5 5h14v11H9l-4 4z" /><path d="M8 9h8M8 12h5" /></>,
-  documents: <><path d="M5 3h10l4 4v14H5z" /><path d="M14 3v5h5" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
   admin: <><path d="M4 5h16v14H4z" /><path d="M8 9h8M8 13h5" /></>,
   menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,

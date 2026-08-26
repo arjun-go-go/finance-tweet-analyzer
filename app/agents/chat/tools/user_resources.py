@@ -4,7 +4,6 @@ from uuid import UUID
 
 from app.services import user_resource_service
 from app.services import tracking_service
-from app.services import user_resource_service
 from app.agents.chat.tool_results import tool_ok, tool_error
 
 
@@ -45,7 +44,7 @@ def list_my_tracked_tickers_impl(db, user_id: UUID) -> str:
     if not items:
         return "当前没有订阅任何标的。可以通过「订阅 TSLA」来添加。"
 
-    lines = [f"- {item.ticker} ({item.frequency}, {item.status})" for item in items]
+    lines = [f"- {item.ticker} ({item.status})" for item in items]
     return f"你的订阅列表（{len(items)} 个）：\n" + "\n".join(lines)
 
 

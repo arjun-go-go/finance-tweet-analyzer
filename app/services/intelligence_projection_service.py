@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -11,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.analysis import AnalysisResult
 from app.models.blogger import Blogger
-from app.models.intelligence_event import IntelligenceEvent, IntelligenceEvidence, IntelligenceTopic
+from app.models.intelligence_event import IntelligenceEvent, IntelligenceTopic
 from app.models.tweet import Tweet
 from app.services.instrument_resolver import verified_ticker_symbols
 
@@ -60,11 +59,6 @@ def _normalized_text(value: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", value.lower())[:260]
 
 
-def _fingerprint(primary_ticker: str, direction: str, kind: str, summary: str) -> str:
-    raw = f"{primary_ticker}|{direction}|{kind}|{_normalized_text(summary)}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
 def _topic_matches(topic: IntelligenceTopic, event: IntelligenceEvent) -> bool:
     if topic.primary_ticker != event.primary_ticker or topic.kind != event.kind:
         return False
@@ -85,11 +79,12 @@ def _refresh_topic(db: Session, topic: IntelligenceTopic) -> None:
         db.delete(topic)
         return
 
-    evidence_rows = list(
+    authors = set(
         db.execute(
-            select(IntelligenceEvidence).where(
-                IntelligenceEvidence.event_id.in_([event.id for event in events])
-            )
+            select(func.lower(Tweet.author_handle))
+            .join(AnalysisResult, AnalysisResult.tweet_id == Tweet.id)
+            .join(IntelligenceEvent, IntelligenceEvent.analysis_result_id == AnalysisResult.id)
+            .where(IntelligenceEvent.id.in_([event.id for event in events]))
         ).scalars()
     )
     latest = events[-1]
@@ -99,7 +94,6 @@ def _refresh_topic(db: Session, topic: IntelligenceTopic) -> None:
         and bool(previous_directions)
         and previous_directions[-1] != latest.direction
     )
-    authors = {evidence.author.lower() for evidence in evidence_rows}
     if reversed_direction:
         lifecycle = "reversed"
     elif len(authors) >= 3:
@@ -129,7 +123,6 @@ def _refresh_topic(db: Session, topic: IntelligenceTopic) -> None:
     topic.key_points = _unique_strings([value for event in events for value in (event.key_points or [])])
     topic.lifecycle = lifecycle
     topic.event_count = len(events)
-    topic.evidence_count = len(evidence_rows)
     topic.source_count = max(1, len(authors))
     topic.first_seen_at = events[0].published_at
     topic.last_seen_at = latest.published_at
@@ -265,8 +258,7 @@ def project_analysis_to_intelligence_event(
     credibility = float(blogger.credibility_score if blogger else 50.0)
 
     created = existing is None
-    event = existing or IntelligenceEvent(analysis_result_id=analysis.id, tweet_id=tweet.id)
-    event.tweet_id = tweet.id
+    event = existing or IntelligenceEvent(analysis_result_id=analysis.id)
     event.kind = kind
     event.title = title
     event.summary = summary
@@ -279,38 +271,10 @@ def project_analysis_to_intelligence_event(
     event.risk_factors = risk_factors
     event.key_points = key_points
     event.published_at = tweet.published_at
-    event.fingerprint = _fingerprint(primary_ticker, direction, kind, summary)
-    event.model_used = analysis.model_used
-    event.pipeline_version = analysis.pipeline_version
     event.projection_version = PROJECTION_VERSION
     event.status = "active"
     if created:
         db.add(event)
-    db.flush()
-
-    evidence = db.execute(
-        select(IntelligenceEvidence).where(
-            IntelligenceEvidence.event_id == event.id,
-            IntelligenceEvidence.source_type == "tweet",
-            IntelligenceEvidence.source_id == str(tweet.id),
-        )
-    ).scalar_one_or_none()
-    if evidence is None:
-        evidence = IntelligenceEvidence(
-            event_id=event.id,
-            source_type="tweet",
-            source_id=str(tweet.id),
-            author=tweet.author_handle,
-            published_at=tweet.published_at,
-            excerpt=tweet.content[:500],
-            source_url=f"https://x.com/{tweet.author_handle.lstrip('@')}/status/{tweet.tweet_id}",
-        )
-        db.add(evidence)
-    else:
-        evidence.author = tweet.author_handle
-        evidence.published_at = tweet.published_at
-        evidence.excerpt = tweet.content[:500]
-        evidence.source_url = f"https://x.com/{tweet.author_handle.lstrip('@')}/status/{tweet.tweet_id}"
     db.flush()
 
     topic = _assign_event_to_topic(db, event)

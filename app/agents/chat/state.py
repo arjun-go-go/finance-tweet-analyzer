@@ -2,8 +2,7 @@ from langgraph.graph import MessagesState
 
 
 class AgentState(MessagesState):
-    user_profile: dict
-    user_prefs: dict
+    research_scope: dict
     consecutive_tool_failures: int = 0
     memories: list
     tool_route: str = "read_only"

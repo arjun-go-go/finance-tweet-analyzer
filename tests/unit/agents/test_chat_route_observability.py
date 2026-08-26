@@ -15,18 +15,18 @@ def test_route_tools_node_records_structured_route_decision(monkeypatch):
     monkeypatch.setattr(tool_executor, "record_tool_route_decision", fake_record)
 
     result = chat_agent.route_tools_node(
-        {"messages": [HumanMessage(content="生成一份 TSLA 日报")]},
+        {"messages": [HumanMessage(content="市场怎么看 TSLA？")]},
         {
             "metadata": {"user_id": "user-1"},
             "configurable": {"thread_id": "conv-1"},
         },
     )
 
-    assert result["tool_route"] == "report"
+    assert result["tool_route"] == "public_signals"
     assert captured == {
-        "route": "report",
+        "route": "public_signals",
         "allowed_tool_names": result["allowed_tool_names"],
-        "message": "生成一份 TSLA 日报",
+        "message": "市场怎么看 TSLA？",
         "user_id": "user-1",
         "thread_id": "conv-1",
     }

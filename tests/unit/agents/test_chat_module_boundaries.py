@@ -18,12 +18,11 @@ def test_tool_result_helpers_live_in_dedicated_module_and_are_reexported():
 def test_routing_helpers_live_in_dedicated_module_and_are_reexported():
     assert chat_agent._classify_tool_route is routing.classify_tool_route
     assert chat_agent._latest_human_text is routing.latest_human_text
-    assert chat_agent._has_explicit_report_confirmation is routing.has_explicit_report_confirmation
     assert chat_agent._has_explicit_ingest_confirmation is routing.has_explicit_ingest_confirmation
 
-    route, tools = routing.classify_tool_route("生成 BTC 本周报告")
-    assert route == "report"
-    assert "generate_tracking_report" in tools
+    route, tools = routing.classify_tool_route("市场怎么看 BTC？")
+    assert route == "public_signals"
+    assert tools == ["search_public_signals"]
 
 
 def test_latest_human_text_ignores_non_human_messages():

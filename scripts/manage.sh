@@ -9,7 +9,7 @@ BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
-CELERY_QUEUES="${CELERY_QUEUES:-analysis,prediction,ingest,embed,report,default}"
+CELERY_QUEUES="${CELERY_QUEUES:-analysis,prediction,ingest,embed,vision,default}"
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -214,7 +214,7 @@ Usage:
   bash scripts/manage.sh logs [backend|frontend|worker|beat|all]
 
 Environment overrides:
-  BACKEND_PORT=8000 FRONTEND_PORT=3000 CELERY_QUEUES=analysis,prediction,ingest,embed,report,default
+  BACKEND_PORT=8000 FRONTEND_PORT=3000 CELERY_QUEUES=analysis,prediction,ingest,embed,vision,default
 EOF
 }
 

@@ -295,5 +295,5 @@ def chunk_analysis(text: str, chunk_size: int) -> list[str]:
 
 
 def char_count(s: str) -> int:
-    """字符计数，用于写入 doc_chunks 表的 char_count 字段。"""
+    """字符计数，用于写入 content_chunks 表的 char_count 字段。"""
     return len(s) if s else 0

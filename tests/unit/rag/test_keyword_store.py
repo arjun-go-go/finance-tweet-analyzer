@@ -94,7 +94,7 @@ def test_rag_index_body_uses_ik_analyzers_for_content_and_title():
     assert body["mappings"]["properties"]["index_stage"] == {"type": "keyword"}
 
 
-def test_search_query_filters_public_and_current_user_private_chunks():
+def test_search_query_applies_blogger_and_time_filters():
     client = FakeClient()
     store = ElasticsearchKeywordStore(client=client, index_name="finance_rag_chunks")
 
@@ -114,26 +114,18 @@ def test_search_query_filters_public_and_current_user_private_chunks():
     assert {"terms": {"blogger_handle": ["satoshi"]}} in filters
     assert {"range": {"published_at": {"gte": "2026-01-01T00:00:00+00:00"}}} in filters
     assert {"range": {"published_at": {"lte": "2026-01-31T00:00:00+00:00"}}} in filters
-    visibility_filter = filters[0]["bool"]["should"]
-    assert {"term": {"visibility": "public"}} in visibility_filter
-    assert {
-        "bool": {
-            "must": [
-                {"term": {"visibility": "private"}},
-                {"term": {"user_id": "10000000-0000-0000-0000-000000000001"}},
-            ]
-        }
-    } in visibility_filter
+    assert "visibility" not in str(filters)
+    assert "user_id" not in str(filters)
 
 
-def test_search_query_without_user_id_only_searches_public_chunks():
+def test_search_query_without_optional_filters_searches_signal_index():
     client = FakeClient()
     store = ElasticsearchKeywordStore(client=client, index_name="finance_rag_chunks")
 
     store.search(query_text="BTC", user_id=None)
 
     filters = client.search_calls[0]["query"]["function_score"]["query"]["bool"]["filter"]
-    assert filters[0] == {"term": {"visibility": "public"}}
+    assert filters == []
 
 
 def test_search_query_uses_weighted_fields_stage_boost_and_time_decay():
@@ -292,34 +284,33 @@ def test_switch_alias_replaces_old_version_with_new_version():
     }
 
 
-def test_chunk_to_es_document_derives_visibility_and_fields():
+def test_chunk_to_es_document_projects_canonical_source_fields():
     class Chunk:
         id = UUID("20000000-0000-0000-0000-000000000001")
-        document_id = UUID("30000000-0000-0000-0000-000000000001")
+        source_type = "analysis"
+        source_id = "30000000-0000-0000-0000-000000000001"
+        index_stage = "analysis"
         chunk_index = 2
         content = "content"
         metadata_ = {
-            "source_type": "document",
-            "title": "Report",
-            "source_uri": "https://example.com/report",
+            "title": "Tweet analysis",
+            "url": "https://x.com/example/status/1",
             "tickers": "BTC,ETH",
         }
         created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-    doc = chunk_to_es_document(
-        Chunk(),
-        user_id=UUID("10000000-0000-0000-0000-000000000001"),
-    )
+    doc = chunk_to_es_document(Chunk())
 
     assert doc["chunk_id"] == "20000000-0000-0000-0000-000000000001"
-    assert doc["document_id"] == "30000000-0000-0000-0000-000000000001"
-    assert doc["user_id"] == "10000000-0000-0000-0000-000000000001"
-    assert doc["visibility"] == "private"
-    assert doc["source_type"] == "document"
+    assert doc["source_id"] == "30000000-0000-0000-0000-000000000001"
+    assert doc["source_type"] == "analysis"
+    assert doc["index_stage"] == "analysis"
     assert doc["tickers"] == ["BTC", "ETH"]
     assert doc["ticker"] == "BTC"
-    assert doc["title"] == "Report"
-    assert doc["url"] == "https://example.com/report"
+    assert doc["title"] == "Tweet analysis"
+    assert doc["url"] == "https://x.com/example/status/1"
+    assert "user_id" not in doc
+    assert "document_id" not in doc
 
 
 def test_delete_by_source_deletes_matching_source_documents():

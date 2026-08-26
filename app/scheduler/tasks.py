@@ -14,8 +14,7 @@ from uuid import UUID
 
 from app.core.deps import SessionLocal
 from app.models.analysis import AnalysisResult
-from app.models.doc_chunk import DocChunk
-from app.models.document import Document
+from app.models.content_chunk import ContentChunk
 from app.models.index_job import IndexJob
 from app.models.tweet import Tweet
 from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
@@ -27,12 +26,10 @@ from app.scheduler.locks import (
     try_acquire_fetch_lock,
     release_fetch_lock,
 )
-from app.services.analysis_job_service import run_user_analysis_job
 from app.services.analysis_service import (
     analysis_eligible_clause,
     analyze_by_blogger,
     analyze_single_tweet,
-    reset_analysis_state,
 )
 from app.services.tweet_state_service import (
     ANALYSIS_READY_STATES,
@@ -204,11 +201,11 @@ def _record_index_jobs(
     for chunk in chunks:
         previous_attempts = 0
         if hasattr(db, "get"):
-            existing = db.get(IndexJob, {"doc_chunk_id": chunk.id, "target": target})
+            existing = db.get(IndexJob, {"content_chunk_id": chunk.id, "target": target})
             previous_attempts = getattr(existing, "attempts", 0) if existing else 0
         db.merge(
             IndexJob(
-                doc_chunk_id=chunk.id,
+                content_chunk_id=chunk.id,
                 target=target,
                 status=status,
                 attempts=previous_attempts + attempts,
@@ -219,14 +216,14 @@ def _record_index_jobs(
         db.flush()
 
 
-def _best_effort_upsert_es_chunks(chunks, user_id=None, db=None) -> dict:
-    """Best-effort Elasticsearch upsert for DocChunk-like rows."""
+def _best_effort_upsert_es_chunks(chunks, db=None) -> dict:
+    """Best-effort Elasticsearch upsert for ContentChunk-like rows."""
     chunk_list = list(chunks or [])
     stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
     if not chunk_list:
         return stats
     try:
-        docs = [chunk_to_es_document(chunk, user_id=user_id) for chunk in chunk_list]
+        docs = [chunk_to_es_document(chunk) for chunk in chunk_list]
         indexed, errors = get_keyword_store().bulk_upsert_documents(docs)
         stats["indexed"] = int(indexed or 0)
         stats["errors"] = len(errors or [])
@@ -255,13 +252,13 @@ def _best_effort_upsert_es_chunks(chunks, user_id=None, db=None) -> dict:
     return stats
 
 
-def _upsert_es_chunks_to_index(chunks, *, index_name: str, user_id=None) -> dict:
+def _upsert_es_chunks_to_index(chunks, *, index_name: str) -> dict:
     chunk_list = list(chunks or [])
     stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
     if not chunk_list:
         return stats
     try:
-        docs = [chunk_to_es_document(chunk, user_id=user_id) for chunk in chunk_list]
+        docs = [chunk_to_es_document(chunk) for chunk in chunk_list]
         indexed, errors = get_keyword_store().bulk_upsert_documents_to_index(
             docs,
             index_name=index_name,
@@ -278,9 +275,9 @@ def _delete_existing_source_chunks(db, source_type: str, source_id: str) -> dict
     """Delete old PG/ES chunks for a source before rewriting it."""
     stats = {"pg_deleted": 0, "es_deleted": 0}
     existing_chunks = db.execute(
-        select(DocChunk).where(
-            DocChunk.metadata_["source_type"].astext == source_type,
-            DocChunk.metadata_["source_id"].astext == str(source_id),
+        select(ContentChunk).where(
+            ContentChunk.source_type == source_type,
+            ContentChunk.source_id == str(source_id),
         )
     ).scalars().all()
     for chunk in existing_chunks:
@@ -375,126 +372,6 @@ def auto_analysis_task(self) -> dict:
 
     logger.info("[Celery] Auto-analysis completed: %s", stats)
     return stats
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.manual_analysis_task",
-    acks_late=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=300,
-    max_retries=3,
-)
-def manual_analysis_task(
-    self,
-    blogger_handles: list[str],
-    reanalyze: bool = False,
-    since: str | None = None,
-) -> dict:
-    """智能助手手动触发的分析任务，支持指定博主/重分析/时间范围。"""
-    from datetime import datetime, timedelta, timezone
-
-    logger.info(
-        "[Celery] Manual analysis: handles=%s reanalyze=%s since=%s",
-        blogger_handles, reanalyze, since,
-    )
-
-    db = SessionLocal()
-    stats = {
-        "total_bloggers": 0,
-        "attempted": 0,
-        "analyzed": 0,
-        "retrying": 0,
-        "failed": 0,
-        "skipped": 0,
-        "errors": 0,
-    }
-
-    try:
-        since_dt = None
-        if since:
-            amount = int(since[:-1])
-            unit = since[-1]
-            delta = {"d": timedelta(days=amount), "w": timedelta(weeks=amount), "h": timedelta(hours=amount)}.get(unit)
-            if delta:
-                since_dt = datetime.now(timezone.utc) - delta
-
-        for handle in blogger_handles:
-            acquired, lock_token = try_acquire(handle)
-            if not acquired:
-                logger.info("[Celery] Skipping %s — locked", handle)
-                stats["skipped"] += 1
-                continue
-
-            try:
-                if reanalyze:
-                    query = select(Tweet).where(Tweet.author_handle == handle)
-                    if since_dt:
-                        query = query.where(Tweet.published_at >= since_dt)
-                    tweets_to_reset = db.execute(query).scalars().all()
-                    if not tweets_to_reset:
-                        stats["skipped"] += 1
-                        continue
-                    for tweet in tweets_to_reset:
-                        reset_analysis_state(tweet)
-                    db.commit()
-
-                result = analyze_by_blogger(db, handle, since=since_dt)
-                if result.get("attempted", 0) == 0:
-                    stats["skipped"] += 1
-                    continue
-                logger.info("[Celery] Manual done %s: analyzed=%d", handle, result["analyzed"])
-                stats["attempted"] += result.get("attempted", 0)
-                stats["analyzed"] += result.get("analyzed", 0)
-                stats["retrying"] += result.get("retrying", 0)
-                stats["failed"] += result.get("failed", 0)
-            except Exception as e:
-                db.rollback()
-                logger.error("[Celery] Manual error %s: %s", handle, e)
-                stats["errors"] += 1
-            finally:
-                release(handle, lock_token)
-
-        stats["total_bloggers"] = len(blogger_handles)
-    except Exception as e:
-        logger.error("[Celery] Manual analysis unexpected error: %s", e)
-        raise
-    finally:
-        db.close()
-
-    logger.info("[Celery] Manual analysis completed: %s", stats)
-    return stats
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.user_analysis_job_task",
-    acks_late=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=300,
-    max_retries=2,
-)
-def user_analysis_job_task(self, job_id: str) -> dict:
-    """Run a durable user-requested analysis job by id."""
-    from uuid import UUID
-
-    from app.core.config import settings as cfg
-
-    db = SessionLocal()
-    try:
-        result = run_user_analysis_job(
-            db,
-            UUID(job_id),
-            pipeline_version=cfg.user_analysis_pipeline_version,
-            analyze_single_tweet=analyze_single_tweet,
-            analyze_by_blogger=analyze_by_blogger,
-        )
-        logger.info("[Celery] User analysis job %s: %s", job_id, result)
-        return result
-    finally:
-        db.close()
 
 
 @shared_task(
@@ -696,170 +573,6 @@ def prediction_batch_task(self) -> dict:
     return stats
 
 
-def _resolve_text(doc) -> str:
-    """Resolve the document's text content based on its source_type.
-
-    - paste/url/txt: UTF-8 text stored in object storage
-    - md/pdf/docx: original file stored in object storage and parsed here
-    """
-    from app.core.config import settings
-    from app.rag.parsers.docx_parser import parse_docx
-    from app.rag.parsers.markdown_parser import parse_markdown
-    from app.rag.parsers.paste_parser import parse_paste
-    from app.rag.parsers.pdf_parser import parse_pdf
-    from app.rag.storage import DocumentStorage
-
-    storage = DocumentStorage()
-    extension = {
-        "paste": ".txt",
-        "url": ".txt",
-        "txt": ".txt",
-        "md": ".md",
-        "markdown": ".md",
-        "pdf": ".pdf",
-        "docx": ".docx",
-    }.get(doc.source_type)
-    if extension is None:
-        raise ValueError(f"Unknown source_type: {doc.source_type}")
-    key = doc.storage_key or storage.derived_key(doc.user_id, doc.id, extension)
-    content = storage.load(key)
-    if doc.source_type in ("paste", "url", "txt"):
-        return parse_paste(content.decode("utf-8")).text
-    if doc.source_type in ("md", "markdown"):
-        return parse_markdown(content).text
-    if doc.source_type == "pdf":
-        return parse_pdf(content).text
-    return parse_docx(content).text
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.ingest_document_task",
-    acks_late=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=300,
-    max_retries=3,
-)
-def ingest_document_task(self, document_id: str) -> dict:
-    """Parse, chunk, embed, and index a document into the vector store."""
-    from hashlib import sha256
-    from uuid import UUID
-
-    from app.core.config import settings
-    from app.models.doc_chunk import DocChunk
-    from app.models.document import Document
-    from app.rag.chunking import chunk_document
-    from app.rag.embeddings import get_embedder
-    from app.rag.repository import Chunk, UserDocumentRepository
-    from app.rag.vector_store import get_vector_store
-
-    db = SessionLocal()
-    try:
-        doc = db.get(Document, UUID(document_id))
-        if not doc or doc.status == "deleted":
-            return {"skipped": True}
-
-        doc.status = "processing"
-        db.commit()
-
-        text = _resolve_text(doc)
-        chunks = chunk_document(
-            text,
-            chunk_size=settings.chunk_size_document,
-            chunk_overlap=settings.chunk_overlap_document,
-        )
-
-        # Normalize tickers: can be ["BTC"] or [{"symbol":"NOK",...}]
-        ticker_items = doc.tickers or []
-        ticker_symbols = [
-            (t["symbol"] if isinstance(t, dict) and "symbol" in t else str(t)).upper()
-            for t in ticker_items
-        ]
-        tickers_str = ",".join(ticker_symbols) if ticker_symbols else ""
-
-        rows = [
-            DocChunk(
-                document_id=doc.id,
-                chunk_index=i,
-                content=c,
-                content_hash=sha256(c.encode("utf-8")).hexdigest(),
-                char_count=len(c),
-                metadata_={
-                    k: v
-                    for k, v in {
-                        "title": doc.title,
-                        "source_type": doc.source_type,
-                        "source_uri": doc.source_uri,
-                        "tickers": tickers_str or None,
-                        "publish_date": doc.publish_date.isoformat() if doc.publish_date else None,
-                    }.items()
-                    if v is not None
-                },
-            )
-            for i, c in enumerate(chunks)
-        ]
-        db.add_all(rows)
-        db.flush()
-
-        for row in rows:
-            row.vector_id = f"{doc.id}:{row.chunk_index}"
-        doc.chunk_count = len(rows)
-        doc.status = "indexing"
-        _record_index_jobs(db, rows, target="milvus", status="pending", attempts=0)
-        _record_index_jobs(db, rows, target="elasticsearch", status="pending", attempts=0)
-        db.commit()
-
-        milvus_error = None
-        try:
-            repo = UserDocumentRepository(get_vector_store(), get_embedder())
-            repo.add_chunks(
-                user_id=doc.user_id,
-                document_id=doc.id,
-                chunks=[
-                    Chunk(chunk_index=r.chunk_index, content=r.content, metadata=r.metadata_)
-                    for r in rows
-                ],
-            )
-            _record_index_jobs(db, rows, target="milvus", status="success", attempts=1)
-        except Exception as exc:
-            milvus_error = str(exc)[:1000]
-            _record_index_jobs(
-                db,
-                rows,
-                target="milvus",
-                status="failed",
-                attempts=1,
-                error_message=milvus_error,
-            )
-
-        es_stats = _best_effort_upsert_es_chunks(rows, user_id=doc.user_id, db=db)
-        doc.status = "indexed" if not milvus_error and not es_stats["errors"] else "partial"
-        doc.error_detail = milvus_error or (
-            "Elasticsearch indexing failed" if es_stats["errors"] else None
-        )
-        db.commit()
-        return {
-            "document_id": str(doc.id),
-            "chunks": len(rows),
-            "milvus": {"errors": len(rows) if milvus_error else 0},
-            "es": es_stats,
-        }
-    except Exception as e:
-        db.rollback()
-        try:
-            doc = db.get(Document, UUID(document_id))
-            if doc:
-                doc.status = "failed"
-                doc.error_detail = str(e)[:1000]
-                db.commit()
-        except Exception:
-            pass
-        raise
-    finally:
-        db.close()
-
-
 @shared_task(
     bind=True,
     name="app.scheduler.tasks.embed_signal_task",
@@ -875,7 +588,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
     from uuid import UUID
 
     from app.core.config import settings
-    from app.models.doc_chunk import DocChunk
+    from app.models.content_chunk import ContentChunk
     from app.rag.chunking import chunk_analysis, chunk_tweet
     from app.rag.embeddings import get_embedder
     from app.rag.vector_store import get_vector_store
@@ -1031,9 +744,16 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         for i, chunk_text in enumerate(chunks):
             content_hash = sha256(chunk_text.encode("utf-8")).hexdigest()
             vector_id = f"{source_type}:{source_id}:{i}"
-            meta = {**metadata_base, "ticker": tickers_str}
-            row = DocChunk(
-                document_id=None,
+            index_stage = str(metadata_base["index_stage"])
+            meta = {
+                key: value
+                for key, value in {**metadata_base, "ticker": tickers_str}.items()
+                if key not in {"source_type", "source_id", "index_stage"}
+            }
+            row = ContentChunk(
+                source_type=source_type,
+                source_id=str(source_id),
+                index_stage=index_stage,
                 chunk_index=i,
                 content=chunk_text,
                 content_hash=content_hash,
@@ -1053,12 +773,18 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         milvus_error = None
         try:
             for row, vec in zip(rows_to_index, vectors):
+                vector_metadata = {
+                    **row.metadata_,
+                    "source_type": row.source_type,
+                    "source_id": row.source_id,
+                    "index_stage": row.index_stage,
+                }
                 vs.add(
                     "public_signals",
                     ids=[row.vector_id],
                     texts=[row.content],
                     embeddings=[vec],
-                    metadatas=[row.metadata_],
+                    metadatas=[vector_metadata],
                 )
             _record_index_jobs(
                 db,
@@ -1097,160 +823,28 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
 
 @shared_task(
     bind=True,
-    name="app.scheduler.tasks.scan_due_tracking_task",
-    acks_late=True,
-)
-def scan_due_tracking_task(self) -> dict:
-    """Scan for tracked tickers with next_run_at <= now, dispatch report tasks."""
-    from app.services.tracking_service import (
-        get_due_subscriptions,
-        recover_stale_tracking_reports,
-    )
-
-    db = SessionLocal()
-    stats = {"dispatched": 0, "recovered": 0}
-    try:
-        stats["recovered"] = recover_stale_tracking_reports(db)
-        due = get_due_subscriptions(db)
-        for record in due:
-            from app.services.tracking_service import queue_tracking_report
-
-            report = queue_tracking_report(db, record, manual=False)
-            if report.status == "generating":
-                stats["dispatched"] += 1
-    finally:
-        db.close()
-    logger.info("[Celery] scan_due_tracking: %s", stats)
-    return stats
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.scheduled_report_task",
-    acks_late=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=300,
-    max_retries=3,
-)
-def scheduled_report_task(self, tracking_id: str) -> dict:
-    """Legacy entrypoint: queue a scheduled report through the outbox pipeline."""
-    from uuid import UUID
-
-    from app.models.tracked_ticker import TrackedTicker
-    from app.services.tracking_service import queue_tracking_report
-
-    db = SessionLocal()
-    try:
-        record = db.get(TrackedTicker, UUID(tracking_id))
-        if not record or record.status != "active":
-            return {"skipped": True}
-
-        report = queue_tracking_report(db, record, manual=False)
-        return {"report_id": str(report.id), "status": report.status}
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.report_streaming_task",
-    acks_late=True,
-    max_retries=0,  # 失败不重试：用户已看到流式中断，重跑应由用户触发
-)
-def report_streaming_task(self, report_id: str, user_id: str, query: str) -> dict:
-    """跑流式报告生成；通过 Redis pub/sub 推 SSE，增量写库。"""
-    from uuid import UUID
-
-    from app.services.report_streaming import run_report_streaming
-
-    db = SessionLocal()
-    try:
-        return run_report_streaming(
-            db=db,
-            report_id=UUID(report_id),
-            user_id=UUID(user_id),
-            query=query,
-        )
-    finally:
-        db.close()
-
-
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.gc_vector_task",
-    acks_late=True,
-)
-def gc_vector_task(self) -> dict:
-    """Clean up vectors for soft-deleted documents older than 24h."""
-    from datetime import datetime, timedelta, timezone
-
-    from app.models.doc_chunk import DocChunk
-    from app.models.document import Document
-    from app.rag.vector_store import get_vector_store
-
-    db = SessionLocal()
-    stats = {"cleaned": 0}
-    try:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        deleted_docs = db.execute(
-            select(Document).where(
-                Document.status == "deleted",
-                Document.updated_at <= cutoff,
-            )
-        ).scalars().all()
-
-        vs = get_vector_store()
-        for doc in deleted_docs:
-            chunks = db.execute(
-                select(DocChunk).where(DocChunk.document_id == doc.id)
-            ).scalars().all()
-            vector_ids = [c.vector_id for c in chunks if c.vector_id]
-            if vector_ids:
-                vs.delete("user_documents", vector_ids)
-            for c in chunks:
-                db.delete(c)
-            db.delete(doc)
-            stats["cleaned"] += 1
-
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-    logger.info("[Celery] gc_vector: %s", stats)
-    return stats
-
-
-@shared_task(
-    bind=True,
     name="app.scheduler.tasks.backfill_signals_task",
     acks_late=True,
 )
 def backfill_signals_task(self, batch_size: int = 100) -> dict:
     """回填历史原始推文的向量化。
 
-    扫描有正文但尚未在 doc_chunks 中有 source_type='tweet' 记录的推文，
+    扫描有正文但尚未在 content_chunks 中有 source_type='tweet' 记录的推文，
     分批 dispatch embed_signal_task 避免队列积压。
 
     可通过 Celery Beat 定期执行，也可手动触发：
       backfill_signals_task.delay(batch_size=200)
     """
-    from app.models.doc_chunk import DocChunk
+    from app.models.content_chunk import ContentChunk
 
     db = SessionLocal()
     stats = {"dispatched": 0, "already_indexed": 0}
     try:
         # 找出所有有正文但未向量化的推文
-        # 子查询：已有 tweet 类型 doc_chunk 的 source_id 集合
+        # 子查询：已有 tweet 类型 content_chunk 的 source_id 集合
         indexed_subq = (
-            select(DocChunk.metadata_["source_id"].astext)
-            .where(DocChunk.metadata_["source_type"].astext == "tweet")
+            select(ContentChunk.source_id)
+            .where(ContentChunk.source_type == "tweet")
             .scalar_subquery()
         )
 
@@ -1283,20 +877,20 @@ def backfill_signals_task(self, batch_size: int = 100) -> dict:
 def backfill_analysis_signals_task(self, batch_size: int = 100) -> dict:
     """回填历史分析结果的向量化。
 
-    扫描 analysis_type='tweet_analysis' 且尚未在 doc_chunks 中有
+    扫描 analysis_type='tweet_analysis' 且尚未在 content_chunks 中有
     source_type='analysis' 记录的分析结果，分批 dispatch embed_signal_task。
 
     手动触发：
       backfill_analysis_signals_task.delay(batch_size=200)
     """
-    from app.models.doc_chunk import DocChunk
+    from app.models.content_chunk import ContentChunk
 
     db = SessionLocal()
     stats = {"dispatched": 0}
     try:
         indexed_subq = (
-            select(DocChunk.metadata_["source_id"].astext)
-            .where(DocChunk.metadata_["source_type"].astext == "analysis")
+            select(ContentChunk.source_id)
+            .where(ContentChunk.source_type == "analysis")
             .scalar_subquery()
         )
 
@@ -1332,42 +926,25 @@ def reindex_elasticsearch_chunks_task(
     source_type: str | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """Reindex existing doc_chunks into the approved Elasticsearch RAG index."""
+    """Reindex existing content_chunks into the approved Elasticsearch RAG index."""
     db = SessionLocal()
     stats = {"scanned": 0, "attempted": 0, "indexed": 0, "errors": 0, "dry_run": dry_run}
     try:
-        stmt = (
-            select(DocChunk, Document.user_id)
-            .outerjoin(Document, DocChunk.document_id == Document.id)
-            .order_by(DocChunk.created_at.asc(), DocChunk.id.asc())
-            .limit(batch_size)
-        )
+        stmt = select(ContentChunk).order_by(
+            ContentChunk.created_at.asc(), ContentChunk.id.asc()
+        ).limit(batch_size)
         if source_type:
-            stmt = stmt.where(DocChunk.metadata_["source_type"].astext == source_type)
+            stmt = stmt.where(ContentChunk.source_type == source_type)
 
-        rows = db.execute(stmt).all()
+        rows = list(db.execute(stmt).scalars())
         stats["scanned"] = len(rows)
         if dry_run or not rows:
             return stats
 
-        public_chunks = []
-        private_by_user = {}
-        for chunk, user_id in rows:
-            if user_id:
-                private_by_user.setdefault(user_id, []).append(chunk)
-            else:
-                public_chunks.append(chunk)
-
-        for user_id, chunks in private_by_user.items():
-            result = _best_effort_upsert_es_chunks(chunks, user_id=user_id, db=db)
-            stats["attempted"] += result["attempted"]
-            stats["indexed"] += result["indexed"]
-            stats["errors"] += result["errors"]
-        if public_chunks:
-            result = _best_effort_upsert_es_chunks(public_chunks, db=db)
-            stats["attempted"] += result["attempted"]
-            stats["indexed"] += result["indexed"]
-            stats["errors"] += result["errors"]
+        result = _best_effort_upsert_es_chunks(rows, db=db)
+        stats["attempted"] += result["attempted"]
+        stats["indexed"] += result["indexed"]
+        stats["errors"] += result["errors"]
 
         db.commit()
         return stats
@@ -1375,105 +952,19 @@ def reindex_elasticsearch_chunks_task(
         db.close()
 
 
-@shared_task(
-    bind=True,
-    name="app.scheduler.tasks.deep_research_task",
-    acks_late=True,
-    max_retries=0,
-)
-def deep_research_task(self, topic_id: str, user_id: str) -> dict:
-    """Run one durable research topic and persist evidence/conclusion versions."""
-    from app.agents.deep_research import deep_research_graph
-    from app.models.research import ResearchTopic
-    from app.schemas.research import ResearchConclusionCreate, ResearchEvidenceCreate
-    from app.services import research_service
-
-    db = SessionLocal()
-    try:
-        topic = db.get(ResearchTopic, UUID(topic_id))
-        if not topic or str(topic.user_id) != user_id:
-            return {"status": "skipped", "reason": "not_found"}
-        topic.status = "running"
-        db.commit()
-        result = deep_research_graph.invoke({
-            "user_id": user_id,
-            "question": topic.research_question,
-            "tickers": topic.tickers,
-            "source_scope": topic.source_scope,
-            "evidence": [],
-            "synthesis": {},
-        })
-        for item in result.get("evidence") or []:
-            tickers = item.get("ticker") or []
-            if isinstance(tickers, str):
-                tickers = [part.strip() for part in tickers.split(",") if part.strip()]
-            research_service.add_evidence(db, topic, ResearchEvidenceCreate(
-                evidence_key=item["evidence_id"], source_type=item.get("source_type", "unknown"),
-                source_id=item.get("source_id", ""), tickers=tickers, author=item.get("author", ""),
-                published_at=item.get("published_at"), excerpt=item.get("content", ""),
-                source_url=item.get("source_url", ""), sentiment=item.get("sentiment", ""),
-                verification_status=item.get("verification_status", "indexed"),
-                relevance_score=item.get("relevance_score", 0.0), metadata=item,
-            ))
-        synthesis = result.get("synthesis") or {}
-        research_service.add_conclusion(db, topic, ResearchConclusionCreate(**synthesis))
-        research_service.finish_run(db, topic)
-        return {"status": "done", "topic_id": topic_id, "evidence_count": len(result.get("evidence") or [])}
-    except Exception as exc:
-        db.rollback()
-        topic = db.get(ResearchTopic, UUID(topic_id))
-        if topic:
-            research_service.finish_run(db, topic, error=str(exc)[:1000])
-        return {"status": "failed", "topic_id": topic_id, "error": str(exc)}
-    finally:
-        db.close()
-
-
-@shared_task(bind=True, name="app.scheduler.tasks.scan_due_research_task", acks_late=True)
-def scan_due_research_task(self) -> dict:
-    from datetime import datetime, timezone
-    from app.models.research import ResearchTopic
-    from app.services import research_service
-
-    db = SessionLocal()
-    try:
-        due = list(db.execute(select(ResearchTopic).where(
-            ResearchTopic.monitor_enabled.is_(True),
-            ResearchTopic.status.in_(("active", "failed")),
-            ResearchTopic.next_run_at <= datetime.now(timezone.utc),
-        ).with_for_update(skip_locked=True)).scalars())
-        for topic in due:
-            research_service.queue_run(db, topic)
-        return {"dispatched": len(due)}
-    finally:
-        db.close()
-
-
-def _retry_milvus_chunk(db, chunk: DocChunk) -> None:
+def _retry_milvus_chunk(db, chunk: ContentChunk) -> None:
     from app.rag.embeddings import get_embedder
     from app.rag.vector_store import get_vector_store
 
-    metadata = dict(chunk.metadata_ or {})
-    if chunk.document_id:
-        document = db.get(Document, chunk.document_id)
-        if document is None:
-            raise ValueError("document missing")
-        collection = "user_documents"
-        metadata.update(
-            {
-                "user_id": str(document.user_id),
-                "document_id": str(document.id),
-                "chunk_index": chunk.chunk_index,
-            }
-        )
-        vector_id = chunk.vector_id or f"{document.id}:{chunk.chunk_index}"
-    else:
-        collection = "public_signals"
-        source_type = metadata.get("source_type")
-        source_id = metadata.get("source_id")
-        if not source_type or not source_id:
-            raise ValueError("source metadata missing")
-        vector_id = chunk.vector_id or f"{source_type}:{source_id}:{chunk.chunk_index}"
+    metadata = {
+        **dict(chunk.metadata_ or {}),
+        "source_type": chunk.source_type,
+        "source_id": chunk.source_id,
+        "index_stage": chunk.index_stage,
+        "chunk_index": chunk.chunk_index,
+    }
+    collection = "public_signals"
+    vector_id = chunk.vector_id or f"{chunk.source_type}:{chunk.source_id}:{chunk.chunk_index}"
 
     vector = get_embedder().embed_documents([chunk.content])[0]
     get_vector_store().add(
@@ -1520,10 +1011,10 @@ def retry_failed_index_jobs_task(
                 job.target,
                 {"attempted": 0, "indexed": 0, "errors": 0},
             )
-            chunk = db.get(DocChunk, job.doc_chunk_id)
+            chunk = db.get(ContentChunk, job.content_chunk_id)
             if not chunk:
                 job.status = "failed"
-                job.error_message = "doc_chunk missing"
+                job.error_message = "content_chunk missing"
                 job.attempts = (job.attempts or 0) + 1
                 stats["missing_chunks"] += 1
                 continue
@@ -1531,11 +1022,7 @@ def retry_failed_index_jobs_task(
             stats["attempted"] += 1
             target_stats["attempted"] += 1
             if job.target == "elasticsearch":
-                user_id = None
-                if chunk.document_id:
-                    doc = db.get(Document, chunk.document_id)
-                    user_id = doc.user_id if doc else None
-                result = _best_effort_upsert_es_chunks([chunk], user_id=user_id, db=db)
+                result = _best_effort_upsert_es_chunks([chunk], db=db)
                 stats["indexed"] += result["indexed"]
                 stats["errors"] += result["errors"]
                 target_stats["indexed"] += result["indexed"]
@@ -1590,25 +1077,25 @@ def reconcile_index_jobs_task(self, batch_size: int = 1000) -> dict:
 
     db = SessionLocal()
     stats = {
-        "doc_chunks": 0,
+        "content_chunks": 0,
         "created_jobs": {"elasticsearch": 0, "milvus": 0},
         "elasticsearch_docs": None,
         "milvus_vectors": None,
     }
     try:
-        stats["doc_chunks"] = int(
-            db.execute(select(sa.func.count()).select_from(DocChunk)).scalar() or 0
+        stats["content_chunks"] = int(
+            db.execute(select(sa.func.count()).select_from(ContentChunk)).scalar() or 0
         )
         for target in ("elasticsearch", "milvus"):
             missing = db.execute(
-                select(DocChunk)
+                select(ContentChunk)
                 .where(
                     ~sa.exists().where(
-                        IndexJob.doc_chunk_id == DocChunk.id,
+                        IndexJob.content_chunk_id == ContentChunk.id,
                         IndexJob.target == target,
                     )
                 )
-                .order_by(DocChunk.created_at.asc())
+                .order_by(ContentChunk.created_at.asc())
                 .limit(batch_size)
             ).scalars().all()
             _record_index_jobs(
@@ -1625,7 +1112,6 @@ def reconcile_index_jobs_task(self, batch_size: int = 1000) -> dict:
         vector_store = get_vector_store()
         stats["milvus_vectors"] = {
             "public_signals": vector_store.count("public_signals"),
-            "user_documents": vector_store.count("user_documents"),
         }
         return stats
     except Exception:
@@ -1646,7 +1132,7 @@ def rebuild_elasticsearch_alias_task(
     target_index: str | None = None,
     switch_alias: bool = True,
 ) -> dict:
-    """Build a new versioned ES index from PG doc_chunks and optionally switch alias."""
+    """Build a new versioned ES index from PG content_chunks and optionally switch alias."""
     db = SessionLocal()
     store = get_keyword_store()
     index_name = target_index or store.next_versioned_index_name()
@@ -1663,33 +1149,19 @@ def rebuild_elasticsearch_alias_task(
         stats["created"] = store.create_version_index(index_name)
         offset = 0
         while True:
-            rows = db.execute(
-                select(DocChunk, Document.user_id)
-                .outerjoin(Document, DocChunk.document_id == Document.id)
-                .order_by(DocChunk.created_at.asc(), DocChunk.id.asc())
+            rows = list(db.execute(
+                select(ContentChunk)
+                .order_by(ContentChunk.created_at.asc(), ContentChunk.id.asc())
                 .offset(offset)
                 .limit(batch_size)
-            ).all()
+            ).scalars())
             if not rows:
                 break
             stats["scanned"] += len(rows)
-            private_by_user = {}
-            public_chunks = []
-            for chunk, user_id in rows:
-                if user_id:
-                    private_by_user.setdefault(user_id, []).append(chunk)
-                else:
-                    public_chunks.append(chunk)
-            for user_id, chunks in private_by_user.items():
-                result = _upsert_es_chunks_to_index(chunks, index_name=index_name, user_id=user_id)
-                stats["attempted"] += result["attempted"]
-                stats["indexed"] += result["indexed"]
-                stats["errors"] += result["errors"]
-            if public_chunks:
-                result = _upsert_es_chunks_to_index(public_chunks, index_name=index_name)
-                stats["attempted"] += result["attempted"]
-                stats["indexed"] += result["indexed"]
-                stats["errors"] += result["errors"]
+            result = _upsert_es_chunks_to_index(rows, index_name=index_name)
+            stats["attempted"] += result["attempted"]
+            stats["indexed"] += result["indexed"]
+            stats["errors"] += result["errors"]
             offset += len(rows)
 
         if switch_alias and stats["errors"] == 0:
@@ -1709,23 +1181,21 @@ def rebuild_analysis_chunks_task(self, batch_size: int = 100) -> dict:
     """删除旧 analysis chunks 并重建（修复 str(dict) 噪声内容）。
 
     流程：
-      1. 从 doc_chunks 删除 source_type='analysis' 的所有记录
+      1. 从 content_chunks 删除 source_type='analysis' 的所有记录
       2. 从 ChromaDB public_signals 删除对应向量
       3. 逐批 dispatch embed_signal_task 重新入库
 
     手动触发：
       rebuild_analysis_chunks_task.delay()
     """
-    from app.models.doc_chunk import DocChunk
+    from app.models.content_chunk import ContentChunk
     from app.rag.vector_store import get_vector_store
 
     db = SessionLocal()
     stats = {"deleted_pg": 0, "deleted_vectors": 0, "dispatched": 0}
     try:
         old_chunks = db.execute(
-            select(DocChunk).where(
-                DocChunk.metadata_["source_type"].astext == "analysis"
-            )
+            select(ContentChunk).where(ContentChunk.source_type == "analysis")
         ).scalars().all()
 
         vector_ids = [c.vector_id for c in old_chunks if c.vector_id]
@@ -1769,23 +1239,21 @@ def rebuild_tweet_chunks_task(self) -> dict:
     """删除旧 tweet chunks 并按新切块逻辑（结构感知 + 合并）重建。
 
     流程：
-      1. 从 doc_chunks 删除 source_type='tweet' 的所有记录
+      1. 从 content_chunks 删除 source_type='tweet' 的所有记录
       2. 从 ChromaDB public_signals 删除对应向量
       3. 对每条有 content 的 tweet dispatch embed_signal_task 重新入库
 
     手动触发：
       rebuild_tweet_chunks_task.delay()
     """
-    from app.models.doc_chunk import DocChunk
+    from app.models.content_chunk import ContentChunk
     from app.rag.vector_store import get_vector_store
 
     db = SessionLocal()
     stats = {"deleted_pg": 0, "deleted_vectors": 0, "dispatched": 0}
     try:
         old_chunks = db.execute(
-            select(DocChunk).where(
-                DocChunk.metadata_["source_type"].astext == "tweet"
-            )
+            select(ContentChunk).where(ContentChunk.source_type == "tweet")
         ).scalars().all()
 
         vector_ids = [c.vector_id for c in old_chunks if c.vector_id]

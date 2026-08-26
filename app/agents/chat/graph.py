@@ -6,7 +6,6 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.chat.nodes.agent import agent_node_impl, build_prompt_from_state
 from app.agents.chat.nodes.context import init_context_node_impl
 from app.agents.chat.nodes.memory import (
-    extract_preferences_node_impl,
     mem0_recall_node_impl,
     mem0_store_node_impl,
 )
@@ -66,15 +65,11 @@ def mem0_store_node(state: AgentState, config: RunnableConfig) -> dict:
     return mem0_store_node_impl(state, config, get_client=get_mem0_client)
 
 
-def extract_preferences_node(state: AgentState, config: RunnableConfig) -> dict:
-    return extract_preferences_node_impl(state, config)
-
-
 def should_continue(state: AgentState) -> str:
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
-    return "extract_preferences"
+    return "mem0_store"
 
 
 def build_chat_agent(checkpointer=None):
@@ -84,7 +79,6 @@ def build_chat_agent(checkpointer=None):
     graph.add_node("route_tools", route_tools_node)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
-    graph.add_node("extract_preferences", extract_preferences_node)
     graph.add_node("mem0_store", mem0_store_node)
 
     graph.add_edge(START, "init")
@@ -94,9 +88,8 @@ def build_chat_agent(checkpointer=None):
     graph.add_conditional_edges(
         "agent",
         should_continue,
-        ["tools", "extract_preferences"],
+        ["tools", "mem0_store"],
     )
     graph.add_edge("tools", "agent")
-    graph.add_edge("extract_preferences", "mem0_store")
     graph.add_edge("mem0_store", END)
     return graph.compile(checkpointer=checkpointer)

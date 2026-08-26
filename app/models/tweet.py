@@ -15,7 +15,7 @@ class Tweet(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    tweet_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    tweet_id: Mapped[str] = mapped_column(String(64), unique=True)
     author_handle: Mapped[str] = mapped_column(String(128), index=True)
     author_name: Mapped[str] = mapped_column(String(256), default="")
     content: Mapped[str] = mapped_column(Text)

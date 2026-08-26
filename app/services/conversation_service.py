@@ -44,7 +44,7 @@ def release_conversation_lock(db: Session, conversation_id: uuid.UUID) -> None:
 
 def create_conversation(
     db: Session,
-    user_id: str,
+    user_id: uuid.UUID,
     title: str | None = None,
     metadata: dict | None = None,
 ) -> Conversation:
@@ -71,7 +71,7 @@ def create_conversation(
 
 def list_conversations(
     db: Session,
-    user_id: str,
+    user_id: uuid.UUID,
     status: str = "active",
     limit: int = 20,
     cursor: str | None = None,
@@ -97,7 +97,7 @@ def list_conversations(
 
 
 def get_conversation(
-    db: Session, conversation_id: uuid.UUID, user_id: str
+    db: Session, conversation_id: uuid.UUID, user_id: uuid.UUID
 ) -> Conversation | None:
     conv = db.get(Conversation, conversation_id)
     if conv is None or conv.user_id != user_id:
@@ -110,7 +110,7 @@ def get_conversation(
 def update_conversation(
     db: Session,
     conversation_id: uuid.UUID,
-    user_id: str,
+    user_id: uuid.UUID,
     title: str | None = None,
     metadata: dict | None = None,
 ) -> Conversation | None:
@@ -127,7 +127,7 @@ def update_conversation(
 
 
 def delete_conversation(
-    db: Session, conversation_id: uuid.UUID, user_id: str
+    db: Session, conversation_id: uuid.UUID, user_id: uuid.UUID
 ) -> bool:
     conv = get_conversation(db, conversation_id, user_id)
     if conv is None:
@@ -154,25 +154,19 @@ def save_message(
     db: Session,
     message_id: uuid.UUID,
     conversation_id: uuid.UUID,
-    user_id: str,
     role: str,
     content: str,
     sequence: int,
     tool_calls: dict | None = None,
-    tool_result: str | None = None,
-    token_count: int = 0,
     audit_metadata: dict | None = None,
 ) -> Message:
     msg = Message(
         id=message_id,
         conversation_id=conversation_id,
-        user_id=user_id,
         role=role,
         content=content,
         sequence=sequence,
         tool_calls=tool_calls,
-        tool_result=tool_result,
-        token_count=token_count,
         audit_metadata=audit_metadata or {},
     )
     db.add(msg)
@@ -180,19 +174,23 @@ def save_message(
     return msg
 
 
-def update_conversation_stats(
-    db: Session, conversation_id: uuid.UUID, tokens: int = 0
-) -> None:
+def touch_conversation(db: Session, conversation_id: uuid.UUID) -> None:
     db.execute(
         update(Conversation)
         .where(Conversation.id == conversation_id)
-        .values(
-            message_count=Conversation.message_count + 1,
-            total_tokens=Conversation.total_tokens + tokens,
-            last_message_at=func.now(),
-            updated_at=func.now(),
-        )
+        .values(updated_at=func.now())
     )
+
+
+def get_message_stats(
+    db: Session, conversation_id: uuid.UUID
+) -> tuple[int, datetime | None]:
+    count, last_message_at = db.execute(
+        select(func.count(Message.id), func.max(Message.created_at)).where(
+            Message.conversation_id == conversation_id
+        )
+    ).one()
+    return int(count or 0), last_message_at
 
 
 def check_message_exists(db: Session, message_id: uuid.UUID) -> Message | None:

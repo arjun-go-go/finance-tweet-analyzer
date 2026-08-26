@@ -1,4 +1,4 @@
-"""Shared hybrid retrieval pipeline for chat, research, reports, and debugging."""
+"""Shared hybrid retrieval pipeline for the assistant and retrieval debugging."""
 
 from __future__ import annotations
 
@@ -14,13 +14,11 @@ from app.rag.fusion import reciprocal_rank_fusion
 from app.rag.reranker import apply_time_decay, rerank
 from app.rag.retrievers.analysis_retriever import retrieve_analyses
 from app.rag.retrievers.bm25_retriever import retrieve_bm25
-from app.rag.retrievers.document_retriever import retrieve_documents
 from app.rag.retrievers.structured_retriever import retrieve_structured
 from app.rag.retrievers.tweet_retriever import retrieve_tweets
 
 
-ALL_PATHS = ("documents", "tweets", "analyses", "structured", "bm25")
-_DOCUMENT_TYPES = {"document", "pdf", "docx", "url", "paste"}
+ALL_PATHS = ("tweets", "analyses", "structured", "bm25")
 
 
 def build_retrieval_intent(
@@ -59,9 +57,6 @@ def paths_for_scope(source_scope: list[str] | None) -> tuple[list[str], set[str]
         elif source in {"analysis", "analyses"}:
             requested = ("analyses", "structured", "bm25")
             allowed_types.update({"analysis", "structured"})
-        elif source in {"private_documents", "document", "documents"}:
-            requested = ("documents", "bm25")
-            allowed_types.add("document")
         elif source == "structured":
             requested = ("structured",)
             allowed_types.add("structured")
@@ -82,10 +77,6 @@ def run_retriever_path(
     user_id: UUID | None = None,
     query_embedding: list[float] | None = None,
 ) -> list[dict]:
-    if path == "documents":
-        if user_id is None:
-            return []
-        return retrieve_documents(intent, user_id, query_embedding=query_embedding)
     if path == "tweets":
         return retrieve_tweets(intent, query_embedding=query_embedding)
     if path == "analyses":
@@ -100,22 +91,16 @@ def run_retriever_path(
 def _canonical_item(item: dict) -> dict:
     normalized = {**item, "metadata": dict(item.get("metadata") or {})}
     metadata = normalized["metadata"]
-    source_type = str(normalized.get("source_type") or metadata.get("source_type") or "document")
-    if source_type in _DOCUMENT_TYPES:
-        source_type = "document"
+    source_type = str(normalized.get("source_type") or metadata.get("source_type") or "")
     normalized["source_type"] = source_type
 
     source_id = str(metadata.get("source_id") or "")
-    document_id = str(metadata.get("document_id") or "")
     chunk_index = metadata.get("chunk_index")
     old_id = str(normalized.get("unique_id") or "")
     if source_type == "tweet" and source_id:
         normalized["unique_id"] = f"tweet:{source_id}"
     elif source_type == "analysis" and source_id:
         normalized["unique_id"] = f"analysis:{source_id}"
-    elif source_type == "document" and document_id:
-        suffix = f":{chunk_index}" if chunk_index is not None else ""
-        normalized["unique_id"] = f"doc:{document_id}{suffix}"
     elif not old_id:
         normalized["unique_id"] = hashlib.sha1(
             f"{source_type}:{normalized.get('content', '')}".encode("utf-8")
@@ -213,7 +198,7 @@ def hybrid_retrieve(
     latency_ms: dict[str, float] = {}
     errors: dict[str, str] = {}
 
-    if query_embedding is None and any(path in {"documents", "tweets", "analyses"} for path in paths):
+    if query_embedding is None and any(path in {"tweets", "analyses"} for path in paths):
         t0 = time.perf_counter()
         try:
             from app.rag.embeddings import get_embedder
@@ -302,19 +287,18 @@ def hybrid_retrieve(
 
 def evidence_from_items(items: list[dict], *, content_limit: int = 1000) -> list[dict]:
     evidence: list[dict] = []
-    prefixes = {"analysis": "EA", "tweet": "ET", "document": "ED", "structured": "EP"}
+    prefixes = {"analysis": "EA", "tweet": "ET", "structured": "EP"}
     for item in items:
         metadata = item.get("metadata") or {}
         identity = str(item.get("unique_id") or metadata.get("source_id") or item.get("content", ""))
         suffix = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8].upper()
-        source_type = str(item.get("source_type") or "document")
+        source_type = str(item.get("source_type") or "")
         evidence.append(
             {
                 "evidence_id": f"{prefixes.get(source_type, 'ER')}-{suffix}",
                 "source_type": source_type,
                 "source_id": str(
                     metadata.get("source_id")
-                    or metadata.get("document_id")
                     or metadata.get("chunk_id")
                     or identity
                 ),

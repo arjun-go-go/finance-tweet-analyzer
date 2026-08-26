@@ -16,9 +16,9 @@ interface NavItem {
 
 const primary: NavItem[] = [
   { href: "/", label: "今日", icon: "pulse" },
-  { href: "/sources", label: "信息源", icon: "sources", aliases: ["/bloggers"] },
-  { href: "/watch", label: "关注", icon: "watchlist", aliases: ["/tracking"] },
-  { href: "/assistant", label: "助手", icon: "research", aliases: ["/chat"] },
+  { href: "/sources", label: "信息源", icon: "sources" },
+  { href: "/watch", label: "关注", icon: "watchlist" },
+  { href: "/assistant", label: "助手", icon: "research" },
 ];
 
 function matchesPath(pathname: string, href: string) {
@@ -107,7 +107,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="workspace-profile-row">
             <Link
               href="/settings"
-              className={`workspace-profile ${matchesPath(pathname, "/settings") || matchesPath(pathname, "/me") ? "is-active" : ""}`}
+              className={`workspace-profile ${matchesPath(pathname, "/settings") ? "is-active" : ""}`}
             >
               <span className="workspace-avatar">SD</span>
               <span><strong>个人设置</strong><small>研究偏好与账户</small></span>

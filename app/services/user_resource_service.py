@@ -1,4 +1,4 @@
-"""User-scoped follows and tweet bookmarks over shared resources."""
+"""User-scoped follows over shared Twitter blogger resources."""
 
 from uuid import UUID, uuid4
 
@@ -6,14 +6,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import (
-    Blogger,
-    Prediction,
-    Tweet,
-    User,
-    UserBloggerFollow,
-    UserTweetBookmark,
-)
+from app.models import Blogger, Prediction, User, UserBloggerFollow
 
 
 class ResourceNotFound(Exception):
@@ -98,15 +91,9 @@ def list_followed_bloggers(
     ).scalar_one()
     bloggers = db.execute(
         select(Blogger)
-        .join(
-            UserBloggerFollow,
-            UserBloggerFollow.blogger_id == Blogger.id,
-        )
+        .join(UserBloggerFollow, UserBloggerFollow.blogger_id == Blogger.id)
         .where(UserBloggerFollow.user_id == user_id)
-        .order_by(
-            UserBloggerFollow.created_at.desc(),
-            UserBloggerFollow.id.desc(),
-        )
+        .order_by(UserBloggerFollow.created_at.desc(), UserBloggerFollow.id.desc())
         .limit(limit)
         .offset(offset)
     ).scalars().all()
@@ -127,80 +114,3 @@ def count_pending_predictions_by_blogger(
         .group_by(Prediction.blogger_handle)
     ).all()
     return {handle: int(count) for handle, count in rows}
-
-
-def _bookmark_for(
-    db: Session, user_id: UUID, tweet_id: UUID
-) -> UserTweetBookmark | None:
-    return db.execute(
-        select(UserTweetBookmark).where(
-            UserTweetBookmark.user_id == user_id,
-            UserTweetBookmark.tweet_id == tweet_id,
-        )
-    ).scalar_one_or_none()
-
-
-def bookmark_tweet(
-    db: Session, user_id: UUID, tweet_id: UUID
-) -> UserTweetBookmark:
-    if db.execute(
-        select(User.id).where(User.id == user_id).with_for_update()
-    ).scalar_one_or_none() is None:
-        raise ResourceNotFound("user")
-
-    if db.execute(
-        select(Tweet.id).where(Tweet.id == tweet_id).with_for_update()
-    ).scalar_one_or_none() is None:
-        raise ResourceNotFound("tweet")
-
-    db.execute(
-        insert(UserTweetBookmark)
-        .values(id=uuid4(), user_id=user_id, tweet_id=tweet_id)
-        .on_conflict_do_nothing(constraint="uq_user_tweet_bookmark")
-    )
-    db.flush()
-    relationship = _bookmark_for(db, user_id, tweet_id)
-    if relationship is None:  # pragma: no cover - database invariant
-        raise RuntimeError("Bookmark relationship was not persisted")
-    return relationship
-
-
-def remove_tweet_bookmark(
-    db: Session, user_id: UUID, tweet_id: UUID
-) -> bool:
-    result = db.execute(
-        delete(UserTweetBookmark).where(
-            UserTweetBookmark.user_id == user_id,
-            UserTweetBookmark.tweet_id == tweet_id,
-        )
-    )
-    return result.rowcount > 0
-
-
-def list_bookmarked_tweets(
-    db: Session,
-    user_id: UUID,
-    *,
-    limit: int,
-    offset: int,
-) -> tuple[list[Tweet], int]:
-    total = db.execute(
-        select(func.count())
-        .select_from(UserTweetBookmark)
-        .where(UserTweetBookmark.user_id == user_id)
-    ).scalar_one()
-    tweets = db.execute(
-        select(Tweet)
-        .join(
-            UserTweetBookmark,
-            UserTweetBookmark.tweet_id == Tweet.id,
-        )
-        .where(UserTweetBookmark.user_id == user_id)
-        .order_by(
-            UserTweetBookmark.created_at.desc(),
-            UserTweetBookmark.id.desc(),
-        )
-        .limit(limit)
-        .offset(offset)
-    ).scalars().all()
-    return list(tweets), total

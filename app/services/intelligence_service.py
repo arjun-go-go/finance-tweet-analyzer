@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.analysis import AnalysisResult
 from app.models.blogger import Blogger
 from app.models.intelligence_correction import IntelligenceCorrection
-from app.models.intelligence_event import IntelligenceEvent, IntelligenceEvidence, IntelligenceTopic
+from app.models.intelligence_event import IntelligenceEvent, IntelligenceTopic
 from app.models.prediction import Prediction
 from app.models.prediction_market_verification import PredictionMarketVerification
 from app.models.tracked_ticker import TrackedTicker
@@ -27,14 +27,14 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def _evidence_dict(evidence: IntelligenceEvidence) -> dict:
+def _evidence_dict(tweet: Tweet) -> dict:
     return {
-        "source_type": evidence.source_type,
-        "source_id": evidence.source_id,
-        "author": evidence.author,
-        "published_at": evidence.published_at,
-        "excerpt": evidence.excerpt,
-        "source_url": evidence.source_url,
+        "source_type": "tweet",
+        "source_id": str(tweet.id),
+        "author": tweet.author_handle,
+        "published_at": tweet.published_at,
+        "excerpt": tweet.content[:500],
+        "source_url": f"https://x.com/{tweet.author_handle.lstrip('@')}/status/{tweet.tweet_id}",
     }
 
 
@@ -70,7 +70,7 @@ def _score_topic(
 
 def _topic_to_item(
     topic: IntelligenceTopic,
-    evidence_rows: list[IntelligenceEvidence],
+    evidence_rows: list[dict],
     *,
     followed_handles: set[str],
     tracked_tickers: set[str],
@@ -78,8 +78,8 @@ def _topic_to_item(
 ) -> dict | None:
     if not evidence_rows:
         return None
-    evidence_rows.sort(key=lambda row: row.published_at, reverse=True)
-    authors = {row.author.lower() for row in evidence_rows}
+    evidence_rows.sort(key=lambda row: row["published_at"], reverse=True)
+    authors = {str(row["author"]).lower() for row in evidence_rows}
     author_followed = bool(authors & followed_handles)
     matched_tickers = sorted(set(topic.tickers or []) & tracked_tickers)
     ticker_matched = bool(matched_tickers)
@@ -119,7 +119,7 @@ def _topic_to_item(
     time_bucket = (
         "今日" if age_hours <= 24 else "近 3 日" if age_hours <= 72 else "近 7 日"
     )
-    evidence = [_evidence_dict(row) for row in evidence_rows[:5]]
+    evidence = evidence_rows[:5]
     return {
         "id": str(topic.id),
         "kind": topic.kind,
@@ -127,7 +127,7 @@ def _topic_to_item(
         "summary": topic.summary,
         "direction": topic.direction,
         "tickers": topic.tickers or [],
-        "author": evidence_rows[0].author,
+        "author": evidence_rows[0]["author"],
         "confidence": topic.confidence,
         "source_credibility": topic.source_credibility,
         "importance_score": score["total"],
@@ -282,21 +282,14 @@ def build_user_intelligence_detail(
     event_rows = db.execute(
         select(IntelligenceEvent, AnalysisResult, Tweet)
         .join(AnalysisResult, AnalysisResult.id == IntelligenceEvent.analysis_result_id)
-        .join(Tweet, Tweet.id == IntelligenceEvent.tweet_id)
+        .join(Tweet, Tweet.id == AnalysisResult.tweet_id)
         .where(IntelligenceEvent.topic_id == topic.id)
         .order_by(IntelligenceEvent.published_at.desc())
     ).all()
     if not event_rows:
         return None
 
-    event_ids = [event.id for event, _analysis, _tweet in event_rows]
-    evidence_rows = list(
-        db.execute(
-            select(IntelligenceEvidence)
-            .where(IntelligenceEvidence.event_id.in_(event_ids))
-            .order_by(IntelligenceEvidence.published_at.desc())
-        ).scalars()
-    )
+    evidence_rows = [_evidence_dict(tweet) for _event, _analysis, tweet in event_rows]
     followed_handles = {
         handle.lower()
         for handle in db.execute(
@@ -566,16 +559,17 @@ def build_user_intelligence_feed(
         topic_query = topic_query.where(IntelligenceTopic.kind == kind)
     topics = list(db.execute(topic_query.order_by(IntelligenceTopic.last_seen_at.desc())).scalars())
     topic_ids = [topic.id for topic in topics]
-    evidence_map: dict[UUID, list[IntelligenceEvidence]] = {topic_id: [] for topic_id in topic_ids}
+    evidence_map: dict[UUID, list[dict]] = {topic_id: [] for topic_id in topic_ids}
     if topic_ids:
         rows = db.execute(
-            select(IntelligenceEvent.topic_id, IntelligenceEvidence)
-            .join(IntelligenceEvidence, IntelligenceEvidence.event_id == IntelligenceEvent.id)
+            select(IntelligenceEvent.topic_id, Tweet)
+            .join(AnalysisResult, AnalysisResult.id == IntelligenceEvent.analysis_result_id)
+            .join(Tweet, Tweet.id == AnalysisResult.tweet_id)
             .where(IntelligenceEvent.topic_id.in_(topic_ids))
-            .order_by(IntelligenceEvidence.published_at.desc())
+            .order_by(Tweet.published_at.desc())
         ).all()
-        for topic_id, evidence in rows:
-            evidence_map[topic_id].append(evidence)
+        for topic_id, tweet in rows:
+            evidence_map[topic_id].append(_evidence_dict(tweet))
 
     candidates = [
         item

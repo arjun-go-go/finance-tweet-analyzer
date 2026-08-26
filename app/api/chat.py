@@ -48,16 +48,30 @@ from app.services.conversation_service import (
     generate_title_background,
     get_conversation,
     get_last_message_preview,
+    get_message_stats,
     get_next_sequence,
     list_conversations,
     list_messages,
     release_conversation_lock,
     save_message,
+    touch_conversation,
     update_conversation,
-    update_conversation_stats,
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+def _conversation_response(db: Session, conv) -> ConversationResponse:
+    message_count, last_message_at = get_message_stats(db, conv.id)
+    return ConversationResponse(
+        id=conv.id,
+        user_id=str(conv.user_id),
+        title=conv.title,
+        status=conv.status,
+        message_count=message_count,
+        last_message_at=last_message_at,
+        created_at=conv.created_at,
+    )
 
 
 # ============================================================
@@ -89,10 +103,10 @@ def create_conversation_endpoint(
     db: Session = Depends(get_db),
 ):
     try:
-        conv = create_conversation(db, str(current_user.id), req.title, req.metadata)
+        conv = create_conversation(db, current_user.id, req.title, req.metadata)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return conv
+    return _conversation_response(db, conv)
 
 
 @router.get("/conversations", response_model=ConversationListResponse)
@@ -103,18 +117,19 @@ def list_conversations_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    items, next_cursor = list_conversations(db, str(current_user.id), status, limit, cursor)
+    items, next_cursor = list_conversations(db, current_user.id, status, limit, cursor)
 
     response_items = []
     for conv in items:
         preview = get_last_message_preview(db, conv.id)
+        message_count, last_message_at = get_message_stats(db, conv.id)
         response_items.append(
             ConversationListItem(
                 id=conv.id,
                 title=conv.title,
                 status=conv.status,
-                message_count=conv.message_count,
-                last_message_at=conv.last_message_at,
+                message_count=message_count,
+                last_message_at=last_message_at,
                 last_message_preview=preview,
                 created_at=conv.created_at,
             )
@@ -133,10 +148,10 @@ def get_conversation_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = get_conversation(db, conversation_id, str(current_user.id))
+    conv = get_conversation(db, conversation_id, current_user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
-    return conv
+    return _conversation_response(db, conv)
 
 
 @router.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
@@ -146,10 +161,10 @@ def update_conversation_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = update_conversation(db, conversation_id, str(current_user.id), req.title, req.metadata)
+    conv = update_conversation(db, conversation_id, current_user.id, req.title, req.metadata)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
-    return conv
+    return _conversation_response(db, conv)
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
@@ -158,7 +173,7 @@ def delete_conversation_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    success = delete_conversation(db, conversation_id, str(current_user.id))
+    success = delete_conversation(db, conversation_id, current_user.id)
     if not success:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -179,7 +194,7 @@ def list_messages_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = get_conversation(db, conversation_id, str(current_user.id))
+    conv = get_conversation(db, conversation_id, current_user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -205,12 +220,10 @@ TOOL_LABELS = {
     "get_blogger_predictions": "正在读取博主预测...",
     "get_ticker_predictions": "正在读取标的预测...",
     "get_prediction_review_summary": "正在汇总预测复核...",
-    "search_my_documents": "正在检索私人资料...",
     "search_public_signals": "正在检索市场证据...",
     "list_my_tracked_tickers": "正在读取关注标的...",
     "list_my_followed_bloggers": "正在读取关注博主...",
     "set_blogger_follow": "正在更新正式关注列表...",
-    "generate_tracking_report": "正在创建异步研究报告...",
 }
 
 
@@ -240,7 +253,7 @@ def chat_endpoint(
         )
 
     # Verify conversation ownership
-    conv = get_conversation(db, conversation_id, user_id)
+    conv = get_conversation(db, conversation_id, current_user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -268,19 +281,16 @@ def chat_endpoint(
 
     # Save human message to mirror table
     seq = get_next_sequence(db, conversation_id)
-    human_token_count = len(req.message) // 4
     save_message(
         db,
         message_id=message_id,
         conversation_id=conversation_id,
-        user_id=user_id,
         role="human",
         content=req.message,
         sequence=seq,
-        token_count=human_token_count,
     )
-    is_first_message = conv.message_count == 0
-    update_conversation_stats(db, conversation_id, tokens=human_token_count)
+    is_first_message = seq == 1
+    touch_conversation(db, conversation_id)
     db.commit()
 
     # Trigger title generation on first message
@@ -441,12 +451,10 @@ def chat_endpoint(
                         mirror_db,
                         message_id=uuid.uuid4(),
                         conversation_id=conversation_id,
-                        user_id=user_id,
                         role="tool",
                         content=tr["content"][:4096] if tr["content"] else "",
                         sequence=tool_seq,
                         tool_calls={"name": tr["name"]},
-                        token_count=len(tr.get("content", "")) // 4,
                     )
 
                 # Save final AI response
@@ -455,12 +463,10 @@ def chat_endpoint(
                     mirror_db,
                     message_id=ai_msg_id,
                     conversation_id=conversation_id,
-                    user_id=user_id,
                     role="ai",
                     content=ai_content,
                     sequence=ai_seq,
                     tool_calls=ai_tool_calls if ai_tool_calls else None,
-                    token_count=ai_token_count,
                     audit_metadata={
                         "latency_ms": int(
                             (time.perf_counter() - start_time) * 1000
@@ -469,9 +475,7 @@ def chat_endpoint(
                         "tokens_out": ai_token_count,
                     },
                 )
-                update_conversation_stats(
-                    mirror_db, conversation_id, tokens=ai_token_count
-                )
+                touch_conversation(mirror_db, conversation_id)
                 mirror_db.commit()
             except Exception as e:
                 logger.error("[Chat] Mirror save failed: {}", e)
@@ -541,21 +545,17 @@ def chat_endpoint(
                         mirror_db,
                         message_id=ai_msg_id,
                         conversation_id=conversation_id,
-                        user_id=user_id,
                         role="ai",
                         content=recovery_text,
                         sequence=ai_seq,
                         tool_calls=None,
-                        token_count=len(recovery_text) // 4,
                         audit_metadata={
                             "latency_ms": int((time.perf_counter() - start_time) * 1000),
                             "model_used": settings.report_model,
                             "recovery": "recursion_limit",
                         },
                     )
-                    update_conversation_stats(
-                        mirror_db, conversation_id, tokens=len(recovery_text) // 4
-                    )
+                    touch_conversation(mirror_db, conversation_id)
                     mirror_db.commit()
                 except Exception as mirror_err:
                     logger.error("[Chat] Recovery mirror save failed: {}", mirror_err)

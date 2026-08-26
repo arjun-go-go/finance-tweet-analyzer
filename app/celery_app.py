@@ -6,7 +6,6 @@
   合并:    celery -A app.celery_app worker --beat --loglevel=info --pool=solo
 """
 from celery import Celery
-from celery.schedules import crontab
 
 import app.core.tracing  # noqa: F401 — configure LangSmith before LangChain imports
 from app.core.config import settings
@@ -44,26 +43,17 @@ celery.conf.update(
     # 任务路由
     task_routes={
         "app.scheduler.tasks.auto_analysis_task": {"queue": "analysis"},
-        "app.scheduler.tasks.manual_analysis_task": {"queue": "analysis"},
         "app.scheduler.tasks.prediction_batch_task": {"queue": "prediction"},
         "app.scheduler.tasks.auto_verify_predictions_task": {"queue": "prediction"},
-        "app.scheduler.tasks.ingest_document_task": {"queue": "ingest"},
         "app.scheduler.tasks.archive_tweet_media_task": {"queue": "ingest"},
         "app.scheduler.tasks.analyze_tweet_media_task": {"queue": "vision"},
         "app.scheduler.tasks.analyze_tweet_task": {"queue": "analysis"},
         "app.scheduler.tasks.embed_signal_task": {"queue": "embed"},
         "app.scheduler.tasks.backfill_signals_task": {"queue": "embed"},
-        "app.scheduler.tasks.scheduled_report_task": {"queue": "report"},
-        "app.scheduler.tasks.report_streaming_task": {"queue": "report"},
-        "app.scheduler.tasks.deep_research_task": {"queue": "report"},
-        "app.scheduler.tasks.scan_due_research_task": {"queue": "default"},
-        "app.scheduler.tasks.scan_due_tracking_task": {"queue": "default"},
-        "app.scheduler.tasks.gc_vector_task": {"queue": "default"},
         "app.scheduler.tasks.reindex_elasticsearch_chunks_task": {"queue": "default"},
         "app.scheduler.tasks.retry_failed_index_jobs_task": {"queue": "default"},
         "app.scheduler.tasks.rebuild_elasticsearch_alias_task": {"queue": "default"},
         "app.scheduler.tasks.scan_blogger_tweets_task": {"queue": "ingest"},
-        "app.scheduler.tasks.user_analysis_job_task": {"queue": "analysis"},
         "app.scheduler.tasks.fetch_blogger_tweets_task": {"queue": "ingest"},
         "app.scheduler.tasks.dispatch_outbox_events_task": {"queue": "default"},
         "app.scheduler.tasks.project_intelligence_event_task": {"queue": "default"},
@@ -94,16 +84,6 @@ celery.conf.beat_schedule = {
         "schedule": settings.celery_prediction_interval_minutes * 60,  # 秒
         "options": {"queue": "prediction"},
     },
-    # 扫描到期的标的订阅，分发报告生成任务
-    "scan-due-tracking": {
-        "task": "app.scheduler.tasks.scan_due_tracking_task",
-        "schedule": 300,  # 每 5 分钟
-    },
-    # 清理已删除文档残留的向量
-    "gc-vector-daily": {
-        "task": "app.scheduler.tasks.gc_vector_task",
-        "schedule": crontab(hour=3, minute=0),
-    },
     # 回填历史已分析推文的向量化（每 10 分钟处理 15 条，避免 embedding API 过载）
     "backfill-signals-periodic": {
         "task": "app.scheduler.tasks.backfill_signals_task",
@@ -117,11 +97,6 @@ celery.conf.beat_schedule = {
         "schedule": 600,
         "kwargs": {"batch_size": 15},
         "options": {"queue": "embed"},
-    },
-    "scan-due-research": {
-        "task": "app.scheduler.tasks.scan_due_research_task",
-        "schedule": 300,
-        "options": {"queue": "default"},
     },
     "auto-verify-predictions-periodic": {
         "task": "app.scheduler.tasks.auto_verify_predictions_task",

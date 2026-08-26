@@ -96,16 +96,3 @@ def mem0_store_node_impl(
 
     threading.Thread(target=_store, daemon=True).start()
     return {}
-
-
-def extract_preferences_node_impl(state: dict, config: RunnableConfig) -> dict:
-    """Extract implicit user preferences in the background."""
-    from app.memory.preferences import extract_preferences_background
-
-    messages = state["messages"]
-    user_id = get_authenticated_user_id(config)
-    for msg in reversed(messages):
-        if hasattr(msg, "type") and msg.type == "human":
-            extract_preferences_background(msg.content, user_id=user_id)
-            break
-    return {}

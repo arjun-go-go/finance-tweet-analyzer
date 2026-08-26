@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_admin
 from app.core.deps import get_db
-from app.models.doc_chunk import DocChunk
+from app.models.content_chunk import ContentChunk
 from app.models.index_job import IndexJob
 from app.models.user import User
 from app.rag.keyword_store import get_keyword_store
@@ -30,10 +30,9 @@ def es_stats(
     vector_store = get_vector_store()
     return {
         "elasticsearch": store.stats(),
-        "doc_chunks": db.execute(select(func.count()).select_from(DocChunk)).scalar() or 0,
+        "content_chunks": db.execute(select(func.count()).select_from(ContentChunk)).scalar() or 0,
         "vector_store": {
             "public_signals": vector_store.count("public_signals"),
-            "user_documents": vector_store.count("user_documents"),
         },
         "index_jobs": jobs,
     }
@@ -63,7 +62,7 @@ def list_index_jobs(
     return {
         "items": [
             {
-                "doc_chunk_id": str(row.doc_chunk_id),
+                "content_chunk_id": str(row.content_chunk_id),
                 "target": row.target,
                 "status": row.status,
                 "attempts": row.attempts,

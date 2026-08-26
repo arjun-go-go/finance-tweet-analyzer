@@ -19,7 +19,6 @@
       analysis.yaml      — 分析 prompt
       risk.yaml          — 风险评估 prompt
       signal.yaml        — 信号分析 prompt
-      report.yaml        — 报告 section + synthesis prompt
       sql.yaml           — SQL agent prompt + DDL
       self_query.yaml    — 查询意图解析 prompt
       memory.yaml        — 压缩/偏好提取 prompt

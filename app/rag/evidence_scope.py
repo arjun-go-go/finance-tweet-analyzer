@@ -1,4 +1,4 @@
-"""Deterministic target matching shared by report and chat retrieval."""
+"""Deterministic target matching for evidence retrieval."""
 
 from __future__ import annotations
 

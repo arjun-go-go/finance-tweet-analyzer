@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from langchain_core.runnables import RunnableConfig
+from sqlalchemy import select
 
 from app.core.deps import SessionLocal
 from app.memory.identity import normalize_user_id
+from app.models.blogger import Blogger
+from app.models.tracked_ticker import TrackedTicker
+from app.models.user_blogger_follow import UserBloggerFollow
 
 
 def get_authenticated_user_id(config: RunnableConfig | None) -> str:
@@ -12,15 +16,24 @@ def get_authenticated_user_id(config: RunnableConfig | None) -> str:
 
 
 def init_context_node_impl(state: dict, config: RunnableConfig) -> dict:
-    """Load per-user profile/preferences once at graph entry."""
-    from app.memory.preferences import get_preferences
-    from app.memory.profile import get_profile
-
+    """Load the canonical followed-blogger and tracked-ticker scope."""
     user_id = get_authenticated_user_id(config)
     db = SessionLocal()
     try:
-        profile = get_profile(db, user_id) or {}
-        prefs = get_preferences(db, user_id) or {}
+        handles = list(db.execute(
+            select(Blogger.handle)
+            .join(UserBloggerFollow, UserBloggerFollow.blogger_id == Blogger.id)
+            .where(UserBloggerFollow.user_id == user_id)
+            .order_by(UserBloggerFollow.created_at.desc())
+        ).scalars())
+        tickers = list(db.execute(
+            select(TrackedTicker.ticker)
+            .where(
+                TrackedTicker.user_id == user_id,
+                TrackedTicker.status == "active",
+            )
+            .order_by(TrackedTicker.created_at.desc())
+        ).scalars())
     finally:
         db.close()
-    return {"user_profile": profile, "user_prefs": prefs}
+    return {"research_scope": {"blogger_handles": handles, "tickers": tickers}}

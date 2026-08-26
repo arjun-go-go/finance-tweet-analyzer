@@ -14,7 +14,7 @@ class Blogger(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    handle: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    handle: Mapped[str] = mapped_column(String(128), unique=True)
     name: Mapped[str] = mapped_column(String(256), default="")
     bio: Mapped[str | None] = mapped_column(Text, default=None)
     avatar_url: Mapped[str | None] = mapped_column(String(512), default=None)

@@ -2,20 +2,22 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from app.rag.vector_store import ChromaVectorStore, MilvusVectorStore, get_vector_store, VectorHit
 import app.rag.vector_store as vector_store_module
 
 
 def test_chroma_add_query_delete(tmp_path):
     vs = ChromaVectorStore(persist_dir=str(tmp_path))
-    assert vs.count("user_documents") == 0
-    vs.add("user_documents", ["id1"], ["hello"], [[1.0, 0.0]], [{"user_id": "u1"}])
-    assert vs.count("user_documents") == 1
-    hits = vs.query("user_documents", [1.0, 0.0], k=1)
+    assert vs.count("public_signals") == 0
+    vs.add("public_signals", ["id1"], ["hello"], [[1.0, 0.0]], [{"source_type": "tweet"}])
+    assert vs.count("public_signals") == 1
+    hits = vs.query("public_signals", [1.0, 0.0], k=1)
     assert len(hits) == 1
     assert hits[0].id == "id1"
-    vs.delete("user_documents", ["id1"])
-    assert vs.count("user_documents") == 0
+    vs.delete("public_signals", ["id1"])
+    assert vs.count("public_signals") == 0
 
 
 def test_factory_chroma(tmp_path):
@@ -49,7 +51,7 @@ def test_factory_milvus():
                 db_name="default",
                 timeout=30.0,
             )
-            assert client.load_collection.call_count == 2
+            assert client.load_collection.call_count == 1
         vector_store_module._vector_store_singleton = None
 
 
@@ -57,19 +59,20 @@ def test_milvus_collection_name_mapping():
     vs = object.__new__(MilvusVectorStore)
     vs._collection_prefix = "finance_tweet"
 
-    assert vs._physical_name("user_documents") == "finance_tweet_user_documents"
     assert vs._physical_name("public_signals") == "finance_tweet_public_signals"
+    with pytest.raises(KeyError):
+        vs._physical_name("user_documents")
 
 
 def test_milvus_filter_expression():
     expr = MilvusVectorStore._filter_to_expr({
         "$and": [
-            {"user_id": "user-1"},
-            {"document_id": "doc-1"},
+            {"source_type": "tweet"},
+            {"ticker": "NVDA"},
         ]
     })
 
-    assert expr == '(user_id == "user-1") and (document_id == "doc-1")'
+    assert expr == '(source_type == "tweet") and (ticker == "NVDA")'
 
 
 def test_milvus_add_projects_common_metadata_fields():
@@ -77,6 +80,12 @@ def test_milvus_add_projects_common_metadata_fields():
     vs._collection_prefix = "finance_tweet"
     vs._timeout_sec = 30.0
     vs._ensured = {"finance_tweet_public_signals"}
+    vs._collection_fields = {
+        "finance_tweet_public_signals": {
+            "id", "vector", "content", "metadata", "source_type",
+            "source_id", "index_stage", "ticker",
+        }
+    }
     vs._client = fake_client = Mock()
 
     vs.add(
@@ -84,7 +93,13 @@ def test_milvus_add_projects_common_metadata_fields():
         ["id1"],
         ["content"],
         [[0.1, 0.2]],
-        [{"source_type": "tweet", "ticker": "NVDA", "ignored": None}],
+        [{
+            "source_type": "tweet",
+            "source_id": "tweet-1",
+            "index_stage": "raw",
+            "ticker": "NVDA",
+            "ignored": None,
+        }],
     )
 
     fake_client.upsert.assert_called_once()
@@ -92,8 +107,42 @@ def test_milvus_add_projects_common_metadata_fields():
     assert row["id"] == "id1"
     assert row["content"] == "content"
     assert row["source_type"] == "tweet"
+    assert row["source_id"] == "tweet-1"
+    assert row["index_stage"] == "raw"
     assert row["ticker"] == "NVDA"
-    assert row["metadata"] == {"source_type": "tweet", "ticker": "NVDA"}
+    assert row["metadata"] == {
+        "source_type": "tweet",
+        "source_id": "tweet-1",
+        "index_stage": "raw",
+        "ticker": "NVDA",
+    }
+
+
+def test_milvus_add_remains_compatible_with_existing_signal_schema():
+    vs = object.__new__(MilvusVectorStore)
+    vs._collection_prefix = "finance_tweet"
+    vs._timeout_sec = 30.0
+    vs._ensured = {"finance_tweet_public_signals"}
+    vs._collection_fields = {
+        "finance_tweet_public_signals": {
+            "id", "vector", "content", "metadata", "source_type",
+            "ticker", "user_id", "document_id",
+        }
+    }
+    vs._client = fake_client = Mock()
+
+    vs.add(
+        "public_signals",
+        ["tweet:1:0"],
+        ["content"],
+        [[0.1, 0.2]],
+        [{"source_type": "tweet", "source_id": "1", "index_stage": "raw"}],
+    )
+
+    row = fake_client.upsert.call_args.kwargs["data"][0]
+    assert row["user_id"] == ""
+    assert row["document_id"] == ""
+    assert row["metadata"]["source_id"] == "1"
 
 
 def test_factory_unknown_raises():

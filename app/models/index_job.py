@@ -11,9 +11,9 @@ from app.models.base import Base
 class IndexJob(Base):
     __tablename__ = "index_jobs"
 
-    doc_chunk_id: Mapped[uuid.UUID] = mapped_column(
+    content_chunk_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("doc_chunks.id", ondelete="CASCADE"),
+        ForeignKey("content_chunks.id", ondelete="CASCADE"),
         primary_key=True,
     )
     target: Mapped[str] = mapped_column(

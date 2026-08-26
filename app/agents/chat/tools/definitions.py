@@ -12,16 +12,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agents.chat.routing import (
     has_explicit_ingest_confirmation as _base_has_explicit_ingest_confirmation,
-    has_explicit_report_confirmation as _base_has_explicit_report_confirmation,
 )
 from app.agents.chat.tool_results import (
     parse_tool_envelope as _base_parse_tool_envelope,
     tool_error as _base_tool_error,
     tool_ok as _base_tool_ok,
-)
-from app.agents.chat.tools.analysis_jobs import (
-    confirm_tweet_analysis_impl as _confirm_tweet_analysis_impl,
-    preview_tweet_analysis_impl as _preview_tweet_analysis_impl,
 )
 from app.agents.chat.tools.business_queries import (
     get_blogger_overview_impl as _get_blogger_overview_impl,
@@ -34,13 +29,7 @@ from app.agents.chat.tools.ingestion import (
     fetch_profile_impl as _fetch_profile_impl,
     fetch_tweets_impl as _fetch_tweets_impl,
 )
-from app.agents.chat.tools.rag_search import (
-    search_my_documents_impl as _search_my_documents_impl,
-    search_public_signals_impl as _search_public_signals_impl,
-)
-from app.agents.chat.tools.reports import (
-    generate_tracking_report_impl as _generate_tracking_report_impl,
-)
+from app.agents.chat.tools.rag_search import search_public_signals_impl as _search_public_signals_impl
 from app.agents.chat.tools.user_resources import (
     list_my_followed_bloggers_impl as _list_my_followed_bloggers_impl,
     list_my_tracked_tickers_impl as _list_my_tracked_tickers_impl,
@@ -94,18 +83,6 @@ def _current_user_message(config: RunnableConfig | None) -> str:
     return str(((config or {}).get("metadata") or {}).get("current_message") or "")
 
 
-def _has_explicit_report_confirmation(message: str, ticker: str) -> bool:
-    text = message.lower()
-    ticker_text = ticker.lower()
-    action_words = ("确认", "立即", "开始", "执行", "生成", "创建", "确认生成", "go ahead", "confirm")
-    report_words = ("报告", "周报", "跟踪报告", "report")
-    return (
-        ticker_text in text
-        and any(word in text for word in action_words)
-        and any(word in text for word in report_words)
-    )
-
-
 def _has_explicit_ingest_confirmation(
     message: str,
     *,
@@ -133,7 +110,6 @@ def _has_explicit_ingest_confirmation(
 _tool_ok = _base_tool_ok
 _tool_error = _base_tool_error
 _parse_tool_envelope = _base_parse_tool_envelope
-_has_explicit_report_confirmation = _base_has_explicit_report_confirmation
 _has_explicit_ingest_confirmation = _base_has_explicit_ingest_confirmation
 
 
@@ -165,64 +141,6 @@ class FetchTweetsArgs(BaseModel):
         v = v.strip().lstrip("@")
         if not re.match(r"^[A-Za-z0-9_]{1,15}$", v):
             raise ValueError(f"Handle '{v}' 无效。必须是 1-15 位纯英文/数字/下划线，不含 @。")
-        return v
-
-
-class PreviewAnalysisArgs(BaseModel):
-    """预览分析任务的参数约束。"""
-    blogger_handle: str = Field(
-        default="",
-        description="指定博主英文 Handle（不含 @）。留空或 'all' 表示所有博主。禁止中文。",
-    )
-    reanalyze: bool = Field(default=False, description="True=重新分析已分析过的推文，False=仅分析新推文。")
-    since: str = Field(
-        default="",
-        description="时间范围，必须严格匹配 '^\\d+[dwh]$'。例如 '3d'(3天)、'1w'(1周)、'12h'(12小时)。禁止自然语言。",
-    )
-
-    @field_validator("blogger_handle")
-    @classmethod
-    def _validate_handle(cls, v: str) -> str:
-        v = v.strip().lstrip("@").lower()
-        if v and v not in ("all", "全部", "所有") and not re.match(r"^[A-Za-z0-9_]{1,15}$", v):
-            raise ValueError(f"Handle '{v}' 无效。必须是纯英文/数字，或留空/传 'all'。")
-        return v
-
-    @field_validator("since")
-    @classmethod
-    def _validate_since(cls, v: str) -> str:
-        if v and not re.match(r"^\d+[dwh]$", v):
-            raise ValueError(f"时间格式 '{v}' 错误。必须使用如 '3d'、'1w'、'12h' 的格式。")
-        return v
-
-
-class ConfirmTaskArgs(BaseModel):
-    """确认分析任务的参数约束。"""
-    task_id: str = Field(description="preview_tweet_analysis 返回的确认 ID（UUID）。必须原样传入，不要编造。")
-
-    @field_validator("task_id")
-    @classmethod
-    def _validate_task_id(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("task_id 不能为空。")
-        return v
-
-
-class TrackingReportArgs(BaseModel):
-    """生成追踪报告的参数约束。"""
-    ticker: str = Field(description="金融标的代码，如 TSLA、BTC、ETH。")
-    time_range: str = Field(
-        default="1w",
-        description="时间范围：1d(1天)、1w(1周)、1m(1月)。",
-    )
-
-    @field_validator("ticker")
-    @classmethod
-    def _validate_ticker(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not v:
-            raise ValueError("ticker 不能为空。")
         return v
 
 
@@ -537,57 +455,6 @@ def get_prediction_review_summary() -> str:
 # 而非终止整个图执行，让 Agent 有机会重试或换策略。
 # ============================================================
 
-@tool(args_schema=TrackingReportArgs)
-def generate_tracking_report(
-    ticker: str,
-    time_range: str = "1w",
-    config: RunnableConfig = None,
-) -> str:
-    """生成指定金融标的的 Twitter 博主观点摘要（基于多路召回 + Rerank + LLM 合成）。
-
-    【触发场景】：用户要求汇总博主观点、分析某个标的的最近 Twitter 动态、日报或周报等。
-    【参数】：ticker 为标的代码（如 TSLA、BTC），time_range 为时间范围（1d/1w/1m）。
-    """
-    from uuid import UUID
-
-    user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
-    try:
-        user_id = UUID(user_id_value)
-    except (TypeError, ValueError, AttributeError):
-        return "用户身份无效，无法生成私有报告。"
-
-    if not _has_explicit_report_confirmation(_current_user_message(config), ticker):
-        return _tool_error(
-            "CONFIRMATION_REQUIRED",
-            f"生成 {ticker} 报告会消耗较多模型和检索资源。请明确回复：确认生成 {ticker} 报告。",
-            retryable=False,
-        )
-
-    db = SessionLocal()
-    try:
-        return _generate_tracking_report_impl(db, user_id, ticker)
-    finally:
-        db.close()
-
-
-@tool
-def search_my_documents(query: str, ticker: str = "", config: RunnableConfig = None) -> str:
-    """在用户私有文档库中检索相关内容（不生成报告，纯检索预览）。
-
-    【触发场景】：用户想查找自己上传的文档中关于某个话题的内容。
-    【参数】：query 为检索关键词，ticker 可选标的过滤。
-    """
-    from uuid import UUID
-
-
-    try:
-        user_id_str = _get_authenticated_user_id(config)
-        user_id = UUID(user_id_str)
-    except (ValueError, AttributeError):
-        return "文档检索暂时不可用：用户身份无效。"
-
-    return _search_my_documents_impl(user_id, query, ticker)
-
 @tool
 def search_public_signals(query: str, source_type: str = "analysis", blogger: str = "", config: RunnableConfig = None) -> str:
     """在公共信号向量库中检索推文或分析结果（语义检索）。
@@ -599,7 +466,6 @@ def search_public_signals(query: str, source_type: str = "analysis", blogger: st
       - source_type: 信号类型，可选 "analysis"（LLM 分析结果）或 "tweet"（原始推文），默认 "analysis"
       - blogger: 可选博主 handle（如 "qinbafrank"），限定只查该博主的信号
     【注意】：
-      - search_my_documents 查的是用户上传的私有文档
       - query_database 查的是结构化 SQL 数据库（analysis_results / tweets 表）
       - 此工具查的是向量语义库 public_signals，适合找"意思相近"的内容
     """
@@ -677,77 +543,11 @@ def set_blogger_follow(
         db.close()
 
 
-# Durable overrides for personal SaaS analysis confirmation.
-@tool(args_schema=PreviewAnalysisArgs)
-def preview_tweet_analysis(
-    blogger_handle: str = "",
-    reanalyze: bool = False,
-    since: str = "",
-    config: RunnableConfig = None,
-) -> str:
-
-
-    try:
-        user_id = UUID(_get_authenticated_user_id(config))
-    except (TypeError, ValueError, AttributeError):
-        return "用户身份无效，无法创建持久化分析确认。"
-    if not settings.user_analysis_requests_enabled:
-        return "用户分析任务功能暂未开启。"
-    if reanalyze or since:
-        return "持久化分析确认暂不支持 reanalyze/since，请先使用默认 pending 推文分析。"
-
-    handle = blogger_handle.strip().lstrip("@").lower() if blogger_handle else ""
-    if handle and handle not in ("all", "全部", "所有") and not _HANDLE_RE.match(handle):
-        return f"参数错误：blogger_handle '{blogger_handle}' 不是有效 Twitter Handle。"
-
-    db = SessionLocal()
-    try:
-        return _preview_tweet_analysis_impl(
-            db,
-            user_id=user_id,
-            blogger_handle=blogger_handle,
-            reanalyze=reanalyze,
-            since=since,
-            pipeline_version=settings.user_analysis_pipeline_version,
-        )
-    finally:
-        db.close()
-
-
-@tool(args_schema=ConfirmTaskArgs)
-def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
-
-    try:
-        user_id = UUID(_get_authenticated_user_id(config))
-    except (TypeError, ValueError, AttributeError):
-        return "用户身份无效，无法提交分析任务。"
-    if not settings.user_analysis_requests_enabled:
-        return "用户分析任务功能暂未开启。"
-
-    task_id = task_id.strip()
-    try:
-        confirmation_id = UUID(task_id)
-    except ValueError:
-        return f"确认ID '{task_id}' 无效。请重新预览。"
-
-    db = SessionLocal()
-    try:
-        return _confirm_tweet_analysis_impl(
-            db,
-            user_id=user_id,
-            confirmation_id=confirmation_id,
-            daily_limit=settings.user_analysis_daily_limit,
-        )
-    finally:
-        db.close()
-
-
 tools = [
     fetch_and_save_profile, fetch_and_save_tweets,
-    preview_tweet_analysis, confirm_tweet_analysis,
     get_blogger_overview, get_blogger_recent_analysis,
     get_blogger_predictions, get_ticker_predictions, get_prediction_review_summary,
     query_database, search_public_signals,
-    generate_tracking_report, search_my_documents, list_my_tracked_tickers,
+    list_my_tracked_tickers,
     list_my_followed_bloggers, set_blogger_follow,
 ]

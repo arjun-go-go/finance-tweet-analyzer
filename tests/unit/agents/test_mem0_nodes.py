@@ -25,7 +25,7 @@ def test_recall_node_injects_memories():
         mock_settings.mem0_top_k = 5
         mock_settings.mem0_enabled = True
         from app.agents.chat_agent import mem0_recall_node
-        state = {"messages": [HumanMessage(content="BTC 现在怎么样？")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [HumanMessage(content="BTC 现在怎么样？")], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": ["用户看好BTC短线", "投资风格：短线"]}
     mock_client.search.assert_called_once_with("BTC 现在怎么样？", filters={"user_id": _USER_ID}, top_k=5)
@@ -35,7 +35,7 @@ def test_recall_node_disabled_returns_empty():
     """mem0_recall_node returns empty memories when client is None (disabled)."""
     with patch("app.agents.chat.graph.get_mem0_client", return_value=None):
         from app.agents.chat_agent import mem0_recall_node
-        state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [HumanMessage(content="hello")], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": []}
 
@@ -49,7 +49,7 @@ def test_recall_node_exception_returns_empty():
          patch("app.agents.chat.graph.is_mem0_spacy_model_available", return_value=True):
         mock_settings.mem0_top_k = 5
         from app.agents.chat_agent import mem0_recall_node
-        state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [HumanMessage(content="hello")], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": []}
 
@@ -63,7 +63,7 @@ def test_recall_node_system_exit_returns_empty():
          patch("app.agents.chat.graph.is_mem0_spacy_model_available", return_value=True):
         mock_settings.mem0_top_k = 5
         from app.agents.chat_agent import mem0_recall_node
-        state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [HumanMessage(content="hello")], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": []}
 
@@ -74,7 +74,7 @@ def test_recall_node_skips_search_when_spacy_model_missing():
     with patch("app.agents.chat.graph.get_mem0_client", return_value=mock_client), \
          patch("app.agents.chat.graph.is_mem0_spacy_model_available", return_value=False):
         from app.agents.chat_agent import mem0_recall_node
-        state = {"messages": [HumanMessage(content="hello")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [HumanMessage(content="hello")], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": []}
     mock_client.search.assert_not_called()
@@ -85,7 +85,7 @@ def test_recall_node_no_human_message_returns_empty():
     mock_client = MagicMock()
     with patch("app.agents.chat.graph.get_mem0_client", return_value=mock_client):
         from app.agents.chat_agent import mem0_recall_node
-        state = {"messages": [], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_recall_node(state, _make_config())
     assert result == {"memories": []}
     mock_client.search.assert_not_called()
@@ -108,7 +108,7 @@ def test_store_node_spawns_background_thread():
                 HumanMessage(content="看好BTC"),
                 AIMessage(content="好的，BTC目前..."),
             ],
-            "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": [],
+            "research_scope": {}, "consecutive_tool_failures": 0, "memories": [],
         }
         result = mem0_store_node(state, _make_config())
 
@@ -127,7 +127,7 @@ def test_store_node_disabled_returns_empty():
     """mem0_store_node returns {} immediately when client is None."""
     with patch("app.agents.chat.graph.get_mem0_client", return_value=None):
         from app.agents.chat_agent import mem0_store_node
-        state = {"messages": [HumanMessage(content="hi"), AIMessage(content="hey")], "user_profile": {}, "user_prefs": {}, "consecutive_tool_failures": 0, "memories": []}
+        state = {"messages": [HumanMessage(content="hi"), AIMessage(content="hey")], "research_scope": {}, "consecutive_tool_failures": 0, "memories": []}
         result = mem0_store_node(state, _make_config())
     assert result == {}
 
@@ -136,7 +136,7 @@ def test_build_prompt_includes_memories():
     """_build_prompt_from_state appends <memories> section when memories present."""
     from app.agents.chat_agent import _build_prompt_from_state
     base = "You are a helpful assistant."
-    result = _build_prompt_from_state(base, {}, {}, memories=["用户看好BTC", "短线风格"])
+    result = _build_prompt_from_state(base, {}, memories=["用户看好BTC", "短线风格"])
     assert "<memories>" in result
     assert "用户看好BTC" in result
     assert "短线风格" in result
@@ -146,6 +146,6 @@ def test_build_prompt_no_memories_unchanged():
     """_build_prompt_from_state does not add <memories> section when list is empty."""
     from app.agents.chat_agent import _build_prompt_from_state
     base = "You are a helpful assistant."
-    result = _build_prompt_from_state(base, {}, {}, memories=[])
+    result = _build_prompt_from_state(base, {}, memories=[])
     assert "<memories>" not in result
     assert result.startswith(base)

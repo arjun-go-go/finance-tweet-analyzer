@@ -4,9 +4,7 @@ RAG 向量存储抽象层
 职责：
   1. 定义 VectorStoreClient Protocol（增删查接口），屏蔽底层存储差异
   2. 实现 Chroma 后端适配器（ChromaVectorStore）
-  3. 管理两个 collection：
-     - user_documents：用户上传的私有文档（按 user_id 隔离）
-     - public_signals：系统采集的推文/分析结果（公共可查）
+  3. 管理 public_signals collection：推文原文与分析结果
 
 设计决策：
 - 两个 collection 分离：隐私隔离 + 不同的 metadata schema
@@ -101,8 +99,7 @@ class ChromaVectorStore:
     适合动态写入（推文/分析持续入库）且高召回的场景。
     """
 
-    # 两个 collection：user_documents（私有文档） / public_signals（公共信号）
-    COLLECTIONS = ("user_documents", "public_signals")
+    COLLECTIONS = ("public_signals",)
 
     def __init__(self, persist_dir: str):
         embedding_fn = get_embedder()
@@ -193,11 +190,10 @@ class MilvusVectorStore:
     """Milvus/Zilliz implementation of VectorStoreClient.
 
     Logical collections are mapped to physical Milvus collection names using
-    settings.milvus_collection_prefix, preserving existing business boundaries:
-    user_documents and public_signals.
+    settings.milvus_collection_prefix.
     """
 
-    COLLECTIONS = ("user_documents", "public_signals")
+    COLLECTIONS = ("public_signals",)
     VECTOR_FIELD = "vector"
     CONTENT_FIELD = "content"
     METADATA_FIELD = "metadata"
@@ -226,6 +222,7 @@ class MilvusVectorStore:
         self._dimension = dimension
         self._timeout_sec = timeout_sec
         self._ensured: set[str] = set()
+        self._collection_fields: dict[str, set[str]] = {}
 
         for collection in self.COLLECTIONS:
             self._ensure_collection(collection)
@@ -240,6 +237,10 @@ class MilvusVectorStore:
         if physical_name in self._ensured:
             return
         if self._client.has_collection(physical_name):
+            description = self._client.describe_collection(physical_name)
+            self._collection_fields[physical_name] = {
+                str(field.get("name")) for field in description.get("fields", [])
+            }
             self._client.load_collection(physical_name)
             self._ensured.add(physical_name)
             return
@@ -251,9 +252,9 @@ class MilvusVectorStore:
         schema.add_field(field_name=self.VECTOR_FIELD, datatype=DataType.FLOAT_VECTOR, dim=self._dimension)
         schema.add_field(field_name=self.CONTENT_FIELD, datatype=DataType.VARCHAR, max_length=65535)
         schema.add_field(field_name=self.METADATA_FIELD, datatype=DataType.JSON)
-        schema.add_field(field_name="user_id", datatype=DataType.VARCHAR, max_length=128)
-        schema.add_field(field_name="document_id", datatype=DataType.VARCHAR, max_length=128)
         schema.add_field(field_name="source_type", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="source_id", datatype=DataType.VARCHAR, max_length=128)
+        schema.add_field(field_name="index_stage", datatype=DataType.VARCHAR, max_length=32)
         schema.add_field(field_name="ticker", datatype=DataType.VARCHAR, max_length=512)
 
         index_params = self._client.prepare_index_params()
@@ -269,6 +270,16 @@ class MilvusVectorStore:
             timeout=self._timeout_sec,
         )
         self._client.load_collection(physical_name)
+        self._collection_fields[physical_name] = {
+            "id",
+            self.VECTOR_FIELD,
+            self.CONTENT_FIELD,
+            self.METADATA_FIELD,
+            "source_type",
+            "source_id",
+            "index_stage",
+            "ticker",
+        }
         self._ensured.add(physical_name)
 
     @staticmethod
@@ -326,20 +337,27 @@ class MilvusVectorStore:
             return
         physical_name = self._physical_name(collection)
         self._ensure_collection(collection)
+        physical_fields = self._collection_fields[physical_name]
         cleaned = [_scrub_meta(m) for m in metadatas]
-        rows = [
-            {
+        rows = []
+        for i in range(len(ids)):
+            row = {
                 "id": ids[i],
                 self.VECTOR_FIELD: embeddings[i],
                 self.CONTENT_FIELD: texts[i],
                 self.METADATA_FIELD: cleaned[i],
-                "user_id": _stringify_meta_value(cleaned[i].get("user_id")),
-                "document_id": _stringify_meta_value(cleaned[i].get("document_id")),
                 "source_type": _stringify_meta_value(cleaned[i].get("source_type")),
                 "ticker": _stringify_meta_value(cleaned[i].get("ticker") or cleaned[i].get("tickers")),
             }
-            for i in range(len(ids))
-        ]
+            if "source_id" in physical_fields:
+                row["source_id"] = _stringify_meta_value(cleaned[i].get("source_id"))
+            if "index_stage" in physical_fields:
+                row["index_stage"] = _stringify_meta_value(cleaned[i].get("index_stage"))
+            if "user_id" in physical_fields:
+                row["user_id"] = _stringify_meta_value(cleaned[i].get("user_id"))
+            if "document_id" in physical_fields:
+                row["document_id"] = ""
+            rows.append(row)
         self._client.upsert(collection_name=physical_name, data=rows, timeout=self._timeout_sec)
 
     def query(

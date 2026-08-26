@@ -60,8 +60,7 @@ def _run_selection_case(case: dict, llm) -> dict:
         node_result = agent_node_impl(
             {
                 "messages": messages,
-                "user_profile": {},
-                "user_prefs": {},
+                "research_scope": {},
                 "memories": [],
                 "consecutive_tool_failures": 0,
                 "allowed_tool_names": allowed_names,
@@ -105,7 +104,6 @@ def _run_evidence_case(case: dict, llm) -> dict:
             "source_type": "analysis",
             "blogger": "",
         },
-        "search_my_documents": {"query": case["input"], "ticker": ""},
         "list_my_followed_bloggers": {},
         "list_my_tracked_tickers": {},
     }[tool_name]
@@ -127,8 +125,7 @@ def _run_evidence_case(case: dict, llm) -> dict:
     try:
         state = {
             "messages": messages[1:],
-            "user_profile": {},
-            "user_prefs": {},
+            "research_scope": {},
             "memories": [],
             "consecutive_tool_failures": 1 if case["kind"] == "error" else 0,
             "allowed_tool_names": [tool_name],

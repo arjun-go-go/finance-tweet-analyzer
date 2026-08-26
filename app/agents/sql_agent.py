@@ -31,7 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.agents.llm import get_signal_llm, get_sql_llm
 from app.core.config import settings
@@ -171,26 +171,34 @@ class SQLGenResult(BaseModel):
 
 
 def _get_user_context(user_id: str) -> str:
-    from app.memory.preferences import get_preferences
-    from app.memory.profile import get_profile
+    from app.models.blogger import Blogger
+    from app.models.tracked_ticker import TrackedTicker
+    from app.models.user_blogger_follow import UserBloggerFollow
 
     user_id = normalize_user_id(user_id)
     db = SessionLocal()
     try:
-        prefs = get_preferences(db, user_id)
-        profile = get_profile(db, user_id)
+        handles = list(db.execute(
+            select(Blogger.handle)
+            .join(UserBloggerFollow, UserBloggerFollow.blogger_id == Blogger.id)
+            .where(UserBloggerFollow.user_id == user_id)
+        ).scalars())
+        tickers = list(db.execute(
+            select(TrackedTicker.ticker).where(
+                TrackedTicker.user_id == user_id,
+                TrackedTicker.status == "active",
+            )
+        ).scalars())
     finally:
         db.close()
 
     lines = []
-    if prefs.get("watched_bloggers"):
-        handles = ", ".join(f"'{h}'" for h in prefs["watched_bloggers"])
-        lines.append(f"用户关注的博主 handle 列表: [{handles}]")
-    if prefs.get("interested_tickers"):
-        tickers = ", ".join(f"'{t}'" for t in prefs["interested_tickers"])
-        lines.append(f"用户关注的标的列表: [{tickers}]")
-    if profile.get("name"):
-        lines.append(f"用户名字: {profile['name']}")
+    if handles:
+        handles_text = ", ".join(f"'{handle}'" for handle in handles)
+        lines.append(f"用户正式关注的博主 handle 列表: [{handles_text}]")
+    if tickers:
+        tickers_text = ", ".join(f"'{ticker}'" for ticker in tickers)
+        lines.append(f"用户启用的关注标的列表: [{tickers_text}]")
     return "\n".join(lines)
 
 

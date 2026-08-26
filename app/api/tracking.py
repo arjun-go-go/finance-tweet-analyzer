@@ -45,7 +45,7 @@ def subscribe(
 ):
     _check_rag_enabled()
     try:
-        record = tracking_service.subscribe(db, user.id, body.ticker, body.frequency)
+        record = tracking_service.subscribe(db, user.id, body.ticker)
     except tracking_service.TrackingQuotaExceeded as e:
         raise HTTPException(status_code=429, detail=str(e))
     except tracking_service.DuplicateSubscription as e:
@@ -79,7 +79,7 @@ def update_subscription(
 ):
     _check_rag_enabled()
     record = tracking_service.update_subscription(
-        db, user.id, tracking_id, frequency=body.frequency, status=body.status
+        db, user.id, tracking_id, status=body.status
     )
     if not record:
         raise HTTPException(status_code=404, detail="Subscription not found")
@@ -95,21 +95,3 @@ def unsubscribe(
     _check_rag_enabled()
     if not tracking_service.unsubscribe(db, user.id, tracking_id):
         raise HTTPException(status_code=404, detail="Subscription not found")
-
-
-@router.post("/{tracking_id}/trigger", response_model=dict)
-def trigger_report(
-    tracking_id: UUID,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Immediately trigger a report for a tracked ticker."""
-    _check_rag_enabled()
-    from app.models.tracked_ticker import TrackedTicker
-
-    record = db.get(TrackedTicker, tracking_id)
-    if not record or record.user_id != user.id or record.status == "deleted":
-        raise HTTPException(status_code=404, detail="Subscription not found")
-
-    report = tracking_service.queue_tracking_report(db, record, manual=True)
-    return {"report_id": str(report.id), "status": report.status}

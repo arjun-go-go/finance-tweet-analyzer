@@ -122,7 +122,7 @@ def runtime_stats(
     db: Session = Depends(get_db),
 ) -> dict:
     redis_client = _get_redis()
-    queue_names = ["analysis", "prediction", "ingest", "vision", "embed", "report", "default"]
+    queue_names = ["analysis", "prediction", "ingest", "vision", "embed", "default"]
     outbox_rows = db.execute(
         select(OutboxEvent.status, func.count()).group_by(OutboxEvent.status)
     ).all()

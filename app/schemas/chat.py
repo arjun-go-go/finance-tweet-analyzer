@@ -28,7 +28,6 @@ class ConversationResponse(BaseModel):
     title: str | None
     status: str
     message_count: int
-    total_tokens: int
     last_message_at: datetime | None
     created_at: datetime
 
@@ -63,7 +62,6 @@ class MessageResponse(BaseModel):
     content: str
     tool_calls: list[dict] | dict | None = None
     sequence: int
-    token_count: int
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -53,46 +53,6 @@ def has_tool_result_since_latest_human(messages: list) -> bool:
     return False
 
 
-def deterministic_analysis_call(messages: list, tool_name: str) -> AIMessage | None:
-    """Build the two-stage analysis tool call without relying on model sampling."""
-    human_text = next(
-        (message.content for message in reversed(messages) if isinstance(message, HumanMessage)),
-        "",
-    )
-    if tool_name == "preview_tweet_analysis":
-        handle_match = re.search(r"@([A-Za-z0-9_]{1,15})", human_text)
-        since_match = re.search(r"\b(\d+[hdw])\b", human_text.lower())
-        args = {
-            "blogger_handle": handle_match.group(1) if handle_match else "",
-            "reanalyze": "重新分析" in human_text,
-            "since": since_match.group(1) if since_match else "",
-        }
-    elif tool_name == "confirm_tweet_analysis":
-        context = "\n".join(
-            message.content
-            for message in messages
-            if isinstance(message, (AIMessage, ToolMessage)) and isinstance(message.content, str)
-        )
-        confirmation_match = re.search(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-            context,
-        )
-        if confirmation_match is None:
-            return None
-        args = {"task_id": confirmation_match.group(0)}
-    else:
-        return None
-    return AIMessage(
-        content="",
-        tool_calls=[{
-            "name": tool_name,
-            "args": args,
-            "id": f"call_{uuid.uuid4().hex}",
-            "type": "tool_call",
-        }],
-    )
-
-
 def deterministic_follow_call(messages: list) -> AIMessage | None:
     human_text = next(
         (message.content for message in reversed(messages) if isinstance(message, HumanMessage)),
@@ -151,38 +111,17 @@ def deterministic_business_query_call(messages: list, tool_name: str) -> AIMessa
     )
 def build_prompt_from_state(
     base_prompt: str,
-    profile: dict,
-    prefs: dict,
+    research_scope: dict,
     memories: list | None = None,
 ) -> str:
     sections = [base_prompt]
-
-    profile_lines = []
-    if profile.get("name"):
-        profile_lines.append(f"姓名: {profile['name']}")
-    if profile.get("nickname"):
-        profile_lines.append(f"昵称: {profile['nickname']}")
-    if profile.get("occupation"):
-        profile_lines.append(f"职业: {profile['occupation']}")
-    if profile.get("location"):
-        profile_lines.append(f"所在地: {profile['location']}")
-    if profile.get("birthday"):
-        profile_lines.append(f"生日: {profile['birthday']}")
-    if profile_lines:
-        sections.append("用户档案：\n" + "\n".join(profile_lines))
-
-    pref_lines = []
-    if prefs.get("investment_style"):
-        pref_lines.append(f"投资偏好: {prefs['investment_style']}")
-    if prefs.get("watched_bloggers"):
-        pref_lines.append(f"关注博主: {', '.join(prefs['watched_bloggers'])}")
-    if prefs.get("interested_tickers"):
-        pref_lines.append(f"关注标的: {', '.join(prefs['interested_tickers'])}")
-    if prefs.get("reply_style"):
-        style_label = "简洁" if prefs["reply_style"] == "concise" else "详细"
-        pref_lines.append(f"回复风格: {style_label}")
-    if pref_lines:
-        sections.append("用户偏好：\n" + "\n".join(pref_lines))
+    scope_lines = []
+    if research_scope.get("blogger_handles"):
+        scope_lines.append(f"正式关注博主: {', '.join(research_scope['blogger_handles'])}")
+    if research_scope.get("tickers"):
+        scope_lines.append(f"启用的关注标的: {', '.join(research_scope['tickers'])}")
+    if scope_lines:
+        sections.append("<research_scope>\n" + "\n".join(scope_lines) + "\n</research_scope>")
 
     if memories:
         sections.append(
@@ -205,7 +144,7 @@ def agent_node_impl(
     settings_obj=settings,
     get_prompt_fn=get_prompt,
     get_llm=get_report_llm,
-    build_prompt: Callable[[str, dict, dict, list | None], str] = build_prompt_from_state,
+    build_prompt: Callable[[str, dict, list | None], str] = build_prompt_from_state,
 ) -> dict:
     """Run the core chat LLM node and return a LangGraph partial state update."""
     messages = state["messages"]
@@ -226,13 +165,11 @@ def agent_node_impl(
         logger.info("[Agent] Terminal tool result detected; returning deterministic final answer")
         return {"messages": [AIMessage(content=terminal_response)]}
 
-    profile = state.get("user_profile") or {}
-    prefs = state.get("user_prefs") or {}
+    research_scope = state.get("research_scope") or {}
     memories = state.get("memories") or []
     system_prompt = build_prompt(
         get_prompt_fn("chat/system"),
-        profile,
-        prefs,
+        research_scope,
         memories=memories,
     )
 
@@ -243,8 +180,7 @@ def agent_node_impl(
         memories = memories[:2]
         system_prompt = build_prompt(
             get_prompt_fn("chat/system"),
-            profile,
-            prefs,
+            research_scope,
             memories=memories,
         )
         system_tokens = estimate_tokens([SystemMessage(content=system_prompt)])
@@ -286,15 +222,6 @@ def agent_node_impl(
         deterministic_call = deterministic_follow_call(messages)
         if deterministic_call is not None:
             logger.info("[Agent] Deterministic follow action")
-            return {"messages": [deterministic_call]}
-    if (
-        len(action_tools) == 1
-        and action_tools[0] in ("preview_tweet_analysis", "confirm_tweet_analysis")
-        and not has_tool_result_since_latest_human(messages)
-    ):
-        deterministic_call = deterministic_analysis_call(messages, action_tools[0])
-        if deterministic_call is not None:
-            logger.info("[Agent] Deterministic analysis action tool={}", action_tools[0])
             return {"messages": [deterministic_call]}
     runnable = llm.bind_tools(selected_tools) if selected_tools else llm
 

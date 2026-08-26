@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import DateTime, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,13 +27,24 @@ class AgentTrace(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="success"
     )
-    retry_count: Mapped[int] = mapped_column(Integer, server_default="0")
-    latency_ms: Mapped[int] = mapped_column(Integer, server_default="0")
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    latency_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     __table_args__ = (
+        Index("ix_agent_traces_conv_created", "conversation_id", "created_at"),
+        Index(
+            "ix_agent_traces_tool_status_created",
+            "tool_name",
+            "status",
+            "created_at",
+        ),
         {"comment": "Agent execution traces - immutable audit log, not cascade-deleted"},
     )

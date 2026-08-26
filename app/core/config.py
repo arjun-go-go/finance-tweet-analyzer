@@ -128,8 +128,6 @@ class Settings(BaseSettings):
     embedding_timeout_sec: float = 30.0
 
     # ----- Chunking -----
-    chunk_size_document: int = 800
-    chunk_overlap_document: int = 100
     chunk_size_analysis: int = 1000
     chunk_size_tweet: int = 0
 
@@ -138,9 +136,8 @@ class Settings(BaseSettings):
     reranker_top_n: int = 10
     reranker_min_score: float = 0.3
     report_rerank_quota: dict[str, int] = {
-        "tweet": 4,
-        "document": 3,
-        "analysis": 2,
+        "tweet": 5,
+        "analysis": 4,
         "structured": 1,
     }
 
@@ -159,51 +156,19 @@ class Settings(BaseSettings):
     es_request_timeout_sec: float = 3.0
     es_bulk_chunk_size: int = 500
     es_source_type_quota: dict[str, int] = {
-        "tweet": 5,
-        "analysis": 5,
-        "document": 3,
-        "pdf": 1,
-        "docx": 1,
+        "tweet": 8,
+        "analysis": 7,
     }
 
-    # ----- Report generation -----
-    report_section_timeout_sec: int = 90
-    report_total_timeout_sec: int = 300
-    report_section_max_sources: int = 30
-    report_section_truncate_by_type: dict[str, int] = {
-        "tweet": 1000,
-        "document": 1000,
-        "analysis": 600,
-        "structured": 500,
-    }
-    report_section_truncate_default: int = 500
-    report_synth_max_evidence: int = 12
-    report_synth_truncate_default: int = 300
-    report_stream_redis_channel_prefix: str = "report_stream"
-    report_stream_heartbeat_sec: int = 15
-    report_stream_max_wait_sec: int = 300
+    # Deprecated environment compatibility; no runtime feature consumes it.
+    report_section_max_sources: int = 10
 
     # ----- Tracking subscriptions -----
     max_tracked_tickers_per_user: int = 20
     max_followed_bloggers_per_user: int = 20
 
     # ----- User analysis jobs -----
-    user_analysis_requests_enabled: bool = False
-    user_analysis_daily_limit: int = 10
     user_analysis_pipeline_version: str = "v2"
-
-    # ----- Document quotas -----
-    max_documents_per_user: int = 200
-    max_document_size_mb: int = 20
-    max_total_size_mb_per_user: int = 500
-    allowed_file_extensions: list[str] = [".pdf", ".docx", ".md", ".txt"]
-
-    # ----- URL parsing -----
-    url_fetch_timeout_sec: int = 15
-    url_blocked_hosts: list[str] = [
-        "localhost", "127.0.0.1", "0.0.0.0", "::1",
-        "169.254.169.254",
-    ]
 
     # ----- Storage -----
     document_storage_root: str = "./uploads"
@@ -211,6 +176,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = ""
     minio_access_key: str = ""
     minio_secret_key: str = ""
+    # Deprecated environment compatibility; private documents are no longer stored.
     minio_bucket_documents: str = "finance-documents"
     minio_bucket_tweet_media: str = "finance-tweet-media"
     tweet_media_max_size_mb: int = 10

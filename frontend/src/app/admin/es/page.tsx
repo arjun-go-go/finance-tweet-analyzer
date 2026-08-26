@@ -113,9 +113,8 @@ export default function EsAdminPage() {
             <Stat label="Alias" value={stats.elasticsearch.alias} />
             <Stat label="Write Index" value={stats.elasticsearch.current_write_index || "-"} />
             <Stat label="ES Docs" value={stats.elasticsearch.total} />
-            <Stat label="PG Chunks" value={stats.doc_chunks} />
+            <Stat label="PG Chunks" value={stats.content_chunks} />
             <Stat label="Milvus Signals" value={stats.vector_store.public_signals} />
-            <Stat label="Milvus Documents" value={stats.vector_store.user_documents} />
           </div>
 
           <div className="grid gap-5 lg:grid-cols-2">
@@ -149,18 +148,18 @@ export default function EsAdminPage() {
                     <th className="py-2">target</th>
                     <th>status</th>
                     <th>attempts</th>
-                    <th>doc_chunk_id</th>
+                    <th>content_chunk_id</th>
                     <th>error</th>
                     <th>updated</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
                   {jobs.map((job) => (
-                    <tr key={`${job.target}-${job.doc_chunk_id}`} className="text-slate-300">
+                    <tr key={`${job.target}-${job.content_chunk_id}`} className="text-slate-300">
                       <td className="py-3 font-mono text-cyan-300">{job.target}</td>
                       <td>{job.status}</td>
                       <td>{job.attempts}</td>
-                      <td className="font-mono text-xs">{job.doc_chunk_id}</td>
+                      <td className="font-mono text-xs">{job.content_chunk_id}</td>
                       <td className="max-w-[280px] truncate text-rose-200">{job.error_message || "-"}</td>
                       <td className="font-mono text-xs">{job.updated_at || "-"}</td>
                     </tr>

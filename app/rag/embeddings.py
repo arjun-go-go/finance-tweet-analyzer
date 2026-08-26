@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.doc_chunk import DocChunk
+from app.models.content_chunk import ContentChunk
 
 
 class Embedder(Protocol):
@@ -50,7 +50,7 @@ def embed_with_dedupe(
 
     去重逻辑：
       1. 对每段文本计算 SHA256 哈希
-      2. 查 doc_chunks 表中是否已有相同 hash 且已分配 vector_id
+      2. 查 content_chunks 表中是否已有相同 hash 且已分配 vector_id
       3. 命中 → 复用已有 vector_id，跳过 embedding API 调用
       4. 未命中 → 调用 embedder.embed_documents 生成新向量
 
@@ -65,9 +65,9 @@ def embed_with_dedupe(
     hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]
     # 步骤 2：查库找已有向量（content-hash → vector_id 映射）
     rows = session.execute(
-        select(DocChunk.content_hash, DocChunk.vector_id)
-        .where(DocChunk.content_hash.in_(hashes))
-        .where(DocChunk.vector_id.is_not(None))
+        select(ContentChunk.content_hash, ContentChunk.vector_id)
+        .where(ContentChunk.content_hash.in_(hashes))
+        .where(ContentChunk.vector_id.is_not(None))
     ).all()
     hash_to_vid: dict[str, str] = {h: vid for h, vid in rows}
 

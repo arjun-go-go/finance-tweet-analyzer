@@ -24,24 +24,6 @@ def _render_evidence(items: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-def search_my_documents_impl(user_id: UUID, query: str, ticker: str = "") -> str:
-    """Search private documents through the shared vector + ES hybrid pipeline."""
-    intent = build_retrieval_intent(query, ticker=ticker)
-    result = hybrid_retrieve(
-        intent,
-        user_id=user_id,
-        query=query,
-        source_scope=["private_documents"],
-    )
-    evidence = evidence_from_items(result["reranked"])
-    if not evidence:
-        return "未找到相关文档内容。"
-    return tool_ok(
-        _render_evidence(evidence),
-        data={"evidence": evidence, "ticker": "" if intent.ticker == "UNKNOWN" else intent.ticker},
-    )
-
-
 def search_public_signals_impl(
     query: str,
     source_type: str = "analysis",

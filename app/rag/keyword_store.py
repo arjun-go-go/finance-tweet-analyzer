@@ -1,7 +1,7 @@
 """Elasticsearch keyword/BM25 read model for RAG chunks.
 
 PostgreSQL remains the source of truth. This module stores and queries a
-searchable copy of ``doc_chunks`` for keyword retrieval.
+searchable copy of ``content_chunks`` for keyword retrieval.
 """
 
 from __future__ import annotations
@@ -39,10 +39,7 @@ def build_rag_index_body() -> dict[str, Any]:
         "mappings": {
             "properties": {
                 "chunk_id": {"type": "keyword"},
-                "document_id": {"type": "keyword"},
                 "source_id": {"type": "keyword"},
-                "user_id": {"type": "keyword"},
-                "visibility": {"type": "keyword"},
                 "source_type": {"type": "keyword"},
                 "chunk_index": {"type": "integer"},
                 "content": {
@@ -101,30 +98,20 @@ def _split_tickers(value: Any) -> list[str]:
     return tickers
 
 
-def chunk_to_es_document(chunk: Any, user_id: UUID | str | None = None) -> dict[str, Any]:
-    """Convert a DocChunk-like object to an Elasticsearch document."""
+def chunk_to_es_document(chunk: Any) -> dict[str, Any]:
+    """Convert a ContentChunk-like object to an Elasticsearch document."""
     metadata = dict(getattr(chunk, "metadata_", None) or {})
-    source_type = metadata.get("source_type", "document")
+    source_type = str(getattr(chunk, "source_type", None) or metadata.get("source_type") or "")
     tickers = _split_tickers(metadata.get("tickers") or metadata.get("ticker"))
     chunk_id = str(getattr(chunk, "id"))
-    document_id = getattr(chunk, "document_id", None)
-    source_id = (
-        metadata.get("source_id")
-        or metadata.get("tweet_id")
-        or metadata.get("analysis_id")
-        or metadata.get("document_id")
-        or document_id
-    )
-    effective_user_id = user_id or metadata.get("user_id")
-    visibility = metadata.get("visibility") or ("private" if effective_user_id else "public")
+    source_id = str(getattr(chunk, "source_id", None) or metadata.get("source_id") or "")
+    index_stage = str(getattr(chunk, "index_stage", None) or metadata.get("index_stage") or "")
 
     return {
         "chunk_id": chunk_id,
-        "document_id": str(document_id) if document_id else None,
-        "source_id": str(source_id) if source_id else None,
-        "user_id": str(effective_user_id) if effective_user_id else None,
-        "visibility": visibility,
+        "source_id": source_id,
         "source_type": source_type,
+        "index_stage": index_stage,
         "chunk_index": getattr(chunk, "chunk_index", 0),
         "content": getattr(chunk, "content", "") or "",
         "title": metadata.get("title") or "",
@@ -236,27 +223,6 @@ class ElasticsearchKeywordStore:
         time_range_end: datetime | date | None = None,
     ) -> dict[str, Any]:
         filters: list[dict[str, Any]] = []
-        if user_id:
-            filters.append(
-                {
-                    "bool": {
-                        "should": [
-                            {"term": {"visibility": "public"}},
-                            {
-                                "bool": {
-                                    "must": [
-                                        {"term": {"visibility": "private"}},
-                                        {"term": {"user_id": str(user_id)}},
-                                    ]
-                                }
-                            },
-                        ],
-                        "minimum_should_match": 1,
-                    }
-                }
-            )
-        else:
-            filters.append({"term": {"visibility": "public"}})
 
         if blogger_filter:
             filters.append({"terms": {"blogger_handle": blogger_filter}})
@@ -325,7 +291,7 @@ class ElasticsearchKeywordStore:
             metadata = dict(source.get("metadata") or {})
             metadata["chunk_id"] = chunk_id
             for field in (
-                "source_id", "document_id", "chunk_index", "ticker", "tickers",
+                "source_id", "chunk_index", "ticker", "tickers", "index_stage",
                 "blogger_handle", "published_at", "created_at", "url",
             ):
                 if source.get(field) not in (None, ""):
@@ -336,7 +302,7 @@ class ElasticsearchKeywordStore:
                 {
                     "unique_id": f"es:{chunk_id}",
                     "content": source.get("content") or "",
-                    "source_type": source.get("source_type") or metadata.get("source_type", "document"),
+                    "source_type": source.get("source_type") or metadata.get("source_type", ""),
                     "metadata": metadata,
                     "score": float(hit.get("_score") or 0.0),
                 }
@@ -465,7 +431,7 @@ class ElasticsearchKeywordStore:
 
     def stats(self) -> dict[str, Any]:
         source_counts: dict[str, int] = {}
-        for source_type in ("tweet", "analysis", "document", "paste", "url", "pdf", "docx"):
+        for source_type in ("tweet", "analysis"):
             try:
                 resp = self._client.count(
                     index=self.index_name,
@@ -483,13 +449,6 @@ class ElasticsearchKeywordStore:
             "total": int(total or 0),
             "source_counts": source_counts,
         }
-
-    def delete_by_document_id(self, document_id: UUID | str) -> dict[str, Any]:
-        return self._client.delete_by_query(
-            index=self.index_name,
-            query={"term": {"document_id": str(document_id)}},
-            conflicts="proceed",
-        )
 
     def delete_by_source(self, source_type: str, source_id: UUID | str) -> dict[str, Any]:
         return self._client.delete_by_query(

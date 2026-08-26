@@ -7,4 +7,3 @@ def test_context_node_impls_live_in_dedicated_modules():
     assert chat_agent._init_context_node_impl is context_nodes.init_context_node_impl
     assert chat_agent._mem0_recall_node_impl is memory_nodes.mem0_recall_node_impl
     assert chat_agent._mem0_store_node_impl is memory_nodes.mem0_store_node_impl
-    assert chat_agent._extract_preferences_node_impl is memory_nodes.extract_preferences_node_impl

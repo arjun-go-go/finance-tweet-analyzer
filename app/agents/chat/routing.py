@@ -13,7 +13,6 @@ READ_ONLY_TOOL_NAMES = [
     "get_prediction_review_summary",
     "query_database",
     "search_public_signals",
-    "search_my_documents",
     "list_my_tracked_tickers",
     "list_my_followed_bloggers",
 ]
@@ -26,12 +25,7 @@ PREDICTION_REVIEW_TOOL_NAMES = ["get_prediction_review_summary"]
 FOLLOW_TOOL_NAMES = ["set_blogger_follow"]
 INGEST_PROFILE_TOOL_NAMES = ["fetch_and_save_profile"]
 INGEST_TWEET_TOOL_NAMES = ["fetch_and_save_tweets"]
-ANALYSIS_TOOL_NAMES = ["preview_tweet_analysis", "confirm_tweet_analysis"]
-ANALYSIS_PREVIEW_TOOL_NAMES = ["preview_tweet_analysis"]
-ANALYSIS_CONFIRM_TOOL_NAMES = ["confirm_tweet_analysis"]
-REPORT_TOOL_NAMES = ["generate_tracking_report"]
 PUBLIC_SIGNAL_TOOL_NAMES = ["search_public_signals"]
-PRIVATE_DOCUMENT_TOOL_NAMES = ["search_my_documents"]
 DATABASE_QUERY_TOOL_NAMES = ["query_database"]
 FOLLOWED_BLOGGER_TOOL_NAMES = ["list_my_followed_bloggers"]
 TRACKED_TICKER_TOOL_NAMES = ["list_my_tracked_tickers"]
@@ -90,40 +84,10 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
         return "followed_bloggers", FOLLOWED_BLOGGER_TOOL_NAMES
     if any(word in normalized for word in ("关注标的", "订阅标的", "我的标的", "watchlist")):
         return "tracked_tickers", TRACKED_TICKER_TOOL_NAMES
-    if any(word in normalized for word in ("私人文档", "私人资料", "我上传的", "我的文档", "文档里")):
-        return "private_documents", PRIVATE_DOCUMENT_TOOL_NAMES
-
     if re.search(r"(?:取消关注|不再关注|unfollow)\s*@?[A-Za-z0-9_]{1,15}", normalized):
         return "follow", FOLLOW_TOOL_NAMES
     if re.search(r"(?:正式关注|加入.*关注列表|关注博主|(?:^|\s)关注|follow)\s*@?[A-Za-z0-9_]{1,15}", normalized):
         return "follow", FOLLOW_TOOL_NAMES
-
-    confirmation_words = ("确认", "好的", "可以", "执行", "开始", "go ahead", "confirm")
-    confirmation_phrases = (
-        "确认提交",
-        "立即执行",
-        "是的",
-        "继续",
-        "没问题",
-        "提交吧",
-    )
-    analysis_confirmation_markers = (
-        "确认id",
-        "confirm_tweet_analysis",
-        "是否确认提交后台分析",
-        "请用户确认是否执行分析",
-    )
-    if (
-        (normalized in confirmation_words or any(phrase in normalized for phrase in confirmation_phrases))
-        and any(marker in normalized_context for marker in analysis_confirmation_markers)
-    ):
-        return "analysis", ANALYSIS_CONFIRM_TOOL_NAMES
-
-    negation_words = ("不要", "不用", "别", "无需", "不需要", "不要生成", "no report", "don't")
-    report_words = ("报告", "日报", "周报", "跟踪报告", "生成报告", "report")
-    report_actions = ("生成", "写", "做", "创建", "出", "给我", "generate", "create", "write")
-    if any(neg in normalized for neg in negation_words) and any(word in normalized for word in report_words):
-        return "public_signals", PUBLIC_SIGNAL_TOOL_NAMES
 
     ingest_negations = (
         "不要抓取",
@@ -139,37 +103,6 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
     )
     if any(phrase in normalized for phrase in ingest_negations):
         return "public_signals", PUBLIC_SIGNAL_TOOL_NAMES
-
-    if any(word in normalized for word in report_words) and (
-        "report" in normalized or any(action in normalized for action in report_actions)
-    ):
-        return "report", REPORT_TOOL_NAMES
-
-    analysis_words = (
-        "待分析",
-        "待处理推文",
-        "预览分析",
-        "确认分析",
-        "分析任务",
-        "执行分析",
-        "提交分析",
-        "开始分析",
-        "分析待处理",
-        "创建推文分析",
-        "有多少待分析",
-        "tweet analysis",
-        "分析所有 pending",
-        "准备执行推文分析",
-        "分析新采集",
-        "深度分析推文",
-        "分析任务预览",
-        "confirm analysis",
-        "preview analysis",
-    )
-    if any(word in normalized for word in analysis_words):
-        if "确认分析" in normalized or "confirm analysis" in normalized:
-            return "analysis", ANALYSIS_CONFIRM_TOOL_NAMES
-        return "analysis", ANALYSIS_PREVIEW_TOOL_NAMES
 
     profile_words = (
         "更新资料",
@@ -205,18 +138,6 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
     )) or re.search(r"(?:\$)?[A-Z]{2,10}\b", text):
         return "public_signals", PUBLIC_SIGNAL_TOOL_NAMES
     return "conversation", []
-
-
-def has_explicit_report_confirmation(message: str, ticker: str) -> bool:
-    text = message.lower()
-    ticker_text = ticker.lower()
-    action_words = ("确认", "立即", "开始", "执行", "生成", "创建", "确认生成", "go ahead", "confirm")
-    report_words = ("报告", "日报", "周报", "跟踪报告", "report")
-    return (
-        ticker_text in text
-        and any(word in text for word in action_words)
-        and any(word in text for word in report_words)
-    )
 
 
 def has_explicit_ingest_confirmation(
