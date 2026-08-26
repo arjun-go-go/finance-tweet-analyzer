@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     report_model: str = "qwen/qwen3.7-max"
     vision_model: str = "qwen/qwen3.7-plus"
     signal_llm_timeout_seconds: float = 75.0
-    signal_llm_max_completion_tokens: int = 3000
+    signal_llm_max_completion_tokens: int = 6000
     signal_llm_reasoning_effort: str = "minimal"
     signal_llm_max_retries: int = 1
     vision_prompt_version: str = "v1"
@@ -109,10 +109,9 @@ class Settings(BaseSettings):
 
     # ----- RAG / Vector store -----
     vector_backend: str = Field(
-        default="chroma",
+        default="milvus",
         validation_alias=AliasChoices("VECTOR_BACKEND", "VECTOR_STORE_BACKEND"),
     )
-    chroma_persist_dir: str = "./chroma_db"
     milvus_uri: str = ""
     milvus_token: str = ""
     milvus_db_name: str = "default"
@@ -160,9 +159,6 @@ class Settings(BaseSettings):
         "analysis": 7,
     }
 
-    # Deprecated environment compatibility; no runtime feature consumes it.
-    report_section_max_sources: int = 10
-
     # ----- Tracking subscriptions -----
     max_tracked_tickers_per_user: int = 20
     max_followed_bloggers_per_user: int = 20
@@ -176,8 +172,6 @@ class Settings(BaseSettings):
     minio_endpoint: str = ""
     minio_access_key: str = ""
     minio_secret_key: str = ""
-    # Deprecated environment compatibility; private documents are no longer stored.
-    minio_bucket_documents: str = "finance-documents"
     minio_bucket_tweet_media: str = "finance-tweet-media"
     tweet_media_max_size_mb: int = 10
 
@@ -212,10 +206,8 @@ class Settings(BaseSettings):
 
     # ----- mem0 long-term memory (self-hosted OSS mode) -----
     mem0_enabled: bool = True
-    mem0_chroma_path: str = "./chroma_mem0_db"
-    mem0_history_db_path: str = "./mem0_history.db"
     mem0_top_k: int = 5
-    mem0_vector_backend: str = "chroma"
+    mem0_vector_backend: str = "milvus"
     mem0_milvus_collection: str = "finance_tweet_mem0_memories"
     mem0_milvus_metric_type: str = "COSINE"
 

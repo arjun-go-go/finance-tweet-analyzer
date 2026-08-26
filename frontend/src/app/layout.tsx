@@ -8,8 +8,8 @@ import "./globals.css";
 import AuthGuard from "@/components/AuthGuard";
 
 export const metadata: Metadata = {
-  title: "Signal Desk · AI 投资情报工作台",
-  description: "把分散的市场观点，变成有证据的投资情报。",
+  title: "Signal · Twitter 投资情报",
+  description: "关注观点变化，而不是信息噪音。",
 };
 
 export default function RootLayout({

@@ -5,8 +5,8 @@ mem0 长期记忆客户端单例（自托管 OSS 模式）
   - 使用 mem0 OSS `Memory` 类，全部基础设施自托管
   - LLM：OpenRouter（OpenAI 兼容接口）
   - Embedder：DashScope text-embedding（OpenAI 兼容接口）
-  - 向量存储：独立 Milvus collection（或本地 Chroma 兼容模式）
-  - 历史记录与最近消息：本地 SQLite（mem0_history.db）
+  - 向量存储：独立 Milvus collection
+  - 历史记录与最近消息：共享 PostgreSQL
   - 单例保证整个进程只初始化一次
   - mem0_enabled=False 时返回 None，调用方需判断
 
@@ -25,6 +25,7 @@ import threading
 from loguru import logger
 
 from app.core.config import settings
+from app.memory.postgres_history import PostgresMemoryHistory
 
 # mem0 在模块导入时读取此变量；必须先设置，避免创建遥测专用 collection。
 os.environ.setdefault("MEM0_TELEMETRY", "false")
@@ -55,35 +56,27 @@ def _build_config() -> dict:
         "embedding_dims": settings.embedding_dim,
     }
 
-    backend = settings.mem0_vector_backend.lower()
-    if backend == "milvus":
-        vector_store_cfg = {
-            "provider": "milvus",
-            "config": {
-                "url": settings.milvus_uri,
-                "token": settings.milvus_token,
-                "collection_name": settings.mem0_milvus_collection,
-                "embedding_model_dims": settings.embedding_dim,
-                "metric_type": settings.mem0_milvus_metric_type,
-                "db_name": settings.milvus_db_name,
-            },
-        }
-    elif backend == "chroma":
-        vector_store_cfg = {
-            "provider": "chroma",
-            "config": {
-                "collection_name": "mem0_memories",
-                "path": settings.mem0_chroma_path,
-            },
-        }
-    else:
-        raise ValueError(f"Unknown mem0 vector backend: {settings.mem0_vector_backend}")
+    if settings.mem0_vector_backend.lower() != "milvus":
+        raise ValueError("MEM0_VECTOR_BACKEND must be 'milvus'")
+    vector_store_cfg = {
+        "provider": "milvus",
+        "config": {
+            "url": settings.milvus_uri,
+            "token": settings.milvus_token,
+            "collection_name": settings.mem0_milvus_collection,
+            "embedding_model_dims": settings.embedding_dim,
+            "metric_type": settings.mem0_milvus_metric_type,
+            "db_name": settings.milvus_db_name,
+        },
+    }
 
     return {
         "llm": {"provider": "openai", "config": llm_cfg},
         "embedder": {"provider": "openai", "config": embedder_cfg},
         "vector_store": vector_store_cfg,
-        "history_db_path": settings.mem0_history_db_path,
+        # mem0 2.0.6 constructs SQLite internally. Use in-memory storage only
+        # during initialization, then replace it with the shared PG adapter.
+        "history_db_path": ":memory:",
         "version": "v1.1",
     }
 
@@ -109,9 +102,12 @@ def get_mem0_client():
 
         try:
             cfg = _build_config()
-            _mem0_client_singleton = Memory.from_config(cfg)
+            memory = Memory.from_config(cfg)
+            memory.db.close()
+            memory.db = PostgresMemoryHistory()
+            _mem0_client_singleton = memory
             logger.info(
-                "[mem0] Memory initialized (vector_backend={}, llm={}, embedder={})",
+                "[mem0] Memory initialized (vector_backend={}, history=postgresql, llm={}, embedder={})",
                 settings.mem0_vector_backend,
                 settings.signal_model,
                 settings.embedding_model,

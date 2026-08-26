@@ -1,24 +1,7 @@
-"""
-RAG 向量存储抽象层
-============================================================
-职责：
-  1. 定义 VectorStoreClient Protocol（增删查接口），屏蔽底层存储差异
-  2. 实现 Chroma 后端适配器（ChromaVectorStore）
-  3. 管理 public_signals collection：推文原文与分析结果
+"""Milvus vector storage for the public-signal RAG pipeline.
 
-设计决策：
-- 两个 collection 分离：隐私隔离 + 不同的 metadata schema
-- add() 方法绕过 LangChain 的 add_texts()：因为我们已有预计算的
-  embedding（通过 embed_with_dedupe 去重后得到），无需 LangChain 再调一次 API，
-  所以直接走底层 chromadb collection.add()
-- query() 使用 LangChain 的 similarity_search_by_vector_with_relevance_scores：
-  传入预计算的 query embedding，获得带相关性分数的结果
-- HNSW + cosine：适合动态写入场景，召回率高，无需重建索引
-- Protocol 模式：未来切换 Milvus 只需新增一个实现类
-
-在管线中的位置：
-  写入：chunk → embed → **vector store add**
-  检索：query embed → **vector store query** → rerank → 生成
+The protocol keeps indexing and retrieval independent from the client library.
+Production has one supported backend so local and shared indexes cannot drift.
 """
 
 from __future__ import annotations
@@ -28,16 +11,13 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Protocol
 
-from langchain_chroma import Chroma
-
 from app.core.config import settings
-from app.rag.embeddings import get_embedder
 
 _VS_INIT_LOCK = threading.Lock()
 
 
 def _scrub_meta(meta: dict) -> dict:
-    """Remove unsupported values from metadata — ChromaDB only accepts str/int/float/bool."""
+    """Keep metadata values supported by the fixed Milvus JSON payload."""
     return {
         k: v for k, v in meta.items()
         if v is not None and isinstance(v, (str, int, float, bool))
@@ -63,10 +43,7 @@ class VectorHit:
 
 
 class VectorStoreClient(Protocol):
-    """向量存储统一接口 Protocol，解耦具体后端实现。
-
-    任何实现此接口的类（Chroma / Milvus / FAISS）均可无缝替换。
-    """
+    """Storage interface used by RAG indexing and retrieval."""
 
     def add(
         self,
@@ -90,100 +67,6 @@ class VectorStoreClient(Protocol):
     def delete_where(self, collection: str, filter: dict) -> None: ...
 
     def count(self, collection: str) -> int: ...
-
-
-class ChromaVectorStore:
-    """基于 langchain_chroma.Chroma 的向量存储实现。
-
-    每个 collection 使用 HNSW 索引 + cosine 距离度量，
-    适合动态写入（推文/分析持续入库）且高召回的场景。
-    """
-
-    COLLECTIONS = ("public_signals",)
-
-    def __init__(self, persist_dir: str):
-        embedding_fn = get_embedder()
-        self._stores: dict[str, Chroma] = {}
-        for name in self.COLLECTIONS:
-            self._stores[name] = Chroma(
-                collection_name=name,
-                persist_directory=persist_dir,
-                embedding_function=embedding_fn,
-                collection_metadata={"hnsw:space": "cosine"},
-            )
-
-    def _col(self, collection: str) -> Chroma:
-        return self._stores[collection]
-
-    def add(
-        self,
-        collection: str,
-        ids: list[str],
-        texts: list[str],
-        embeddings: list[list[float]],
-        metadatas: list[dict],
-    ) -> None:
-        """写入预计算的向量到指定 collection。
-
-        注意：绕过 LangChain 的 add_texts()，直接操作底层 chromadb collection，
-        因为我们已通过 embed_with_dedupe 得到了向量，无需 LangChain 再调 API。
-        """
-        cleaned = [_scrub_meta(m) for m in metadatas]
-        self._col(collection)._collection.upsert(
-            ids=ids,
-            documents=texts,
-            embeddings=embeddings,
-            metadatas=cleaned,
-        )
-
-    @staticmethod
-    def _build_chroma_filter(filter: dict | None) -> dict | None:
-        """将多条件 filter 转为 ChromaDB 要求的 {"$and": [...]} 格式。
-
-        支持两种值形式：
-          - 简单值: {"source_type": "tweet"} → {"source_type": "tweet"}
-          - 运算符: {"ticker": {"$contains": "NVDA"}} → {"ticker": {"$contains": "NVDA"}}
-        多条件时包裹为 $and。
-        """
-        if not filter:
-            return None
-        if len(filter) == 1:
-            return filter
-        return {"$and": [{k: v} for k, v in filter.items()]}
-
-    def query(
-        self,
-        collection: str,
-        query_embedding: list[float],
-        k: int,
-        filter: dict | None = None,
-    ) -> list[VectorHit]:
-        """向量相似度检索，支持 metadata 过滤（如 source_type、ticker）。"""
-        chroma_filter = self._build_chroma_filter(filter)
-        results = self._col(collection).similarity_search_by_vector_with_relevance_scores(
-            embedding=query_embedding,
-            k=k,
-            filter=chroma_filter,
-        )
-        return [
-            VectorHit(id=doc.id or "", score=score, metadata=doc.metadata, content=doc.page_content)
-            for doc, score in results
-        ]
-
-    def delete(self, collection: str, ids: list[str]) -> None:
-        """按 ID 批量删除向量（用于 GC 任务清理已删除文档的向量）。"""
-        if ids:
-            self._col(collection).delete(ids=ids)
-
-    def delete_where(self, collection: str, filter: dict) -> None:
-        chroma_filter = self._build_chroma_filter(filter)
-        if chroma_filter:
-            self._col(collection)._collection.delete(where=chroma_filter)
-
-    def count(self, collection: str) -> int:
-        """返回 collection 中的向量总数（用于监控/健康检查）。"""
-        col = self._col(collection)
-        return col._collection.count()
 
 
 class MilvusVectorStore:
@@ -337,7 +220,6 @@ class MilvusVectorStore:
             return
         physical_name = self._physical_name(collection)
         self._ensure_collection(collection)
-        physical_fields = self._collection_fields[physical_name]
         cleaned = [_scrub_meta(m) for m in metadatas]
         rows = []
         for i in range(len(ids)):
@@ -349,14 +231,8 @@ class MilvusVectorStore:
                 "source_type": _stringify_meta_value(cleaned[i].get("source_type")),
                 "ticker": _stringify_meta_value(cleaned[i].get("ticker") or cleaned[i].get("tickers")),
             }
-            if "source_id" in physical_fields:
-                row["source_id"] = _stringify_meta_value(cleaned[i].get("source_id"))
-            if "index_stage" in physical_fields:
-                row["index_stage"] = _stringify_meta_value(cleaned[i].get("index_stage"))
-            if "user_id" in physical_fields:
-                row["user_id"] = _stringify_meta_value(cleaned[i].get("user_id"))
-            if "document_id" in physical_fields:
-                row["document_id"] = ""
+            row["source_id"] = _stringify_meta_value(cleaned[i].get("source_id"))
+            row["index_stage"] = _stringify_meta_value(cleaned[i].get("index_stage"))
             rows.append(row)
         self._client.upsert(collection_name=physical_name, data=rows, timeout=self._timeout_sec)
 
@@ -430,11 +306,10 @@ _vector_store_singleton: VectorStoreClient | None = None
 
 
 def get_vector_store() -> VectorStoreClient:
-    """向量存储单例工厂，根据 settings.vector_backend 选择后端实现。
+    """Return the process-wide Milvus client.
 
-    使用 threading.Lock 保护初始化路径：LangGraph Send fan-out 会让多个
-    检索节点在不同线程并发首次访问，chromadb 客户端在并发初始化时会
-    抛 'Could not connect to tenant default_tenant'，所以必须串行化首次构造。
+    The lock serializes first construction when LangGraph retrieval nodes fan
+    out across threads.
     """
     global _vector_store_singleton
     if _vector_store_singleton is not None:
@@ -442,20 +317,14 @@ def get_vector_store() -> VectorStoreClient:
     with _VS_INIT_LOCK:
         if _vector_store_singleton is not None:
             return _vector_store_singleton
-        backend = settings.vector_backend
-        if backend == "chroma":
-            _vector_store_singleton = ChromaVectorStore(
-                persist_dir=settings.chroma_persist_dir
-            )
-        elif backend == "milvus":
-            _vector_store_singleton = MilvusVectorStore(
-                uri=settings.milvus_uri,
-                token=settings.milvus_token,
-                db_name=settings.milvus_db_name,
-                collection_prefix=settings.milvus_collection_prefix,
-                dimension=settings.embedding_dim,
-                timeout_sec=settings.milvus_timeout_sec,
-            )
-        else:
-            raise ValueError(f"Unknown vector backend: {backend}")
+        if settings.vector_backend.lower() != "milvus":
+            raise ValueError("VECTOR_BACKEND must be 'milvus'")
+        _vector_store_singleton = MilvusVectorStore(
+            uri=settings.milvus_uri,
+            token=settings.milvus_token,
+            db_name=settings.milvus_db_name,
+            collection_prefix=settings.milvus_collection_prefix,
+            dimension=settings.embedding_dim,
+            timeout_sec=settings.milvus_timeout_sec,
+        )
         return _vector_store_singleton

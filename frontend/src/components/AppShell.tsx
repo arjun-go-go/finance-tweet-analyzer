@@ -1,9 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import AppIcon, { type IconName } from "@/components/AppIcon";
+import { GlobalSearchDialog, NotificationDrawer } from "@/components/WorkspaceOverlays";
 import { fetchAlerts } from "@/lib/api";
 import { logout } from "@/lib/auth";
 
@@ -42,10 +43,9 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
-  const searchInput = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState("");
   const [unreadAlerts, setUnreadAlerts] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -65,7 +65,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     const focusSearch = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        searchInput.current?.focus();
+        setSearchOpen(true);
+      }
+      if (event.key === "Escape") {
+        setSearchOpen(false);
+        setNotificationsOpen(false);
       }
     };
     window.addEventListener("keydown", focusSearch);
@@ -76,20 +80,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     matchesPath(pathname, item.href) ||
     (item.aliases ?? []).some((alias) => matchesPath(pathname, alias));
 
-  const submitSearch = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const normalized = query.trim();
-    router.push(normalized ? `/tweets?q=${encodeURIComponent(normalized)}` : "/tweets");
-  };
-
   return (
     <div className="workspace-shell">
       <aside className="workspace-sidebar">
-        <Link href="/" className="workspace-brand" aria-label="Signal Desk 首页">
+        <Link href="/" className="workspace-brand" aria-label="Signal 首页">
           <span className="workspace-brand-mark"><span /></span>
           <div>
-            <strong>Signal Desk</strong>
-            <small>Twitter 投资情报</small>
+            <strong>Signal</strong>
+            <small>TWITTER INTELLIGENCE</small>
           </div>
         </Link>
 
@@ -110,7 +108,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               className={`workspace-profile ${matchesPath(pathname, "/settings") ? "is-active" : ""}`}
             >
               <span className="workspace-avatar">SD</span>
-              <span><strong>个人设置</strong><small>研究偏好与账户</small></span>
+              <span><strong>个人工作台</strong><small>研究偏好与账户</small></span>
             </Link>
             <button type="button" className="workspace-signout" onClick={logout}>退出</button>
           </div>
@@ -119,23 +117,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       <main className="workspace-main">
         <header className="workspace-topbar">
-          <Link href="/" className="workspace-mobile-brand">Signal Desk</Link>
-          <form className="workspace-search" role="search" onSubmit={submitSearch}>
-            <button type="submit" aria-label="搜索推文、博主或标的"><AppIcon name="search" /></button>
+          <Link href="/" className="workspace-mobile-brand">Signal</Link>
+          <div className="workspace-search" role="search" onClick={() => setSearchOpen(true)}>
+            <span className="workspace-search-icon"><AppIcon name="search" /></span>
             <input
-              ref={searchInput}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索推文、博主或标的"
-              aria-label="搜索推文、博主或标的"
+              readOnly
+              value=""
+              onFocus={() => setSearchOpen(true)}
+              placeholder="搜索博主、标的或观点"
+              aria-label="打开全局搜索"
             />
             <kbd>Ctrl K</kbd>
-          </form>
+          </div>
           <div className="workspace-top-actions">
-            <Link href="/alerts" className="workspace-icon-button" aria-label={unreadAlerts ? `${unreadAlerts} 条未读提醒` : "研究提醒"}>
+            <button type="button" className="workspace-icon-button" onClick={() => setNotificationsOpen(true)} aria-label={unreadAlerts ? `${unreadAlerts} 条未读提醒` : "研究提醒"}>
               <AppIcon name="alerts" />
               {unreadAlerts > 0 && <span className="workspace-alert-count">{unreadAlerts > 99 ? "99+" : unreadAlerts}</span>}
-            </Link>
+            </button>
             <Link href="/sources?add=1" className="workspace-add-source">
               <AppIcon name="plus" /><span>新增信息源</span>
             </Link>
@@ -144,6 +142,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         <div className="workspace-content">{children}</div>
       </main>
+      <GlobalSearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <NotificationDrawer open={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
     </div>
   );
 }

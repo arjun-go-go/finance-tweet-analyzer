@@ -18,6 +18,7 @@ prompts:
       - 识别赞助或推广内容并设置 is_sponsored=true。
       - 价格和证据必须来自原文，不得补写。
       - confidence 表示提取可靠度，不表示投资观点成功概率。
+      - 保持输出紧凑：reasoning 与 thesis 各不超过 120 字；每个列表最多 5 项；每个标的最多 2 条 evidence；text_evidence 最多 5 条。
     human: |
       博主：@{{ author_handle }}
       推文内容：{{ content }}

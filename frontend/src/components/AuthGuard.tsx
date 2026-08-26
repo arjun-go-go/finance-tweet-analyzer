@@ -6,6 +6,7 @@ import { isAuthenticated, fetchMe } from "@/lib/auth";
 import AppShell from "@/components/AppShell";
 
 const PUBLIC_PATHS = ["/login", "/register"];
+const STANDALONE_PATHS = ["/onboarding"];
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -52,6 +53,10 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         <p>正在进入投资情报工作台</p>
       </div>
     );
+  }
+
+  if (STANDALONE_PATHS.includes(pathname)) {
+    return <>{children}</>;
   }
 
   return <AppShell>{children}</AppShell>;

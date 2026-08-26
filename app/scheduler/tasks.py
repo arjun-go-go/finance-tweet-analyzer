@@ -713,7 +713,7 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
             if is_downstream_verified_ticker(t):
                 ticker_symbols.append(t["symbol"])
 
-        # Store tickers as comma-joined string (ChromaDB doesn't support array metadata)
+        # Store tickers as a normalized string for vector metadata filtering.
         tickers_str = ",".join(ticker_symbols) if ticker_symbols else ""
 
         # 短文本 context 增强：对 ≤100 字的 chunk 拼接 [博主][日期][标的] 前缀用于 embedding
@@ -1182,7 +1182,7 @@ def rebuild_analysis_chunks_task(self, batch_size: int = 100) -> dict:
 
     流程：
       1. 从 content_chunks 删除 source_type='analysis' 的所有记录
-      2. 从 ChromaDB public_signals 删除对应向量
+      2. 从 Milvus public_signals 删除对应向量
       3. 逐批 dispatch embed_signal_task 重新入库
 
     手动触发：
@@ -1240,7 +1240,7 @@ def rebuild_tweet_chunks_task(self) -> dict:
 
     流程：
       1. 从 content_chunks 删除 source_type='tweet' 的所有记录
-      2. 从 ChromaDB public_signals 删除对应向量
+      2. 从 Milvus public_signals 删除对应向量
       3. 对每条有 content 的 tweet dispatch embed_signal_task 重新入库
 
     手动触发：
