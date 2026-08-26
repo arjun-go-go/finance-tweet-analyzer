@@ -1,77 +1,149 @@
 "use client";
 
-import { useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import AppIcon, { type IconName } from "@/components/AppIcon";
+import { fetchAlerts } from "@/lib/api";
 import { logout } from "@/lib/auth";
 
-const primary = [
-  { href: "/", label: "今日情报", icon: "pulse" as const },
-  { href: "/alerts", label: "研究提醒", icon: "alerts" as const },
-  { href: "/bloggers", label: "信息源", icon: "sources" as const },
-  { href: "/tweets", label: "推文情报", icon: "tweets" as const },
-  { href: "/tracking", label: "关注标的", icon: "watchlist" as const },
-  { href: "/chat", label: "研究助手", icon: "research" as const },
+interface NavItem {
+  href: string;
+  label: string;
+  icon: IconName;
+  aliases?: string[];
+}
+
+const primary: NavItem[] = [
+  { href: "/", label: "今日", icon: "pulse" },
+  { href: "/sources", label: "信息源", icon: "sources", aliases: ["/bloggers"] },
+  { href: "/watch", label: "关注", icon: "watchlist", aliases: ["/tracking"] },
+  { href: "/assistant", label: "助手", icon: "research", aliases: ["/chat"] },
 ];
 
-const library = [
-  { href: "/reports", label: "观点摘要", icon: "briefs" as const },
-];
+function matchesPath(pathname: string, href: string) {
+  return href === "/"
+    ? pathname === "/"
+    : pathname === href || pathname.startsWith(`${href}/`);
+}
 
-function NavLink({ item, active, onClick }: { item: { href: string; label: string; icon: IconName }; active: boolean; onClick?: () => void }) {
+function NavLink({ item, active }: { item: NavItem; active: boolean }) {
   return (
-    <Link href={item.href} onClick={onClick} className={`workspace-nav-link ${active ? "is-active" : ""}`}>
+    <Link
+      href={item.href}
+      className={`workspace-nav-link ${active ? "is-active" : ""}`}
+      aria-current={active ? "page" : undefined}
+    >
       <AppIcon name={item.icon} />
       <span>{item.label}</span>
-      {active && <span className="workspace-nav-pip" />}
     </Link>
   );
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [open, setOpen] = useState(false);
-  const isActive = (href: string) => href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  const router = useRouter();
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [unreadAlerts, setUnreadAlerts] = useState(0);
 
-  const sidebar = (
-    <>
-      <div className="workspace-brand">
-        <span className="workspace-brand-mark"><span /></span>
-        <div>
-          <strong>Signal Desk</strong>
-          <small>投资情报工作台</small>
-        </div>
-      </div>
-      <nav className="workspace-nav" aria-label="主导航">
-        <p className="workspace-nav-label">工作台</p>
-        {primary.map((item) => <NavLink key={item.href} item={item} active={isActive(item.href)} onClick={() => setOpen(false)} />)}
-        <p className="workspace-nav-label workspace-nav-label-spaced">研究输出</p>
-        {library.map((item) => <NavLink key={item.href} item={item} active={isActive(item.href)} onClick={() => setOpen(false)} />)}
-      </nav>
-      <div className="workspace-sidebar-footer">
-        <Link href="/me" className={`workspace-utility-link ${isActive("/me") ? "is-active" : ""}`}><AppIcon name="settings" />个人设置</Link>
-        <Link href="/admin/runtime" className={`workspace-utility-link ${pathname.startsWith("/admin") ? "is-active" : ""}`}><AppIcon name="admin" />系统管理</Link>
-        <Link href="/admin/predictions" className={`workspace-utility-link ${isActive("/admin/predictions") ? "is-active" : ""}`}><AppIcon name="evidence" />预测复核</Link>
-        <button onClick={logout} className="workspace-signout">退出登录</button>
-      </div>
-    </>
-  );
+  useEffect(() => {
+    let active = true;
+    fetchAlerts("unread")
+      .then((result) => {
+        if (active) setUnreadAlerts(result.unread);
+      })
+      .catch(() => {
+        // Navigation must remain available when the optional alert service is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInput.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
+
+  const isActive = (item: NavItem) =>
+    matchesPath(pathname, item.href) ||
+    (item.aliases ?? []).some((alias) => matchesPath(pathname, alias));
+
+  const submitSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = query.trim();
+    router.push(normalized ? `/tweets?q=${encodeURIComponent(normalized)}` : "/tweets");
+  };
 
   return (
     <div className="workspace-shell">
-      <aside className="workspace-sidebar">{sidebar}</aside>
-      <header className="workspace-mobile-header">
-        <button onClick={() => setOpen(true)} aria-label="打开导航"><AppIcon name="menu" /></button>
-        <span className="workspace-brand-mark"><span /></span>
-        <strong>Signal Desk</strong>
-      </header>
-      {open && <div className="workspace-mobile-overlay" onClick={() => setOpen(false)} />}
-      <aside className={`workspace-mobile-drawer ${open ? "is-open" : ""}`}>
-        <button className="workspace-drawer-close" onClick={() => setOpen(false)} aria-label="关闭导航"><AppIcon name="close" /></button>
-        {sidebar}
+      <aside className="workspace-sidebar">
+        <Link href="/" className="workspace-brand" aria-label="Signal Desk 首页">
+          <span className="workspace-brand-mark"><span /></span>
+          <div>
+            <strong>Signal Desk</strong>
+            <small>Twitter 投资情报</small>
+          </div>
+        </Link>
+
+        <nav className="workspace-nav" aria-label="主导航">
+          {primary.map((item) => (
+            <NavLink key={item.href} item={item} active={isActive(item)} />
+          ))}
+        </nav>
+
+        <div className="workspace-sidebar-footer">
+          <p className="workspace-sidebar-note">
+            <strong>只保留重要信号</strong>
+            从关注的 Twitter 博主中提取可追溯的投资观点。
+          </p>
+          <div className="workspace-profile-row">
+            <Link
+              href="/settings"
+              className={`workspace-profile ${matchesPath(pathname, "/settings") || matchesPath(pathname, "/me") ? "is-active" : ""}`}
+            >
+              <span className="workspace-avatar">SD</span>
+              <span><strong>个人设置</strong><small>研究偏好与账户</small></span>
+            </Link>
+            <button type="button" className="workspace-signout" onClick={logout}>退出</button>
+          </div>
+        </div>
       </aside>
-      <main className="workspace-main"><div className="workspace-content">{children}</div></main>
+
+      <main className="workspace-main">
+        <header className="workspace-topbar">
+          <Link href="/" className="workspace-mobile-brand">Signal Desk</Link>
+          <form className="workspace-search" role="search" onSubmit={submitSearch}>
+            <button type="submit" aria-label="搜索推文、博主或标的"><AppIcon name="search" /></button>
+            <input
+              ref={searchInput}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索推文、博主或标的"
+              aria-label="搜索推文、博主或标的"
+            />
+            <kbd>Ctrl K</kbd>
+          </form>
+          <div className="workspace-top-actions">
+            <Link href="/alerts" className="workspace-icon-button" aria-label={unreadAlerts ? `${unreadAlerts} 条未读提醒` : "研究提醒"}>
+              <AppIcon name="alerts" />
+              {unreadAlerts > 0 && <span className="workspace-alert-count">{unreadAlerts > 99 ? "99+" : unreadAlerts}</span>}
+            </Link>
+            <Link href="/sources?add=1" className="workspace-add-source">
+              <AppIcon name="plus" /><span>新增信息源</span>
+            </Link>
+            <Link href="/settings" className="workspace-mobile-settings" aria-label="个人设置"><AppIcon name="settings" /></Link>
+          </div>
+        </header>
+        <div className="workspace-content">{children}</div>
+      </main>
     </div>
   );
 }

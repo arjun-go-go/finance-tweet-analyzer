@@ -8,7 +8,7 @@ export default function BloggerCard({ blogger, rank }: { blogger: BloggerListIte
   const numericScore = Math.round(blogger.credibility_score);
   const confidence = isRated ? numericScore : null;
   const level = !isRated ? "unrated" : numericScore >= 65 ? "high" : numericScore >= 45 ? "medium" : "low";
-  return <Link href={`/bloggers/${encodeURIComponent(blogger.handle)}`} className="source-card">
+  return <Link href={`/sources/${encodeURIComponent(blogger.handle)}`} className="source-card">
     <div className={`source-score-line ${level}`} />
     <div className="source-card-head">
       <div className="source-identity">

@@ -186,7 +186,7 @@ export default function MePage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <Link
-                        href={`/bloggers/${encodeURIComponent(blogger.handle)}`}
+                        href={`/sources/${encodeURIComponent(blogger.handle)}`}
                         className="font-medium text-gray-900 hover:text-blue-600"
                       >
                         @{blogger.handle}

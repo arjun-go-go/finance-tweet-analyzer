@@ -25,8 +25,8 @@ export default function DashboardStats({
     { label: "待分析", value: pendingTweets, dot: "bg-yellow-500", href: "/tweets?tab=pending" },
     { label: "已分析", value: analyzedTweets, dot: "bg-green-500", href: "/tweets?tab=analyzed" },
     { label: "分析结果", value: totalAnalyses, dot: "bg-purple-500", href: "/tweets?tab=analyzed" },
-    { label: "博主", value: totalBloggers, dot: "bg-pink-500", href: "/bloggers" },
-    { label: "待标注", value: pendingPredictions, dot: "bg-orange-500", href: "/bloggers?sort=pending_count" },
+    { label: "博主", value: totalBloggers, dot: "bg-pink-500", href: "/sources" },
+    { label: "待标注", value: pendingPredictions, dot: "bg-orange-500", href: "/sources?sort=pending_count" },
   ];
 
   return (

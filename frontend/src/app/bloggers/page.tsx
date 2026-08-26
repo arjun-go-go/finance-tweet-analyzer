@@ -56,6 +56,10 @@ export default function BloggersListPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (params.get("add") === "1") setShowOnboard(true);
+  }, [params]);
+
   const stats = useMemo(() => ({
     verified: items.reduce((sum, item) => sum + item.verified_count, 0),
     pending: items.reduce((sum, item) => sum + item.pending_count, 0),
@@ -136,7 +140,7 @@ export default function BloggersListPage() {
           <p>Source connected</p>
           <h2>@{onboarded.handle} 已开始追踪</h2>
           <span>资料与关注关系已保存，首次推文抓取及分析任务已进入队列。</span>
-          <div><Link className="button-primary" href={`/bloggers/${encodeURIComponent(onboarded.handle)}`}>查看信息源<AppIcon name="arrow" /></Link><button className="button-secondary" onClick={closeOnboard}>完成</button></div>
+          <div><Link className="button-primary" href={`/sources/${encodeURIComponent(onboarded.handle)}`}>查看信息源<AppIcon name="arrow" /></Link><button className="button-secondary" onClick={closeOnboard}>完成</button></div>
         </div>}
       </section>
     </div>}

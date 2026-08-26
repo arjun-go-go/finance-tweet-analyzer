@@ -64,8 +64,8 @@ export default function IntelligenceDashboard() {
           <p className="page-subtitle">{formatDate(new Date().toISOString())} · 按重要性整理你关注的博主、标的与市场风险，每条结论都能回到原始证据。</p>
         </div>
         <div className="page-header-actions flex gap-2">
-          <Link href="/tracking" className="button-secondary"><AppIcon name="watchlist" />管理标的监控</Link>
-          <Link href="/chat" className="button-primary"><AppIcon name="research" />深入研究</Link>
+          <Link href="/watch" className="button-secondary"><AppIcon name="watchlist" />管理标的监控</Link>
+          <Link href="/assistant" className="button-primary"><AppIcon name="research" />深入研究</Link>
         </div>
       </header>
 
@@ -75,8 +75,8 @@ export default function IntelligenceDashboard() {
           <div><strong>{feed.context.personalized ? "个性化情报已开启" : "市场情报模式"}</strong><span>首页会根据你的关注范围自动筛选重要变化</span></div>
         </div>
         <div className="research-scope-links">
-          <Link href="/bloggers"><span>关注博主</span><b>{feed.context.followed_bloggers}</b></Link>
-          <Link href="/tracking"><span>监控标的</span><b>{feed.context.tracked_tickers}</b></Link>
+          <Link href="/sources"><span>关注博主</span><b>{feed.context.followed_bloggers}</b></Link>
+          <Link href="/watch"><span>监控标的</span><b>{feed.context.tracked_tickers}</b></Link>
           <Link href="/tweets?tab=analyzed"><span>已分析</span><b>{stats?.analyzed_tweets ?? 0}</b></Link>
         </div>
       </div>
@@ -140,11 +140,11 @@ export default function IntelligenceDashboard() {
             <div className="feed-mode-notice">
               <AppIcon name="alerts" />
               <span>{feed.context.fallback_to_market ? "暂时没有匹配关注范围的新内容，以下补充展示市场最新情报。" : "当前展示市场最新情报。关注博主或添加监控标的后，首页会切换为个性化情报。"}</span>
-              <Link href={feed.context.followed_bloggers === 0 ? "/bloggers" : "/tracking"}>完善研究范围</Link>
+              <Link href={feed.context.followed_bloggers === 0 ? "/sources" : "/watch"}>完善研究范围</Link>
             </div>
           )}
           {feed.items.length === 0 ? (
-            <PageEmpty title="还没有与你相关的情报" detail="先关注一个博主或添加一个标的，系统会持续整理相关观点。" action={<Link className="button-primary mt-3" href="/bloggers">选择信息源</Link>} />
+            <PageEmpty title="还没有与你相关的情报" detail="先关注一个博主或添加一个标的，系统会持续整理相关观点。" action={<Link className="button-primary mt-3" href="/sources">选择信息源</Link>} />
           ) : (
             <div className="intelligence-list">
               {feed.items.map((item) => <IntelligenceCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={() => setSelected(item)} />)}

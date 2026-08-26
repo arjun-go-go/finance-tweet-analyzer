@@ -14,7 +14,8 @@ export type IconName =
   | "arrow"
   | "external"
   | "evidence"
-  | "search";
+  | "search"
+  | "plus";
 
 const paths: Record<IconName, React.ReactNode> = {
   pulse: <><path d="M3 12h4l2.2-6 4.2 12 2.4-6H21" /></>,
@@ -33,6 +34,7 @@ const paths: Record<IconName, React.ReactNode> = {
   external: <><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 13v6H5V6h6" /></>,
   evidence: <><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
   search: <><circle cx="11" cy="11" r="7" /><path d="m16 16 5 5" /></>,
+  plus: <><path d="M12 5v14M5 12h14" /></>,
 };
 
 export default function AppIcon({ name, className = "" }: { name: IconName; className?: string }) {
