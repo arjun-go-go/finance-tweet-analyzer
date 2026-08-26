@@ -23,6 +23,12 @@ function formatTime(value: string) {
   }).format(new Date(value));
 }
 
+function evidenceLabel(item: IntelligenceFeedItem) {
+  if (item.corroboration_count > 1) return "多源印证";
+  if (item.confidence >= 0.75) return "较充分";
+  return "单一来源";
+}
+
 export default function IntelligenceCard({
   item,
   selected,
@@ -62,9 +68,9 @@ export default function IntelligenceCard({
             )}
           </span>
         </span>
-        <span className="today-signal-score">
-          <small>重要性</small>
-          <b>{item.importance_score}</b>
+        <span className="today-signal-proof">
+          <small>证据</small>
+          <b>{evidenceLabel(item)}</b>
         </span>
         <AppIcon name="arrow" className="today-signal-arrow" />
       </button>

@@ -9,7 +9,6 @@ import {
   createTracking,
   deleteTracking,
   listTracking,
-  updateTracking,
   validateTracking,
   type TrackingItem,
   type TrackingListResponse,
@@ -19,7 +18,26 @@ import { formatDateTime } from "@/lib/datetime";
 
 const MARKET_LABEL: Record<string, string> = { CN: "A股", HK: "港股", US: "美股", COMMODITY: "商品", CRYPTO: "加密货币" };
 const DIRECTION_LABEL: Record<string, string> = { bullish: "偏多", bearish: "偏空", mixed: "分歧", neutral: "观察" };
-const FILTERS = [{ value: "all", label: "全部" }, { value: "active", label: "采集中" }, { value: "attention", label: "有变化" }, { value: "paused", label: "已暂停" }] as const;
+const FILTERS = [{ value: "all", label: "全部关注" }, { value: "changed", label: "24h 有变化" }] as const;
+
+function hasMeaningfulChange(item: TrackingItem) {
+  const monitor = item.monitor || {};
+  return item.status === "active" && (
+    (monitor.alerts?.length || 0) > 0
+    || ((monitor.intelligence_24h || 0) > 0 && ["up", "down"].includes(monitor.direction_trend || ""))
+  );
+}
+
+function changeLabel(item: TrackingItem) {
+  if (item.status === "paused") return "已暂停关注";
+  const monitor = item.monitor || {};
+  if (monitor.alerts?.some((alert) => alert.type === "direction_reversal")) return "观点反转";
+  if (monitor.alerts?.some((alert) => alert.type === "risk")) return "出现高风险";
+  if (monitor.alerts?.some((alert) => alert.type === "new_prediction")) return "出现新预测";
+  if ((monitor.intelligence_24h || 0) > 0 && monitor.direction_trend === "up") return "观点升温";
+  if ((monitor.intelligence_24h || 0) > 0 && monitor.direction_trend === "down") return "观点转弱";
+  return monitor.intelligence_24h ? "方向稳定" : "暂无重要变化";
+}
 
 function distribution(item: TrackingItem) {
   const bullish = item.monitor.bullish_count || 0;
@@ -64,13 +82,16 @@ export default function WatchPage() {
 
   const items = useMemo(() => data?.items || [], [data]);
   const visibleItems = useMemo(() => items.filter((item) => {
-    if (filter === "active") return item.status === "active";
-    if (filter === "paused") return item.status === "paused";
-    if (filter === "attention") return (item.monitor.alerts?.length || 0) > 0 || item.monitor.direction_trend === "up" || item.monitor.direction_trend === "down";
+    if (filter === "changed") return hasMeaningfulChange(item);
     return true;
   }), [filter, items]);
-  const selected = items.find((item) => item.id === selectedId) || null;
-  const changedCount = items.filter((item) => (item.monitor.alerts?.length || 0) > 0 || item.monitor.direction_trend === "up" || item.monitor.direction_trend === "down").length;
+  useEffect(() => {
+    if (!visibleItems.some((item) => item.id === selectedId)) {
+      setSelectedId(visibleItems[0]?.id || null);
+    }
+  }, [selectedId, visibleItems]);
+  const selected = visibleItems.find((item) => item.id === selectedId) || null;
+  const changedCount = items.filter(hasMeaningfulChange).length;
 
   const validate = async () => {
     if (!ticker.trim()) return;
@@ -92,12 +113,6 @@ export default function WatchPage() {
     finally { setBusy(false); }
   };
 
-  const toggle = async (item: TrackingItem) => {
-    setBusy(true);
-    try { await updateTracking(item.id, { status: item.status === "active" ? "paused" : "active" }); await load(); }
-    finally { setBusy(false); }
-  };
-
   const remove = async () => {
     if (!deleteTarget) return;
     await deleteTracking(deleteTarget.id);
@@ -113,7 +128,7 @@ export default function WatchPage() {
 
     <section className="watch-change-summary">
       <span><AppIcon name="watchlist" /></span>
-      <div><strong>过去 24 小时，{changedCount} 个标的的观点发生明显变化</strong><p>{data?.summary.intelligence_24h || 0} 条相关 Twitter 情报进入你的研究范围。</p></div>
+      <div><strong>{changedCount ? `过去 24 小时，${changedCount} 个标的的观点发生明显变化` : "过去 24 小时暂无明显观点变化"}</strong><p>{data?.summary.intelligence_24h || 0} 条相关 Twitter 情报进入你的研究范围。</p></div>
       <small>基于 {items.length} 个关注标的</small>
     </section>
 
@@ -122,17 +137,17 @@ export default function WatchPage() {
       <span>{visibleItems.length} 个标的</span>
     </div>
 
-    {loading ? <PageLoading label="正在整理关注标的" /> : error ? <PageError detail={error} onRetry={load} /> : items.length === 0 ? <PageEmpty title="还没有关注标的" detail="添加股票、原油、黄金或加密货币后，这里只聚合已关注博主的相关观点变化。" action={<button className="button-primary" onClick={() => setShowAdd(true)}>添加第一个标的</button>} /> : visibleItems.length === 0 ? <PageEmpty title="当前筛选下没有标的" detail="切换其他状态，或添加一个新的关注标的。" /> : <div className={`watch-prototype-layout ${selected ? "has-detail" : ""}`}>
+    {loading ? <PageLoading label="正在整理关注标的" /> : error ? <PageError detail={error} onRetry={load} /> : items.length === 0 ? <PageEmpty title="还没有关注标的" detail="添加股票、原油、黄金或加密货币后，这里只聚合已关注博主的相关观点变化。" action={<button className="button-primary" onClick={() => setShowAdd(true)}>添加第一个标的</button>} /> : visibleItems.length === 0 ? <PageEmpty title="过去 24 小时没有明显变化" detail="这是有效的研究结果；新的重要观点出现后会自动进入这里。" /> : <div className={`watch-prototype-layout ${selected ? "has-detail" : ""}`}>
       <section className="watch-prototype-list">
         {visibleItems.map((item) => {
           const instrument = item.instrument || {};
           const monitor = item.monitor || {};
           const direction = monitor.direction || "neutral";
-          const change = monitor.direction_trend === "up" ? "观点升温" : monitor.direction_trend === "down" ? "观点转弱" : monitor.active_predictions ? "出现新预测" : monitor.intelligence_24h ? "方向稳定" : "暂无更新";
+          const change = changeLabel(item);
           return <button className={`watch-prototype-row ${selectedId === item.id ? "is-selected" : ""}`} key={item.id} onClick={() => setSelectedId(item.id)}>
             <div><strong>{item.ticker}</strong><span>{MARKET_LABEL[instrument.market || ""] || instrument.market || "已核验"} · {DIRECTION_LABEL[direction]}</span></div>
             <div><strong>{monitor.latest_title || `${item.ticker} 暂无新的重要观点`}</strong><p>{monitor.intelligence_24h ? `${monitor.intelligence_24h} 条情报，${monitor.bullish_count || 0} 条偏多，${monitor.bearish_count || 0} 条偏空。` : "已纳入研究范围，等待关注博主发布相关观点。"}</p><i><span style={{ width: `${Math.min(100, Math.max(12, (monitor.bullish_count || 0) * 18))}%` }} /><span className="is-risk" style={{ width: `${Math.min(100, (monitor.bearish_count || 0) * 18)}%` }} /></i></div>
-            <div><strong>{change}</strong><small>{monitor.latest_seen_at ? formatDateTime(monitor.latest_seen_at) : item.status === "paused" ? "已暂停" : "等待更新"}</small></div>
+            <div><strong>{change}</strong><small>{monitor.latest_seen_at ? formatDateTime(monitor.latest_seen_at) : item.status === "paused" ? "历史记录已保留" : "等待更新"}</small></div>
             <AppIcon name="arrow" />
           </button>;
         })}
@@ -146,7 +161,7 @@ export default function WatchPage() {
           <section><span>关注博主观点分布</span>{(() => { const value = distribution(selected); return <div className="watch-distribution"><div><strong>{value.bullish}%</strong><small>偏多</small></div><div><strong>{value.neutral}%</strong><small>观察</small></div><div><strong>{value.bearish}%</strong><small>偏空 / 风险</small></div></div>; })()}</section>
           <section><span>最近变化</span><div className="watch-change-list">{selected.monitor.latest_title ? <article><i /><div><small>{selected.monitor.latest_seen_at ? formatDateTime(selected.monitor.latest_seen_at) : "最近"}</small><strong>{selected.monitor.latest_title}</strong><p>来自已关注博主的结构化 Twitter 情报。</p></div></article> : <p>暂无可展示的观点变化。</p>}{selected.monitor.alerts?.map((alert) => <article key={`${alert.type}-${alert.message}`} className={`is-${alert.level}`}><i /><div><small>系统提醒</small><strong>{alert.message}</strong></div></article>)}</div></section>
           {selected.instrument?.price_proxy_disclosure && <p className="watch-detail-disclosure">{selected.instrument.price_proxy_disclosure}</p>}
-          <div className="watch-detail-actions"><Link className="button-secondary" href={`/assistant?prompt=${encodeURIComponent(`总结关注博主最近对 ${selected.ticker} 的观点变化和证据`)}`}>向助手追问</Link><Link className="button-primary" href={`/watch/${encodeURIComponent(selected.id)}`}>完整标的</Link><button className="watch-detail-toggle" disabled={busy} onClick={() => void toggle(selected)}>{selected.status === "active" ? "暂停采集" : "恢复采集"}</button><button className="text-danger" onClick={() => setDeleteTarget(selected)}>取消关注</button></div>
+          <div className="watch-detail-actions"><Link className="button-secondary" href={`/assistant?prompt=${encodeURIComponent(`总结关注博主最近对 ${selected.ticker} 的观点变化和证据`)}`}>向助手追问</Link><Link className="button-primary" href={`/watch/${encodeURIComponent(selected.id)}`}>完整标的</Link><button className="text-danger" onClick={() => setDeleteTarget(selected)}>取消关注</button></div>
         </div>
       </aside>}
     </div>}

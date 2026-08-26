@@ -21,13 +21,13 @@ import { SegmentedControl, WorkspacePageHeader } from "@/components/WorkspacePag
 
 type SortKey = "credibility" | "verified_count" | "followers" | "pending_count";
 type SourceScope = "followed" | "all";
-type SourceFilter = "all" | "active" | "syncing" | "attention" | "paused";
+type SourceFilter = "all" | "active" | "paused";
 
 const STAGE_LABELS: Record<BloggerIngestionStage, string> = {
   syncing: "首次同步中",
   analyzing: "正在提取投资信息",
   ready: "采集与分析已完成",
-  attention: "部分内容需要处理",
+  attention: "部分内容正在重试",
   paused: "定时采集已暂停",
 };
 
@@ -102,16 +102,14 @@ export default function BloggersListPage() {
   }, [onboarded]);
 
   const sourceStats = useMemo(() => ({
-    active: items.filter((item) => ["syncing", "analyzing", "ready"].includes(item.ingestion_stage)).length,
+    active: items.filter((item) => item.ingestion_stage !== "paused").length,
     syncing: items.filter((item) => ["syncing", "analyzing"].includes(item.ingestion_stage)).length,
     attention: items.filter((item) => item.ingestion_stage === "attention").length,
     paused: items.filter((item) => item.ingestion_stage === "paused").length,
   }), [items]);
 
   const visibleItems = useMemo(() => items.filter((item) => {
-    if (filter === "active") return ["syncing", "analyzing", "ready"].includes(item.ingestion_stage);
-    if (filter === "syncing") return ["syncing", "analyzing"].includes(item.ingestion_stage);
-    if (filter === "attention") return item.ingestion_stage === "attention";
+    if (filter === "active") return item.ingestion_stage !== "paused";
     if (filter === "paused") return item.ingestion_stage === "paused";
     return true;
   }), [filter, items]);
@@ -173,17 +171,15 @@ export default function BloggersListPage() {
       actions={<button className="button-primary" onClick={() => setShowOnboard(true)}><AppIcon name="plus" />新增信息源</button>}
     />
     <div className="source-library-summary">
-      <span><i className="source-live-dot" /><strong>{sourceStats.active} 个来源正在工作</strong>{sourceStats.syncing ? `，${sourceStats.syncing} 个仍在首次处理` : ""}</span>
-      <small>{sourceStats.attention ? `${sourceStats.attention} 个需要处理` : sourceStats.paused ? `${sourceStats.paused} 个已暂停` : "所有信息源状态正常"}</small>
+      <span><i className="source-live-dot" /><strong>{sourceStats.active} 个来源持续采集</strong>{sourceStats.syncing ? `，${sourceStats.syncing} 个正在首次同步` : ""}</span>
+      <small>{sourceStats.attention ? `${sourceStats.attention} 个存在部分失败，系统将自动重试` : sourceStats.paused ? `${sourceStats.paused} 个已暂停` : "所有信息源运行正常"}</small>
     </div>
     <div className="source-library-toolbar">
       <SegmentedControl value={scope} options={[{ value: "followed", label: "我的关注" }, { value: "all", label: "全部来源" }]} onChange={(next) => { setScope(next); setFilter("all"); }} />
       <div className="source-library-filters">
         {([
           ["all", "全部"],
-          ["active", "采集中"],
-          ["syncing", "处理中"],
-          ["attention", "需处理"],
+          ["active", "持续采集"],
           ["paused", "已暂停"],
         ] as Array<[SourceFilter, string]>).map(([value, label]) => <button key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{label}</button>)}
       </div>

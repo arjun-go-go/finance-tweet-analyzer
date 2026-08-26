@@ -31,8 +31,8 @@ export interface BloggerListItem {
 const STAGE_COPY: Record<BloggerIngestionStage, { label: string; detail: string }> = {
   syncing: { label: "首次同步中", detail: "正在获取公开内容" },
   analyzing: { label: "正在分析", detail: "文本与图片处理中" },
-  ready: { label: "正常采集", detail: "内容会持续自动更新" },
-  attention: { label: "部分失败", detail: "已有内容仍可查看" },
+  ready: { label: "持续采集", detail: "内容会持续自动更新" },
+  attention: { label: "自动重试中", detail: "部分内容尚未完成" },
   paused: { label: "已暂停", detail: "不会继续定时采集" },
 };
 

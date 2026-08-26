@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import AppIcon from "@/components/AppIcon";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { PageError, PageLoading } from "@/components/PageState";
-import { deleteTracking, listTracking, updateTracking, type TrackingItem } from "@/lib/api";
+import { deleteTracking, listTracking, type TrackingItem } from "@/lib/api";
 import { formatDateTime } from "@/lib/datetime";
 
 const MARKET_LABEL: Record<string, string> = { CN: "A股", HK: "港股", US: "美股", COMMODITY: "商品", CRYPTO: "加密货币" };
@@ -19,7 +19,6 @@ export default function WatchAssetDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -33,13 +32,6 @@ export default function WatchAssetDetailPage() {
   }, [params.id]);
 
   useEffect(() => { void load(); }, [load]);
-
-  const toggle = async () => {
-    if (!item) return;
-    setBusy(true);
-    try { setItem(await updateTracking(item.id, { status: item.status === "active" ? "paused" : "active" })); }
-    finally { setBusy(false); }
-  };
 
   const remove = async () => {
     if (!item) return;
@@ -70,9 +62,9 @@ export default function WatchAssetDetailPage() {
 
       <aside className="asset-prototype-aside">
         <section><span>标的身份</span><div className="asset-identity-proof"><b><AppIcon name="check" /></b><div><strong>{item.ticker} · {MARKET_LABEL[instrument.market || ""] || instrument.market || "已验证"}</strong><small>{instrument.resolved_name || instrument.name || "通过正式标的校验"}</small></div></div></section>
-        <section><span>信息覆盖</span><dl><div><dt>24h 情报</dt><dd>{monitor.intelligence_24h || 0} 条</dd></div><div><dt>有效预测</dt><dd>{monitor.active_predictions || 0} 条</dd></div><div><dt>高风险</dt><dd>{monitor.risk_count || 0} 条</dd></div><div><dt>当前状态</dt><dd>{item.status === "active" ? "采集中" : "已暂停"}</dd></div></dl></section>
+        <section><span>信息覆盖</span><dl><div><dt>24h 情报</dt><dd>{monitor.intelligence_24h || 0} 条</dd></div><div><dt>有效预测</dt><dd>{monitor.active_predictions || 0} 条</dd></div><div><dt>高风险</dt><dd>{monitor.risk_count || 0} 条</dd></div><div><dt>关注状态</dt><dd>{item.status === "active" ? "关注中" : "已暂停关注"}</dd></div></dl></section>
         <section><span>使用说明</span><h3>这里只解释博主观点</h3><p>价格行情只用于验证预测结果，不提供实时交易信号。</p>{instrument.price_proxy_disclosure && <small>{instrument.price_proxy_disclosure}</small>}</section>
-        <div><Link className="button-secondary" href={`/tweets?q=${encodeURIComponent(item.ticker)}`}>查看相关推文</Link><Link className="button-primary" href={`/assistant?prompt=${encodeURIComponent(`总结关注博主最近对 ${item.ticker} 的观点、风险和证据`)}`}>向助手追问</Link><button className="button-secondary" disabled={busy} onClick={() => void toggle()}>{item.status === "active" ? "暂停采集" : "恢复采集"}</button><button className="text-danger" onClick={() => setConfirming(true)}>取消关注</button></div>
+        <div><Link className="button-secondary" href={`/tweets?q=${encodeURIComponent(item.ticker)}`}>查看相关推文</Link><Link className="button-primary" href={`/assistant?prompt=${encodeURIComponent(`总结关注博主最近对 ${item.ticker} 的观点、风险和证据`)}`}>向助手追问</Link><button className="text-danger" onClick={() => setConfirming(true)}>取消关注</button></div>
       </aside>
     </div>
     <ConfirmDialog open={confirming} title={`取消关注 ${item.ticker}？`} message="取消后不再进入你的个性化研究范围；历史推文和分析记录不会删除。" confirmText="确认取消" variant="danger" onConfirm={remove} onCancel={() => setConfirming(false)} />
