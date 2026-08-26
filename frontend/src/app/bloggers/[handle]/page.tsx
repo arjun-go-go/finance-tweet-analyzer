@@ -1,14 +1,12 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import BloggerStatsHeader from "@/components/BloggerStatsHeader";
+import Link from "next/link";
+import { use, useCallback, useEffect, useState } from "react";
+import AppIcon from "@/components/AppIcon";
 import PredictionCard, { PredictionItem } from "@/components/PredictionCard";
-import {
-  fetchBloggerDetail,
-  fetchBloggerPredictions,
-  toggleBloggerFetch,
-} from "@/lib/api";
+import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
+import { MetricStrip, SegmentedControl } from "@/components/WorkspacePage";
+import { fetchBloggerDetail, fetchBloggerPredictions, fetchTweets, toggleBloggerFetch } from "@/lib/api";
 import { formatDate } from "@/lib/datetime";
 
 interface BloggerDetail {
@@ -20,86 +18,129 @@ interface BloggerDetail {
   market_focus: string[] | null;
   profile_updated_at: string | null;
   credibility_score: number;
+  score_status: string;
+  score_label: string;
+  sample_confidence: number;
   verified_count: number;
   pending_count: number;
   hit_rate_overall: number | null;
-  hit_rate_by_sentiment: {
-    bullish: number | null;
-    bearish: number | null;
-    neutral: number | null;
-  };
+  hit_rate_by_sentiment: { bullish: number | null; bearish: number | null; neutral: number | null };
   top_tickers: Array<{ ticker: string; verified: number; hit_rate: number }>;
-  recent_verified: PredictionItem[];
   fetch_enabled: boolean;
   last_fetched_at: string | null;
+  profile_url: string | null;
+  verified: boolean;
 }
 
-type TabKey = "pending" | "verified" | "all";
+interface BloggerTweet {
+  id: string;
+  tweet_id: string;
+  content: string;
+  published_at: string;
+  status: string;
+  tweet_type: string;
+  analysis?: {
+    analysis_schema_version?: string;
+    is_investment_relevant?: boolean;
+    statement_type?: string;
+    overall_sentiment?: string;
+    thesis?: string;
+    key_points?: string[];
+    tickers?: Array<{
+      symbol?: string;
+      verification?: { canonical_symbol?: string; downstream_eligible?: boolean };
+    }>;
+  } | null;
+}
 
-export default function BloggerDetailPage({
-  params,
-}: {
-  params: Promise<{ handle: string }>;
-}) {
+type PageTab = "insights" | "predictions";
+type PredictionTab = "pending" | "verified" | "all";
+
+const STATEMENT_LABELS: Record<string, string> = {
+  recommendation: "投资建议",
+  prediction: "方向预测",
+  news_relay: "新闻转述",
+  recap: "市场复盘",
+  risk_warning: "风险提示",
+  fact: "事实信息",
+  opinion: "作者观点",
+  non_investment: "非投资信息",
+};
+const SENTIMENT_LABELS: Record<string, string> = { bullish: "看好", bearish: "看空", neutral: "中性", mixed: "分化" };
+const STATUS_LABELS: Record<string, string> = {
+  analyzed: "已提取",
+  pending: "待分析",
+  analyzing: "分析中",
+  retrying: "等待重试",
+  failed: "分析失败",
+};
+
+function verifiedSymbols(tweet: BloggerTweet): string[] {
+  return (tweet.analysis?.tickers ?? [])
+    .filter((ticker) => ticker.verification?.downstream_eligible)
+    .map((ticker) => ticker.verification?.canonical_symbol || ticker.symbol || "")
+    .filter(Boolean);
+}
+
+export default function BloggerDetailPage({ params }: { params: Promise<{ handle: string }> }) {
   const { handle } = use(params);
   const decodedHandle = decodeURIComponent(handle);
-  const search = useSearchParams();
-  const initialTab = (search.get("status") as TabKey) || "pending";
-
+  const cleanHandle = decodedHandle.replace(/^@/, "");
   const [detail, setDetail] = useState<BloggerDetail | null>(null);
-  const [tab, setTab] = useState<TabKey>(initialTab);
+  const [tweets, setTweets] = useState<BloggerTweet[]>([]);
+  const [tweetTotal, setTweetTotal] = useState(0);
+  const [pageTab, setPageTab] = useState<PageTab>("insights");
+  const [predictionTab, setPredictionTab] = useState<PredictionTab>("pending");
   const [predictions, setPredictions] = useState<PredictionItem[]>([]);
-  const [total, setTotal] = useState(0);
+  const [predictionTotal, setPredictionTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [predictionsLoading, setPredictionsLoading] = useState(false);
   const [fetchToggling, setFetchToggling] = useState(false);
   const [fetchNotice, setFetchNotice] = useState("");
 
-  const loadDetail = async () => {
+  const loadOverview = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      const data = await fetchBloggerDetail(decodedHandle);
-      setDetail(data);
-    } catch (e) {
-      console.error(e);
+      const [detailData, tweetData] = await Promise.all([
+        fetchBloggerDetail(decodedHandle),
+        fetchTweets({ blogger: decodedHandle, include_analysis: true, limit: 20 }),
+      ]);
+      setDetail(detailData as BloggerDetail);
+      setTweets((tweetData.items ?? []) as BloggerTweet[]);
+      setTweetTotal(tweetData.total ?? 0);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "信息源加载失败");
     } finally {
       setLoading(false);
     }
-  };
+  }, [decodedHandle]);
 
-  const loadPredictions = async (currentTab: TabKey) => {
+  const loadPredictions = useCallback(async (status: PredictionTab) => {
     setPredictionsLoading(true);
     try {
-      const data = await fetchBloggerPredictions(decodedHandle, {
-        status: currentTab,
-        limit: 50,
-      });
+      const data = await fetchBloggerPredictions(decodedHandle, { status, limit: 50 });
       setPredictions(data.items);
-      setTotal(data.total);
-    } catch (e) {
-      console.error(e);
+      setPredictionTotal(data.total);
     } finally {
       setPredictionsLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadDetail();
   }, [decodedHandle]);
 
+  useEffect(() => { loadOverview(); }, [loadOverview]);
   useEffect(() => {
-    loadPredictions(tab);
-  }, [decodedHandle, tab]);
+    if (pageTab === "predictions") loadPredictions(predictionTab);
+  }, [loadPredictions, pageTab, predictionTab]);
 
   const handleVerified = (next: PredictionItem) => {
-    if (tab === "pending" && next.verdict !== null) {
-      setPredictions((prev) => prev.filter((p) => p.id !== next.id));
-      setTotal((t) => Math.max(0, t - 1));
+    if (predictionTab === "pending" && next.verdict !== null) {
+      setPredictions((current) => current.filter((item) => item.id !== next.id));
+      setPredictionTotal((current) => Math.max(0, current - 1));
     } else {
-      setPredictions((prev) =>
-        prev.map((p) => (p.id === next.id ? next : p)),
-      );
+      setPredictions((current) => current.map((item) => item.id === next.id ? next : item));
     }
-    loadDetail();
+    loadOverview();
   };
 
   const handleToggleFetch = async () => {
@@ -109,139 +150,97 @@ export default function BloggerDetailPage({
     try {
       const nextEnabled = !detail.fetch_enabled;
       await toggleBloggerFetch(decodedHandle, nextEnabled);
-      setDetail((d) => d ? { ...d, fetch_enabled: nextEnabled } : d);
-      setFetchNotice(nextEnabled ? "已开启定时抓取" : "已关闭定时抓取");
-    } catch (e) {
-      console.error(e);
-      setFetchNotice(e instanceof Error ? e.message : "更新失败，请稍后重试");
+      setDetail((current) => current ? { ...current, fetch_enabled: nextEnabled } : current);
+      setFetchNotice(nextEnabled ? "已开启定时抓取" : "已暂停定时抓取");
+    } catch (toggleError) {
+      setFetchNotice(toggleError instanceof Error ? toggleError.message : "更新失败，请稍后重试");
     } finally {
       setFetchToggling(false);
     }
   };
 
-  if (loading) return <p className="text-center py-10">加载中...</p>;
-  if (!detail)
-    return (
-      <p className="text-center py-10 text-red-500">博主不存在或加载失败</p>
-    );
+  if (loading) return <PageLoading label="正在整理信息源档案" />;
+  if (error || !detail) return <PageError detail={error || "博主不存在或加载失败"} onRetry={loadOverview} />;
 
-  return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-lg shadow p-5 flex items-start gap-4">
-        {detail.avatar_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={detail.avatar_url}
-            alt={detail.handle}
-            className="w-16 h-16 rounded-full bg-gray-200 object-cover"
-          />
-        ) : (
-          <div className="w-16 h-16 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold">
-            {detail.handle.slice(1, 3).toUpperCase()}
-          </div>
-        )}
-        <div className="flex-1">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">{detail.handle}</h1>
-            <button
-              onClick={handleToggleFetch}
-              disabled={fetchToggling}
-              className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                detail.fetch_enabled
-                  ? "bg-green-100 text-green-700 hover:bg-green-200"
-                  : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-              }`}
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  detail.fetch_enabled ? "bg-green-500" : "bg-gray-400"
-                }`}
-              />
-              {fetchToggling
-                ? "..."
-                : detail.fetch_enabled
-                  ? "定时抓取已启用"
-                  : "定时抓取"}
-            </button>
-            {fetchNotice && <span className="text-xs text-gray-500">{fetchNotice}</span>}
-          </div>
-          <p className="text-sm text-gray-600">{detail.name}</p>
-          {detail.bio && (
-            <p className="text-sm text-gray-500 mt-1">{detail.bio}</p>
-          )}
-          <div className="flex flex-wrap gap-2 mt-2 text-xs text-gray-500">
-            <span>粉丝 {detail.followers_count.toLocaleString()}</span>
-            {(detail.market_focus ?? []).map((m) => (
-              <span
-                key={m}
-                className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded"
-              >
-                {m}
-              </span>
-            ))}
-            {detail.profile_updated_at && (
-              <span>
-                资料更新于 {formatDate(detail.profile_updated_at)}
-              </span>
-            )}
-            {detail.last_fetched_at && (
-              <span className="text-blue-500">
-                推文抓取于 {formatDate(detail.last_fetched_at)}
-              </span>
-            )}
-          </div>
+  const analyzedCount = tweets.filter((tweet) => Boolean(tweet.analysis)).length;
+  const hitRate = detail.hit_rate_overall == null ? "—" : `${Math.round(detail.hit_rate_overall * 100)}%`;
+
+  return <div className="product-page source-detail-page">
+    <section className="source-detail-hero">
+      <div className="source-detail-identity">
+        {detail.avatar_url
+          ? <img src={detail.avatar_url} alt="" />
+          : <span className="source-detail-avatar">{cleanHandle.slice(0, 2).toUpperCase()}</span>}
+        <div>
+          <p className="page-eyebrow">Twitter intelligence source</p>
+          <h1>{detail.name || `@${cleanHandle}`}{detail.verified && <span className="source-verified">✓</span>}</h1>
+          <strong>@{cleanHandle}</strong>
+          {detail.bio && <p>{detail.bio}</p>}
+          <div className="source-detail-tags">{(detail.market_focus ?? []).map((market) => <span key={market}>{market}</span>)}</div>
         </div>
       </div>
-
-      <BloggerStatsHeader
-        credibilityScore={detail.credibility_score}
-        verifiedCount={detail.verified_count}
-        pendingCount={detail.pending_count}
-        hitRateOverall={detail.hit_rate_overall}
-        hitRateBySentiment={detail.hit_rate_by_sentiment}
-        topTickers={detail.top_tickers}
-      />
-
-      <div>
-        <div className="flex items-center gap-2 border-b mb-4">
-          {(
-            [
-              ["pending", `待标注 (${detail.pending_count})`],
-              ["verified", `已标注 (${detail.verified_count})`],
-              ["all", "全部"],
-            ] as Array<[TabKey, string]>
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`px-4 py-2 text-sm border-b-2 -mb-px ${
-                tab === key
-                  ? "border-blue-600 text-blue-600 font-semibold"
-                  : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-          <span className="ml-auto text-xs text-gray-400">共 {total} 条</span>
-        </div>
-
-        {predictionsLoading ? (
-          <p className="text-center py-10">加载中...</p>
-        ) : predictions.length === 0 ? (
-          <p className="text-center py-10 text-gray-500">暂无数据</p>
-        ) : (
-          <div className="grid gap-4">
-            {predictions.map((p) => (
-              <PredictionCard
-                key={p.id}
-                prediction={p}
-                onChanged={handleVerified}
-              />
-            ))}
-          </div>
-        )}
+      <div className="source-detail-actions">
+        <button className={`source-fetch-toggle ${detail.fetch_enabled ? "is-active" : ""}`} onClick={handleToggleFetch} disabled={fetchToggling}>
+          <i />{fetchToggling ? "更新中…" : detail.fetch_enabled ? "定时抓取中" : "定时抓取已暂停"}
+        </button>
+        <a className="button-secondary" href={detail.profile_url || `https://x.com/${cleanHandle}`} target="_blank" rel="noreferrer">查看 Twitter <AppIcon name="external" /></a>
+        {fetchNotice && <span className="source-fetch-notice">{fetchNotice}</span>}
       </div>
+    </section>
+
+    <div className="source-freshness">
+      <span>最近抓取：{detail.last_fetched_at ? formatDate(detail.last_fetched_at) : "尚未完成首次抓取"}</span>
+      <span>资料更新：{detail.profile_updated_at ? formatDate(detail.profile_updated_at) : "暂无记录"}</span>
+      <span>{detail.followers_count.toLocaleString()} 位关注者</span>
     </div>
-  );
+
+    <MetricStrip items={[
+      { label: "预测评分", value: detail.verified_count ? Math.round(detail.credibility_score) : "—", note: detail.score_label },
+      { label: "已采集推文", value: tweetTotal, note: `最近 ${analyzedCount} 条已提取` },
+      { label: "预测命中率", value: hitRate, note: `${detail.pending_count} 条等待验证` },
+    ]} />
+    <div className="source-score-disclosure"><strong>评分说明</strong><span>预测评分使用贝叶斯平滑，避免少量样本产生极端排名；当前样本充分度 {Math.round(detail.sample_confidence * 100)}%，原始命中率与评分分开展示。</span></div>
+
+    <div className="source-detail-nav">
+      <SegmentedControl value={pageTab} options={[{ value: "insights", label: "最新推文与提取" }, { value: "predictions", label: `预测记录 ${detail.pending_count ? `(${detail.pending_count})` : ""}` }]} onChange={setPageTab} />
+      {pageTab === "insights" && <Link href={`/tweets?blogger=${encodeURIComponent(decodedHandle)}`}>查看全部推文 <AppIcon name="arrow" /></Link>}
+    </div>
+
+    {pageTab === "insights" ? (
+      tweets.length === 0 ? <PageEmpty title="尚未采集到推文" detail="首次抓取任务完成后，原推文和投资信息提取结果会显示在这里。" />
+        : <div className="source-tweet-stream">{tweets.map((tweet) => {
+          const analysis = tweet.analysis;
+          const tickers = verifiedSymbols(tweet);
+          const summary = analysis?.thesis || analysis?.key_points?.[0];
+          return <article className="source-tweet-item" key={tweet.id}>
+            <div className="source-tweet-meta">
+              <span>{formatDate(tweet.published_at)}</span>
+              <span>{tweet.tweet_type === "original" ? "原创" : tweet.tweet_type === "quote" ? "引用推文" : tweet.tweet_type === "reply" ? "回复" : "转推"}</span>
+              <span className={`source-analysis-state state-${tweet.status}`}>{STATUS_LABELS[tweet.status] || tweet.status}</span>
+            </div>
+            <p className="source-tweet-content">{tweet.content}</p>
+            {analysis && <div className="source-extraction">
+              <div>
+                <span>{STATEMENT_LABELS[analysis.statement_type || ""] || "投资信息"}</span>
+                {analysis.overall_sentiment && <span className={`direction direction-${analysis.overall_sentiment}`}>{SENTIMENT_LABELS[analysis.overall_sentiment] || analysis.overall_sentiment}</span>}
+                {tickers.map((ticker) => <span className="ticker-chip" key={ticker}>{ticker}</span>)}
+              </div>
+              <p>{summary || "已完成结构化提取，暂无独立论点摘要。"}</p>
+            </div>}
+            <footer>
+              <a href={`https://x.com/${cleanHandle}/status/${tweet.tweet_id}`} target="_blank" rel="noreferrer">查看原推文 <AppIcon name="external" /></a>
+            </footer>
+          </article>;
+        })}</div>
+    ) : <section className="source-predictions">
+      <div className="source-prediction-toolbar">
+        <div><h2>预测记录</h2><p>这里只保留满足严格预测创建规则的可验证判断。</p></div>
+        <SegmentedControl value={predictionTab} options={[{ value: "pending", label: `待验证 ${detail.pending_count}` }, { value: "verified", label: `已验证 ${detail.verified_count}` }, { value: "all", label: "全部" }]} onChange={setPredictionTab} />
+      </div>
+      {predictionsLoading ? <PageLoading label="正在加载预测记录" />
+        : predictions.length === 0 ? <PageEmpty title="当前没有预测记录" detail="只有具备作者归因、方向、期限和已验证标的的判断才会进入这里。" />
+          : <div className="grid gap-4">{predictions.map((prediction) => <PredictionCard key={prediction.id} prediction={prediction} onChanged={handleVerified} />)}</div>}
+      {predictionTotal > 0 && <p className="source-result-count">共 {predictionTotal} 条</p>}
+    </section>}
+  </div>;
 }

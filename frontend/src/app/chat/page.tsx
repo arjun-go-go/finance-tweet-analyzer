@@ -11,6 +11,8 @@ import {
   listMessages,
   deleteConversation,
   getAccessToken,
+  createResearchTopic,
+  runResearchTopic,
   type ConversationListItem,
 } from "@/lib/api";
 import { isAuthenticated, fetchMe, refreshAccessToken, type AuthUser } from "@/lib/auth";
@@ -21,6 +23,18 @@ interface DisplayMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+}
+
+interface DisplayEvidence {
+  evidence_id: string;
+  source_type: string;
+  source_id: string;
+  ticker?: string | string[];
+  author?: string;
+  published_at?: string;
+  content: string;
+  source_url?: string;
+  tool?: string;
 }
 
 function createClientId(): string {
@@ -46,8 +60,10 @@ export default function ChatPage() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
+  const [researchMode, setResearchMode] = useState<"quick" | "deep">("quick");
   const [loading, setLoading] = useState(false);
   const [toolStatus, setToolStatus] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<DisplayEvidence[]>([]);
   const [sidebarLoading, setSidebarLoading] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -96,6 +112,14 @@ export default function ChatPage() {
           content: m.content,
         }));
       setMessages(display);
+      const restoredEvidence: DisplayEvidence[] = [];
+      for (const item of data.items.filter((message) => message.role === "tool")) {
+        try {
+          const envelope = JSON.parse(item.content) as { data?: { evidence?: DisplayEvidence[] }; evidence?: { tool?: string } };
+          for (const evidenceItem of envelope.data?.evidence || []) restoredEvidence.push({ ...evidenceItem, tool: envelope.evidence?.tool });
+        } catch { /* legacy tool message */ }
+      }
+      setEvidence(restoredEvidence);
     } catch {
       setMessages([]);
     }
@@ -104,6 +128,7 @@ export default function ChatPage() {
   const selectConversation = async (convId: string) => {
     setActiveConvId(convId);
     setToolStatus(null);
+    setEvidence([]);
     await loadMessages(convId);
   };
 
@@ -124,6 +149,7 @@ export default function ChatPage() {
       ]);
       setActiveConvId(conv.id);
       setMessages([]);
+      setEvidence([]);
     } catch {
       alert("创建会话失败");
     }
@@ -148,6 +174,19 @@ export default function ChatPage() {
     if (!input.trim() || loading) return;
     const userMsg = input.trim();
     setInput("");
+
+    if (researchMode === "deep") {
+      setLoading(true);
+      try {
+        const tickerMatch = userMsg.match(/(?:\$)?([A-Z]{2,10}|\d{5,6}(?:\.(?:SH|SZ|HK))?)/);
+        const topic = await createResearchTopic({ title: userMsg.slice(0, 60), research_question: userMsg, tickers: tickerMatch ? [tickerMatch[1].toUpperCase()] : [], source_scope: ["public_signals", "tweets"], time_range: "1w", conversation_id: activeConvId });
+        await runResearchTopic(topic.id);
+        router.push(`/research/${topic.id}`);
+      } catch (err) {
+        alert(err instanceof Error ? err.message : "创建深度研究失败");
+      } finally { setLoading(false); }
+      return;
+    }
 
     let convId = activeConvId;
     if (!convId) {
@@ -182,6 +221,7 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, userDisplay]);
     setLoading(true);
     setToolStatus(null);
+    setEvidence([]);
 
     const assistantId = createClientId();
     setMessages((prev) => [
@@ -272,6 +312,11 @@ export default function ChatPage() {
                 setToolStatus(null);
               } else if (currentEvent === "tool_call" && data.tools) {
                 setToolStatus(data.label || data.tools[0]);
+              } else if (currentEvent === "evidence" && Array.isArray(data.items)) {
+                setEvidence((previous) => {
+                  const merged = [...previous, ...data.items.map((item: DisplayEvidence) => ({ ...item, tool: data.tool }))];
+                  return Array.from(new Map(merged.map((item) => [`${item.evidence_id}:${item.source_id}`, item])).values());
+                });
               } else if (currentEvent === "done") {
                 setToolStatus(null);
               } else if (currentEvent === "error") {
@@ -312,13 +357,9 @@ export default function ChatPage() {
     }
   };
 
-  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant" && message.content);
-  const evidenceTools = latestAssistant
-    ? Array.from(new Set(Array.from(latestAssistant.content.matchAll(/【tool:([^】]+)】/g), (match) => match[1])))
-    : [];
   const evidenceLabels: Record<string, string> = {
-    query_database: "结构化数据库",
-    search_public_signals: "公共信号库",
+    query_database: "结构化分析结果",
+    search_public_signals: "Twitter 情报库",
     search_my_documents: "私人文档",
     list_my_tracked_tickers: "个人 Watchlist",
     list_my_followed_bloggers: "正式关注关系",
@@ -355,9 +396,9 @@ export default function ChatPage() {
             <div className="research-empty">
               <span className="empty-radar"><span /></span>
               <h2>从一个研究问题开始</h2>
-              <p>助手会检索你的关注关系、私人文档和公共市场信号，并在具体事实后标明来源。</p>
+              <p>助手会检索关注博主、原始推文、结构化观点和预测记录，并在具体事实后标明来源。</p>
               <div className="research-starters">
-                {["我关注的博主最近有哪些重要观点？", "总结 BTC 最近的市场情绪", "我的私人文档如何评价 NVDA？", "哪些标的出现了新的风险信号？"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}<AppIcon name="arrow" /></button>)}
+                {["我关注的博主最近有哪些重要观点？", "@Money_or_Life_X 最近分析了哪些标的？", "比较博主们对 BTC 的多空观点", "最近哪些推文出现了高风险信号？"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}<AppIcon name="arrow" /></button>)}
               </div>
             </div>
           )}
@@ -376,9 +417,9 @@ export default function ChatPage() {
         </div>
 
         <footer className="chat-composer">
-          <div className="chat-scope-row"><span>研究范围</span><b>我的关注</b><b>公共信号</b><b>私人文档</b></div>
+          <div className="chat-scope-row"><span>研究模式</span><button className={researchMode === "quick" ? "is-active" : ""} onClick={() => setResearchMode("quick")}>快速问答</button><button className={researchMode === "deep" ? "is-active" : ""} onClick={() => setResearchMode("deep")}>深度研究</button><b>Twitter 推文</b><b>结构化观点</b></div>
           <div className="chat-input-wrap">
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); handleSend(); } }} placeholder="询问一个标的、博主或研究资料…" disabled={loading} rows={2} />
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); handleSend(); } }} placeholder={researchMode === "deep" ? "提出一个需要跨博主、跨推文调查的问题…" : "询问博主、推文、标的观点或预测…"} disabled={loading} rows={2} />
             <button onClick={handleSend} disabled={loading || !input.trim()} aria-label="发送研究问题"><AppIcon name="arrow" /></button>
           </div>
           <small>Enter 发送 · Shift + Enter 换行 · 金融结论仅供研究参考</small>
@@ -387,7 +428,7 @@ export default function ChatPage() {
 
       <aside className="chat-evidence-rail">
         <div className="chat-rail-heading"><AppIcon name="evidence" /><div><strong>本轮证据</strong><small>回答使用的数据范围</small></div></div>
-        {evidenceTools.length > 0 ? <div className="chat-evidence-list">{evidenceTools.map((tool) => <div key={tool}><span /><strong>{evidenceLabels[tool] || tool}</strong><small>已用于最近回答</small></div>)}</div> : <div className="chat-evidence-empty"><p>提出问题后，这里会显示最近回答使用的数据源。</p></div>}
+        {evidence.length > 0 ? <div className="chat-evidence-list">{evidence.map((item) => <div key={`${item.evidence_id}-${item.source_id}`} className="chat-evidence-item"><span /><strong>{item.evidence_id} · {item.author ? `@${item.author}` : evidenceLabels[item.tool || ""] || item.source_type}</strong><small>{Array.isArray(item.ticker) ? item.ticker.join(", ") : item.ticker || "未标注标的"}{item.published_at ? ` · ${new Date(item.published_at).toLocaleDateString("zh-CN")}` : ""}</small><p>{item.content}</p>{item.source_url && <a href={item.source_url} target="_blank" rel="noreferrer">查看原文</a>}</div>)}</div> : <div className="chat-evidence-empty"><p>提出问题后，这里会显示最近回答使用的具体证据。</p></div>}
         <div className="chat-rail-note"><span>证据规则</span><p>账户数据、博主观点和市场事实必须来自工具结果；证据不足时助手会停止推断。</p></div>
       </aside>
     </div>

@@ -22,7 +22,15 @@ def get_overview(
     total_tweets = db.execute(select(func.count(Tweet.id))).scalar() or 0
     pending_tweets = db.execute(
         select(func.count(Tweet.id)).where(
-            Tweet.status.in_(["pending", "analyzing", "retrying"])
+            Tweet.status.in_([
+                "media_pending",
+                "media_archiving",
+                "media_analysis_ready",
+                "media_analyzing",
+                "pending",
+                "analyzing",
+                "retrying",
+            ])
         )
     ).scalar() or 0
     analyzed_tweets = db.execute(

@@ -83,8 +83,8 @@ def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[t
         top_n = settings.reranker_top_n
     if not documents:
         return []
-    # 文档数不超过 top_n，无需精排，全部保留
-    if len(documents) <= top_n:
+    # 单条候选无需精排；多条候选即使全部保留也仍需得到相关性顺序和分数。
+    if len(documents) == 1:
         return [(i, 1.0) for i in range(len(documents))]
 
     result = _rerank_with_circuit(query, documents, top_n)

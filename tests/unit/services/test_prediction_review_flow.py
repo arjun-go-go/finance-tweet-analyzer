@@ -2,7 +2,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.agents.prediction_agent import _generate_predictions
+from app.agents.prediction_agent import (
+    _generate_predictions,
+    evaluate_prediction_eligibility,
+)
 from app.models.analysis import AnalysisResult
 from app.models.prediction import Prediction
 from app.models.tweet import Tweet
@@ -31,17 +34,25 @@ def _ticker(sentiment: str) -> dict:
         "validation_sources": ["sec_edgar"],
         "original_name": "Cloudflare",
         "resolved_name": "Cloudflare, Inc.",
+        "mention_type": "prediction",
+        "evidence": ["未来三个月可能继续上涨"],
     }
 
 
 def test_prediction_generation_keeps_only_directional_views():
     tweet_id = str(uuid.uuid4())
-    tweets = [{"id": tweet_id, "published_at": NOW}]
+    tweets = [{"id": tweet_id, "published_at": NOW, "tweet_type": "original"}]
     analyses = [
         {
             "tweet_id": tweet_id,
             "author_handle": "researcher",
             "is_investment_related": True,
+            "is_investment_relevant": True,
+            "is_prediction": True,
+            "statement_type": "prediction",
+            "opinion_source": "author",
+            "is_sponsored": False,
+            "text_evidence": ["未来三个月可能继续上涨"],
             "confidence": 0.9,
             "tickers": [_ticker("neutral"), {**_ticker("bullish"), "symbol": "AAPL"}],
         }
@@ -51,6 +62,55 @@ def test_prediction_generation_keeps_only_directional_views():
 
     assert [(item["ticker"], item["sentiment"]) for item in predictions] == [
         ("AAPL", "bullish")
+    ]
+    assert predictions[0]["creation_rule_version"] == "prediction_eligibility_v2"
+    assert predictions[0]["eligibility_passed"] is True
+    assert predictions[0]["instrument_snapshot"]["symbol"] == "AAPL"
+
+
+def test_prediction_eligibility_rejects_quote_sponsor_and_retweet():
+    base = {
+        "is_investment_related": True,
+        "is_prediction": True,
+        "statement_type": "prediction",
+        "opinion_source": "quoted",
+        "is_sponsored": True,
+        "text_evidence": ["BTC 下月上涨"],
+        "confidence": 0.9,
+        "tickers": [{**_ticker("bullish"), "symbol": "BTC"}],
+    }
+
+    decision = evaluate_prediction_eligibility(base, {"tweet_type": "retweet"})
+
+    assert decision["eligible"] is False
+    assert decision["reason_codes"] == [
+        "opinion_not_author",
+        "sponsored_content",
+        "pure_retweet",
+    ]
+
+
+def test_prediction_eligibility_requires_ticker_horizon_and_evidence():
+    analysis = {
+        "is_investment_related": True,
+        "is_prediction": True,
+        "statement_type": "prediction",
+        "opinion_source": "author",
+        "text_evidence": ["看涨"],
+        "confidence": 0.9,
+        "tickers": [{
+            **_ticker("bullish"),
+            "horizon": "unknown",
+            "evidence": [],
+        }],
+    }
+
+    decision = evaluate_prediction_eligibility(analysis, {"tweet_type": "original"})
+
+    assert decision["eligible"] is False
+    assert decision["reason_codes"] == ["no_eligible_instrument"]
+    assert decision["rejected_tickers"] == [
+        {"symbol": "NET", "reason_code": "horizon_missing"}
     ]
 
 
@@ -63,6 +123,48 @@ def test_persistence_layer_rejects_neutral_candidates():
             raise AssertionError("neutral prediction must not query or write")
 
     assert save_predictions_batch(NoWriteSession(), [{"sentiment": "neutral"}]) == 0
+
+
+def test_persistence_keeps_creation_audit_and_instrument_snapshot():
+    class EmptyResult:
+        def first(self):
+            return None
+
+        def scalars(self):
+            return []
+
+    class CaptureSession:
+        def __init__(self):
+            self.added = []
+
+        def execute(self, *_args, **_kwargs):
+            return EmptyResult()
+
+        def add(self, value):
+            self.added.append(value)
+
+    db = CaptureSession()
+    evidence = {"eligible": True, "rule_version": "prediction_eligibility_v2"}
+    candidate = {
+        "analysis_id": str(uuid.uuid4()),
+        "tweet_id": str(uuid.uuid4()),
+        "blogger_handle": "researcher",
+        "ticker": "NET",
+        "sentiment": "bullish",
+        "investment_horizon": "medium",
+        "published_at": NOW,
+        "verifiable_at": NOW + timedelta(days=30),
+        "instrument_snapshot": _ticker("bullish"),
+        "eligibility_passed": True,
+        "creation_rule_version": "prediction_eligibility_v2",
+        "creation_evidence": evidence,
+    }
+
+    assert save_predictions_batch(db, [candidate]) == 1
+    stored = db.added[0]
+    assert stored.creation_rule_version == "prediction_eligibility_v2"
+    assert stored.creation_evidence == evidence
+    assert stored.instrument_snapshot["symbol"] == "NET"
 
 
 def test_circle_conflict_learns_context_for_future_corrections():

@@ -10,12 +10,13 @@ def test_rerank_empty_documents():
     assert result == []
 
 
-def test_rerank_fewer_than_top_n():
-    """When documents <= top_n, return all without calling API."""
+@patch("app.rag.reranker._rerank_with_circuit")
+def test_rerank_fewer_than_top_n_still_gets_relevance_order(mock_circuit):
+    """Multiple documents still need relevance scores when all are retained."""
+    mock_circuit.return_value = [(1, 0.8), (0, 0.6)]
     result = rerank("test query", ["doc1", "doc2"], top_n=5)
-    assert len(result) == 2
-    assert result[0] == (0, 1.0)
-    assert result[1] == (1, 1.0)
+    assert result == [(1, 0.8), (0, 0.6)]
+    mock_circuit.assert_called_once_with("test query", ["doc1", "doc2"], 5)
 
 
 @patch("app.rag.reranker._rerank_with_circuit")

@@ -167,6 +167,9 @@ async def _assess_one(structured_llm, tweet: dict, blogger_context: str, classif
             author_handle=tweet["author_handle"],
             content=tweet["content"],
             media_context=json.dumps(tweet.get("media_context") or {}, ensure_ascii=False),
+            conversation_context=json.dumps(
+                tweet.get("conversation_context") or {}, ensure_ascii=False
+            ),
         ))
         result = await structured_llm.ainvoke(messages)
         latency_ms = int((time.perf_counter() - start) * 1000)

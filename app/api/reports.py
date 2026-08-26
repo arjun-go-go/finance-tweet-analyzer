@@ -45,8 +45,32 @@ def generate_report(
     GET /api/reports/{id}/stream for incremental SSE updates.
     """
     _check_rag_enabled()
+    ticker = body.ticker.strip().upper()
+    handle = (body.blogger_handle or "").strip().lstrip("@")
+    range_labels = {
+        "1d": "过去24小时",
+        "1w": "过去7天",
+        "2w": "过去14天",
+        "1m": "过去30天",
+        "3m": "过去90天",
+    }
+    source_scope = f"Twitter 博主 @{handle}" if handle else "全部已采集 Twitter 博主"
+    focus = "、".join(item.strip() for item in (body.focus_aspects or []) if item.strip())
+    query = (
+        f"生成 {ticker} 的博主观点摘要；范围：{source_scope}；"
+        f"时间：{range_labels[body.time_range]}；"
+        "重点总结原始观点、方向变化、风险分歧和已验证预测"
+    )
+    if focus:
+        query += f"；额外关注：{focus}"
+    title = f"{ticker} · @{handle} 观点摘要" if handle else f"{ticker} 博主观点摘要"
     report = report_service.create_report_record(
-        db, user.id, body.ticker, trigger_type="manual"
+        db,
+        user.id,
+        ticker,
+        trigger_type="manual",
+        title=title,
+        query=query,
     )
 
     return ReportResponse.model_validate(report)

@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     signal_model: str = "qwen/qwen3.7-max"
     report_model: str = "qwen/qwen3.7-max"
     vision_model: str = "qwen/qwen3.7-plus"
+    signal_llm_timeout_seconds: float = 75.0
+    signal_llm_max_completion_tokens: int = 3000
+    signal_llm_reasoning_effort: str = "minimal"
+    signal_llm_max_retries: int = 1
     vision_prompt_version: str = "v1"
     vision_max_images_per_tweet: int = 4
     vision_max_image_dimension: int = 1600
@@ -64,7 +68,7 @@ class Settings(BaseSettings):
     compression_keep_recent: int = 10
 
     # ----- SQL Agent -----
-    sql_max_retries: int = 3
+    sql_max_retries: int = 1
     sql_query_timeout: int = 5000
     sql_allowed_tables: list[str] = [
         "bloggers", "tweets", "predictions", "analysis_results"
@@ -186,7 +190,7 @@ class Settings(BaseSettings):
     # ----- User analysis jobs -----
     user_analysis_requests_enabled: bool = False
     user_analysis_daily_limit: int = 10
-    user_analysis_pipeline_version: str = "v1"
+    user_analysis_pipeline_version: str = "v2"
 
     # ----- Document quotas -----
     max_documents_per_user: int = 200

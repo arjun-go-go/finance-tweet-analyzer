@@ -91,6 +91,7 @@ def test_archive_media_persists_asset_and_requests_vision(db_session, monkeypatc
     assert (asset.width, asset.height, asset.content_type) == (40, 20, "image/png")
     event = db_session.query(OutboxEvent).filter_by(event_type="tweet.media_analyze_requested").one()
     assert event.payload["tweet_id"] == str(tweet.id)
+    assert tweet.status == "media_analysis_ready"
 
 
 def test_vision_analyzes_all_archived_images_then_uses_cache(db_session, monkeypatch):

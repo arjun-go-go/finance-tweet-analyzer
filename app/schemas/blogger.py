@@ -45,6 +45,11 @@ class BloggerListItem(BaseModel):
     followers_count: int
     market_focus: list[str] | None = None
     credibility_score: float
+    score_status: str = "no_data"
+    score_label: str = "暂无已验证预测"
+    sample_confidence: float = 0.0
+    raw_accuracy: float | None = None
+    verified_samples: int = 0
     verified_count: int
     pending_count: int
     hit_rate: float | None = None
@@ -68,6 +73,11 @@ class BloggerDetail(BaseModel):
     market_focus: list[str] | None = None
     profile_updated_at: datetime | None = None
     credibility_score: float
+    score_status: str = "no_data"
+    score_label: str = "暂无已验证预测"
+    sample_confidence: float = 0.0
+    raw_accuracy: float | None = None
+    verified_samples: int = 0
     verified_count: int
     pending_count: int
     hit_rate_overall: float | None = None

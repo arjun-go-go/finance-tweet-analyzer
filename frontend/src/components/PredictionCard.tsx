@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   correctPredictionInstrument,
   excludePrediction,
+  retryPredictionMarketVerification,
   validatePredictionInstrument,
   verifyPrediction,
 } from "@/lib/api";
@@ -25,7 +26,14 @@ export interface PredictionItem {
   verified_by: string | null;
   note: string | null;
   instrument_snapshot?: Record<string, unknown> | null;
+  creation_rule_version?: string | null;
+  creation_evidence?: {
+    eligible?: boolean;
+    minimum_confidence?: number;
+    eligible_tickers?: string[];
+  } | null;
   market_verification?: MarketVerificationEvidence | null;
+  lifecycle_status?: "tracking" | "due" | "review" | "verified" | "excluded";
   tweet: {
     id: string;
     content: string;
@@ -165,6 +173,19 @@ export default function PredictionCard({
     }
   };
 
+  const retryMarketData = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await retryPredictionMarketVerification(prediction.id);
+      onChanged?.(updated);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "行情重试失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const correctInstrument = async () => {
     if (!instrumentValidation?.accepted) {
       setError("请先完成标的校验");
@@ -280,6 +301,17 @@ export default function PredictionCard({
         {prediction.tweet.content}
       </p>
 
+      {prediction.creation_evidence?.eligible && (
+        <div className="prediction-entry-rule">
+          <strong>进入预测依据</strong>
+          <span>作者本人判断</span>
+          <span>方向与期限明确</span>
+          <span>标的已验证</span>
+          <span>原文证据完整</span>
+          <small>{prediction.creation_rule_version || "prediction_eligibility_v2"}</small>
+        </div>
+      )}
+
       {prediction.market_verification && (
         <MarketEvidence
           evidence={prediction.market_verification}
@@ -297,6 +329,11 @@ export default function PredictionCard({
             rows={2}
           />
           <div className="prediction-review-buttons">
+            {prediction.market_verification?.status === "market_data_unavailable" && (
+              <button className="is-retry" disabled={submitting} onClick={() => void retryMarketData()}>
+                重新获取行情
+              </button>
+            )}
             {prediction.sentiment !== "neutral" && (
               <button className="is-correct" disabled={submitting} onClick={() => setCorrecting((value) => !value)}>
                 修正标的
@@ -454,6 +491,14 @@ function MarketEvidence({
       {evidence.price_proxy && (
         <p className="prediction-proxy-disclosure">
           行情代理：{evidence.price_proxy.business_symbol} → {evidence.price_proxy.provider_symbol}。{evidence.price_proxy.disclosure}
+        </p>
+      )}
+      {isDuplicate && evidence.correction?.duplicate_prediction_id && (
+        <p className="prediction-duplicate-link">
+          当前记录已自动排除，
+          <a href={`/admin/predictions?status=all#prediction-${evidence.correction.duplicate_prediction_id}`}>
+            查看保留的较早预测
+          </a>
         </p>
       )}
       <footer>

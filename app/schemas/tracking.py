@@ -13,6 +13,10 @@ class TrackingCreateRequest(BaseModel):
     frequency: str = Field(..., pattern="^(daily|weekly|manual)$")
 
 
+class TrackingValidateRequest(BaseModel):
+    ticker: str = Field(..., max_length=20, examples=["TSLA", "600519", "XAU"])
+
+
 class TrackingUpdateRequest(BaseModel):
     frequency: str | None = Field(None, pattern="^(daily|weekly|manual)$")
     status: str | None = Field(None, pattern="^(active|paused)$")
@@ -29,6 +33,8 @@ class TrackingResponse(BaseModel):
     config: dict = {}
     created_at: datetime
     updated_at: datetime
+    instrument: dict | None = None
+    monitor: dict = {}
 
     model_config = {"from_attributes": True}
 
@@ -36,3 +42,4 @@ class TrackingResponse(BaseModel):
 class TrackingListResponse(BaseModel):
     items: list[TrackingResponse]
     total: int
+    summary: dict = {}

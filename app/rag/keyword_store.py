@@ -324,6 +324,12 @@ class ElasticsearchKeywordStore:
             chunk_id = str(source.get("chunk_id") or hit.get("_id") or "")
             metadata = dict(source.get("metadata") or {})
             metadata["chunk_id"] = chunk_id
+            for field in (
+                "source_id", "document_id", "chunk_index", "ticker", "tickers",
+                "blogger_handle", "published_at", "created_at", "url",
+            ):
+                if source.get(field) not in (None, ""):
+                    metadata[field] = source[field]
             if hit.get("highlight"):
                 metadata["highlight"] = hit["highlight"]
             results.append(

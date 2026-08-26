@@ -22,6 +22,28 @@ def compute_score(correct_sum: float, total: int) -> float:
     return (correct_sum + ALPHA) / (total + ALPHA + BETA) * 100
 
 
+def score_profile(correct_sum: float, total: int) -> dict:
+    """Return the score together with the sample maturity needed to interpret it."""
+    score = compute_score(correct_sum, total)
+    raw_accuracy = correct_sum / total if total else None
+    if total == 0:
+        status, label = "no_data", "暂无已验证预测"
+    elif total < 5:
+        status, label = "early", "样本很少，仅供参考"
+    elif total < 15:
+        status, label = "developing", "样本积累中"
+    else:
+        status, label = "established", "样本相对稳定"
+    return {
+        "credibility_score": round(score, 2),
+        "score_status": status,
+        "score_label": label,
+        "sample_confidence": round(min(total / 20, 1.0), 2),
+        "raw_accuracy": round(raw_accuracy, 4) if raw_accuracy is not None else None,
+        "verified_samples": total,
+    }
+
+
 def recompute_blogger(db: Session, handle: str) -> None:
     """Recompute total_predictions / correct_predictions on the Blogger row.
 

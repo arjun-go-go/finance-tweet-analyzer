@@ -32,6 +32,7 @@ class AnalysisResult(Base, TimestampMixin):
     prediction_status: Mapped[str] = mapped_column(
         String(16), default="pending", index=True
     )
+    prediction_decision: Mapped[dict | None] = mapped_column(JSONB, default=None)
     cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pipeline_version: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="v1"

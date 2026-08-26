@@ -6,6 +6,9 @@ def _settings(**overrides):
         "openrouter_api_key": "test-openrouter",
         "dashscope_api_key": "test-dashscope",
         "jwt_secret_key": "test-jwt-secret",
+        "elasticsearch_url": "",
+        "elasticsearch_username": "",
+        "elasticsearch_password": "",
         "_env_file": None,
     }
     values.update(overrides)

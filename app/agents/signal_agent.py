@@ -37,4 +37,9 @@ def analyze_tweet(content: str, author_handle: str) -> dict:
     structured_llm = llm.with_structured_output(TweetAnalysis)
     messages = _to_lc_messages(get_chat_prompt("signal/system_prompt", author_handle=author_handle, content=content))
     result = structured_llm.invoke(messages)
-    return result.model_dump()
+    data = result.model_dump()
+    data["media_summary"] = ""
+    data["media_evidence"] = []
+    data["text_image_consistency"] = "no_media"
+    data["media_confidence"] = 0.0
+    return data

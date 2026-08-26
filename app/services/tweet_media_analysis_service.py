@@ -20,6 +20,11 @@ from app.prompts import get_prompt
 from app.rag.storage import TweetMediaStorage
 from app.schemas.media_analysis import TweetMediaAnalysisOutput
 from app.services.outbox_service import enqueue_outbox_event
+from app.services.tweet_state_service import (
+    MEDIA_STATES,
+    TweetProcessingState,
+    transition_tweet_state,
+)
 
 
 def _prepare_image(content: bytes) -> bytes:
@@ -93,7 +98,7 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         ).scalars().all()
     )
     if not assets:
-        tweet.status = "pending"
+        transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
         enqueue_outbox_event(db, "tweet.analysis_requested", {"tweet_id": str(tweet.id)})
         db.commit()
         return {"tweet_id": str(tweet.id), "status": "skipped", "reason": "no_archived_media"}
@@ -109,6 +114,10 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         and record.model_used == settings.vision_model
         and record.prompt_version == settings.vision_prompt_version
     ):
+        if TweetProcessingState(tweet.status) in MEDIA_STATES or tweet.status == "failed":
+            transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
+            enqueue_outbox_event(db, "tweet.analysis_requested", {"tweet_id": str(tweet.id)})
+            db.commit()
         return {"tweet_id": str(tweet.id), "status": "cached", "analysis_id": str(record.id)}
 
     if record is None:
@@ -125,6 +134,7 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
     record.status = "analyzing"
     record.error_detail = None
     record.attempts = (record.attempts or 0) + 1
+    transition_tweet_state(tweet, TweetProcessingState.MEDIA_ANALYZING)
     db.commit()
 
     storage = TweetMediaStorage()
@@ -167,7 +177,7 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         record.status = "completed"
         record.error_detail = None
         record.analyzed_at = datetime.now(timezone.utc)
-        tweet.status = "pending"
+        transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
         enqueue_outbox_event(db, "tweet.analysis_requested", {"tweet_id": str(tweet.id)})
         db.commit()
         return {
@@ -184,6 +194,12 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         ).scalar_one()
         record.status = "failed"
         record.error_detail = str(exc)[:2000]
+        transition_tweet_state(
+            tweet,
+            TweetProcessingState.FAILED,
+            failure_stage="media_analysis",
+            error=str(exc),
+        )
         db.commit()
         raise
 

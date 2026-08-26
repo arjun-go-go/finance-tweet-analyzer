@@ -11,6 +11,15 @@ from sqlalchemy.orm import Session
 from app.models import AnalysisJob, AnalysisResult, Blogger, Tweet, UserBloggerFollow
 
 
+ANALYSIS_JOB_TRANSITIONS = {
+    "awaiting_confirmation": {"queued", "failed"},
+    "queued": {"running", "failed"},
+    "running": {"completed", "failed"},
+    "failed": {"running"},
+    "completed": set(),
+}
+
+
 class AnalysisJobNotFound(Exception):
     """Raised when a user-scoped analysis job does not exist."""
 
@@ -25,6 +34,14 @@ class AnalysisJobForbidden(Exception):
 
 class AnalysisJobInvalidState(Exception):
     """Raised when a job cannot be processed in its current state."""
+
+
+def transition_analysis_job_state(job: AnalysisJob, target: str) -> AnalysisJob:
+    current = job.status
+    if target != current and target not in ANALYSIS_JOB_TRANSITIONS.get(current, set()):
+        raise AnalysisJobInvalidState(f"Invalid analysis job transition: {current} -> {target}")
+    job.status = target
+    return job
 
 
 def analysis_cache_key(
@@ -116,7 +133,7 @@ def mark_analysis_job_dispatched(
     db: Session, job: AnalysisJob, *, celery_task_id: str
 ) -> AnalysisJob:
     job.celery_task_id = celery_task_id
-    job.status = "queued"
+    transition_analysis_job_state(job, "queued")
     db.flush()
     return job
 
@@ -179,8 +196,11 @@ def confirm_analysis_jobs(
 
 
 def mark_analysis_job_started(db: Session, job: AnalysisJob) -> AnalysisJob:
-    job.status = "running"
+    transition_analysis_job_state(job, "running")
     job.started_at = datetime.now(timezone.utc)
+    job.completed_at = None
+    job.error_code = None
+    job.error_summary = None
     db.flush()
     return job
 
@@ -192,7 +212,7 @@ def mark_analysis_job_completed(
     reused_result: bool,
     batch_id: UUID | None = None,
 ) -> AnalysisJob:
-    job.status = "completed"
+    transition_analysis_job_state(job, "completed")
     job.reused_result = reused_result
     job.batch_id = batch_id
     job.completed_at = datetime.now(timezone.utc)
@@ -208,9 +228,10 @@ def mark_analysis_job_dispatch_failed(
     *,
     error_code: str = "dispatch_failed",
 ) -> AnalysisJob:
-    job.status = "failed"
+    transition_analysis_job_state(job, "failed")
     job.error_code = error_code
     job.error_summary = "Analysis job could not be queued. Please retry later."
+    job.completed_at = datetime.now(timezone.utc)
     db.flush()
     return job
 
@@ -221,7 +242,7 @@ def mark_analysis_job_failed(
     *,
     error_code: str = "analysis_failed",
 ) -> AnalysisJob:
-    job.status = "failed"
+    transition_analysis_job_state(job, "failed")
     job.error_code = error_code
     job.error_summary = "Analysis job failed. Please retry later."
     job.completed_at = datetime.now(timezone.utc)
@@ -307,7 +328,15 @@ def _blogger_pending_count(db: Session, *, blogger_handle: str) -> int:
             .select_from(Tweet)
             .where(
                 Tweet.author_handle == blogger_handle,
-                Tweet.status == "pending",
+                Tweet.status.in_([
+                    "media_pending",
+                    "media_archiving",
+                    "media_analysis_ready",
+                    "media_analyzing",
+                    "pending",
+                    "analyzing",
+                    "retrying",
+                ]),
             )
         ).scalar_one()
     )
@@ -350,8 +379,9 @@ def run_user_analysis_job(
             cached = find_cached_tweet_analysis(
                 db, tweet_id=target_id, pipeline_version=pipeline_version
             )
-            if cached is not None:
-                _cache_tweet_analysis(cached, pipeline_version=pipeline_version)
+            if cached is None:
+                raise RuntimeError("analysis_result_missing")
+            _cache_tweet_analysis(cached, pipeline_version=pipeline_version)
             batch_id = UUID(result["batch_id"]) if result.get("batch_id") else None
             mark_analysis_job_completed(
                 db, job, reused_result=False, batch_id=batch_id
@@ -387,6 +417,8 @@ def run_user_analysis_job(
                 blogger_handle=blogger.handle,
                 pipeline_version=pipeline_version,
             )
+            if cached_count == 0:
+                raise RuntimeError("analysis_result_missing")
             batch_id = UUID(result["batch_id"]) if result.get("batch_id") else None
             mark_analysis_job_completed(
                 db, job, reused_result=False, batch_id=batch_id

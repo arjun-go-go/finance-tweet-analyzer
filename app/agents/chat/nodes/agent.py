@@ -12,6 +12,7 @@ from app.agents.llm import get_report_llm
 from app.core.config import settings
 from app.prompts import get_prompt
 from app.agents.chat.tool_results import parse_tool_envelope
+from app.agents.chat.answer_verifier import grounding_repair_prompt, verify_grounded_answer
 from app.agents.chat.routing import READ_ONLY_TOOL_NAMES
 
 
@@ -34,6 +35,9 @@ def terminal_tool_response(messages: list) -> str | None:
     message = str(envelope.get("message") or "工具未返回可用信息。")
     if envelope.get("ok") is False:
         return f"{message} 当前证据不足，无法确认相关信息。"
+    if bool((envelope.get("data") or {}).get("direct_response")):
+        citation = str((envelope.get("evidence") or {}).get("citation") or "")
+        return f"{message}{citation}"
     if not any(marker in message for marker in EMPTY_RESULT_MARKERS):
         return None
     citation = str((envelope.get("evidence") or {}).get("citation") or "")
@@ -89,6 +93,62 @@ def deterministic_analysis_call(messages: list, tool_name: str) -> AIMessage | N
     )
 
 
+def deterministic_follow_call(messages: list) -> AIMessage | None:
+    human_text = next(
+        (message.content for message in reversed(messages) if isinstance(message, HumanMessage)),
+        "",
+    )
+    handle_match = re.search(r"@?([A-Za-z0-9_]{1,15})\s*$", human_text.strip())
+    if handle_match is None:
+        return None
+    action = "unfollow" if any(word in human_text for word in ("取消关注", "不再关注", "unfollow")) else "follow"
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": "set_blogger_follow",
+            "args": {"blogger_handle": handle_match.group(1), "action": action},
+            "id": f"call_{uuid.uuid4().hex}",
+            "type": "tool_call",
+        }],
+    )
+
+
+def deterministic_business_query_call(messages: list, tool_name: str) -> AIMessage | None:
+    human_text = next(
+        (message.content for message in reversed(messages) if isinstance(message, HumanMessage)),
+        "",
+    )
+    handle_match = re.search(r"@([A-Za-z0-9_]{1,15})", human_text)
+    if handle_match is None:
+        handle_match = re.search(r"(?:博主|KOL)\s+([A-Za-z0-9_]{1,15})", human_text, re.IGNORECASE)
+    if tool_name in {"get_blogger_overview", "get_blogger_recent_analysis", "get_blogger_predictions"}:
+        if handle_match is None:
+            return None
+        args = {"blogger_handle": handle_match.group(1), "limit": 5}
+        if tool_name == "get_blogger_predictions":
+            args["status"] = "pending" if "待" in human_text else "verified" if "已验证" in human_text else "all"
+    elif tool_name == "get_ticker_predictions":
+        ticker_match = re.search(r"(?:\$)?([A-Z]{2,10}(?:\.[A-Z]{1,4})?)\b", human_text)
+        if ticker_match is None:
+            return None
+        args = {
+            "ticker": ticker_match.group(1),
+            "status": "pending" if "待" in human_text else "verified" if "已验证" in human_text else "all",
+            "limit": 5,
+        }
+    elif tool_name == "get_prediction_review_summary":
+        args = {}
+    else:
+        return None
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": tool_name,
+            "args": args,
+            "id": f"call_{uuid.uuid4().hex}",
+            "type": "tool_call",
+        }],
+    )
 def build_prompt_from_state(
     base_prompt: str,
     profile: dict,
@@ -207,7 +267,9 @@ def agent_node_impl(
             allow_partial=False,
         )
 
-    allowed_tool_names = state.get("allowed_tool_names") or default_tool_names
+    allowed_tool_names = state.get("allowed_tool_names")
+    if allowed_tool_names is None:
+        allowed_tool_names = default_tool_names
     selected_tools = [
         tools_by_name[name]
         for name in allowed_tool_names
@@ -215,6 +277,16 @@ def agent_node_impl(
     ]
     llm = get_llm()
     action_tools = [name for name in allowed_tool_names if name not in READ_ONLY_TOOL_NAMES]
+    if len(allowed_tool_names) == 1 and allowed_tool_names[0].startswith(("get_blogger_", "get_ticker_", "get_prediction_")) and not has_tool_result_since_latest_human(messages):
+        deterministic_call = deterministic_business_query_call(messages, allowed_tool_names[0])
+        if deterministic_call is not None:
+            logger.info("[Agent] Deterministic business query tool={}", allowed_tool_names[0])
+            return {"messages": [deterministic_call]}
+    if action_tools == ["set_blogger_follow"] and not has_tool_result_since_latest_human(messages):
+        deterministic_call = deterministic_follow_call(messages)
+        if deterministic_call is not None:
+            logger.info("[Agent] Deterministic follow action")
+            return {"messages": [deterministic_call]}
     if (
         len(action_tools) == 1
         and action_tools[0] in ("preview_tweet_analysis", "confirm_tweet_analysis")
@@ -224,9 +296,20 @@ def agent_node_impl(
         if deterministic_call is not None:
             logger.info("[Agent] Deterministic analysis action tool={}", action_tools[0])
             return {"messages": [deterministic_call]}
-    runnable = llm.bind_tools(selected_tools)
+    runnable = llm.bind_tools(selected_tools) if selected_tools else llm
 
     response = runnable.invoke(
         [SystemMessage(content=system_prompt)] + messages
     )
+    if isinstance(response, AIMessage) and not response.tool_calls and isinstance(response.content, str):
+        verified_content, verification = verify_grounded_answer(response.content, messages)
+        if verification.get("status") == "rejected":
+            repair_prompt = grounding_repair_prompt(response.content, messages)
+            if repair_prompt:
+                repaired = llm.invoke(repair_prompt)
+                repaired_content = repaired.content if isinstance(repaired.content, str) else ""
+                verified_content, verification = verify_grounded_answer(repaired_content, messages)
+                verification["repaired"] = True
+        response = response.model_copy(update={"content": verified_content})
+        return {"messages": [response], "answer_verification": verification}
     return {"messages": [response]}

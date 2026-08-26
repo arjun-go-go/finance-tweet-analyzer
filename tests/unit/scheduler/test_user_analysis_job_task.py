@@ -30,7 +30,7 @@ def test_user_analysis_job_task_delegates_to_runner(monkeypatch):
     assert result == {"status": "completed"}
     assert seen["db"] is session
     assert seen["job_id"] == job_id
-    assert seen["pipeline_version"] == "v1"
+    assert seen["pipeline_version"] == "v2"
     assert seen["analyze_single_tweet"] is tasks.analyze_single_tweet
     assert seen["analyze_by_blogger"] is tasks.analyze_by_blogger
     assert session.closed is True

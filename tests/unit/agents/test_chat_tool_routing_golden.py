@@ -8,15 +8,39 @@ from app.agents.chat.routing import classify_tool_route
     [
         (
             "我关注了哪些博主？",
-            "read_only",
-            {"query_database", "list_my_followed_bloggers"},
+            "followed_bloggers",
+            {"list_my_followed_bloggers"},
+            {"query_database", "generate_tracking_report", "fetch_and_save_tweets", "confirm_tweet_analysis"},
+        ),
+        (
+            "你好",
+            "conversation",
+            set(),
+            {"query_database", "search_public_signals", "search_my_documents"},
+        ),
+        (
+            "我的私人文档里怎么看 NVDA？",
+            "private_documents",
+            {"search_my_documents"},
+            {"query_database", "search_public_signals", "fetch_and_save_tweets"},
+        ),
+        (
+            "列出博主粉丝排名",
+            "database_query",
+            {"query_database"},
+            {"search_public_signals", "search_my_documents", "fetch_and_save_tweets"},
+        ),
+        (
+            "关注博主 @qinbafrank",
+            "follow",
+            {"set_blogger_follow"},
             {"generate_tracking_report", "fetch_and_save_tweets", "confirm_tweet_analysis"},
         ),
         (
             "帮我看看 BTC 最近消息，不要生成报告",
-            "read_only",
-            {"query_database", "search_public_signals"},
-            {"generate_tracking_report", "fetch_and_save_tweets", "confirm_tweet_analysis"},
+            "public_signals",
+            {"search_public_signals"},
+            {"query_database", "generate_tracking_report", "fetch_and_save_tweets", "confirm_tweet_analysis"},
         ),
         (
             "生成一份 TSLA 日报",

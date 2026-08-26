@@ -233,6 +233,32 @@ def test_run_tweet_job_analyzes_cache_miss_and_completes(db_session):
     assert job.batch_id is not None
 
 
+def test_run_tweet_job_without_persisted_result_is_failed(db_session):
+    owner = _user(db_session, "owner")
+    target = _tweet(db_session)
+    job = create_analysis_job(
+        db_session,
+        owner.id,
+        kind="tweet_analysis",
+        target_id=target.id,
+        pipeline_version="v1",
+    )
+    db_session.commit()
+
+    with pytest.raises(RuntimeError, match="analysis_result_missing"):
+        run_user_analysis_job(
+            db_session,
+            job.id,
+            pipeline_version="v1",
+            analyze_single_tweet=lambda *_: {"batch_id": str(uuid4()), "analyzed": 0},
+            analyze_by_blogger=lambda *_: {},
+        )
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.completed_at is not None
+
+
 def test_run_blogger_job_reuses_cache_when_no_pending_tweets(db_session):
     owner = _user(db_session, "owner")
     blogger = Blogger(handle=f"analyst-{uuid4()}", name="Analyst")

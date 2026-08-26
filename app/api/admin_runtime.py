@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 
 from fastapi import APIRouter, Depends
@@ -14,9 +15,105 @@ from app.models.tweet_media_analysis import TweetMediaAnalysis
 from app.models.tweet_media_asset import TweetMediaAsset
 from app.models.user import User
 from app.scheduler.locks import _get_redis
+from app.core.config import settings
+from app.services.market_verification_service import (
+    PREDICTION_RUNTIME_SOURCE_PREFIX,
+    PREDICTION_RUNTIME_TASK_KEY,
+)
 
 
 router = APIRouter(prefix="/api/admin/runtime", tags=["admin-runtime"])
+
+
+def _redis_hash(redis_client, key: str) -> dict:
+    return {str(name): value for name, value in redis_client.hgetall(key).items()}
+
+
+def _as_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _prediction_verification_runtime(redis_client) -> dict:
+    task = _redis_hash(redis_client, PREDICTION_RUNTIME_TASK_KEY)
+    result = {}
+    if task.get("last_result"):
+        try:
+            result = json.loads(task["last_result"])
+        except (TypeError, ValueError):
+            result = {}
+
+    interval = settings.auto_verification_interval_minutes
+    next_scheduled_at = None
+    last_finished_at = task.get("last_finished_at")
+    if last_finished_at:
+        try:
+            next_at = datetime.fromisoformat(last_finished_at) + timedelta(minutes=interval)
+            next_scheduled_at = next_at.isoformat()
+        except ValueError:
+            pass
+
+    sources = {}
+    alerts = []
+    source_labels = {
+        "cn": "A股",
+        "hk": "港股",
+        "us": "美股",
+        "eia": "WTI 原油",
+        "binance": "黄金 / 加密货币",
+    }
+    for source, label in source_labels.items():
+        raw = _redis_hash(redis_client, f"{PREDICTION_RUNTIME_SOURCE_PREFIX}{source}")
+        consecutive_failures = _as_int(raw.get("consecutive_failures"))
+        sources[source] = {
+            "label": label,
+            "status": raw.get("status", "unknown"),
+            "provider": raw.get("provider"),
+            "last_checked_at": raw.get("last_checked_at"),
+            "last_success_at": raw.get("last_success_at"),
+            "last_error_at": raw.get("last_error_at"),
+            "last_error": raw.get("last_error"),
+            "consecutive_failures": consecutive_failures,
+            "total_calls": _as_int(raw.get("total_calls")),
+            "total_successes": _as_int(raw.get("total_successes")),
+            "total_failures": _as_int(raw.get("total_failures")),
+            "fallback_count": _as_int(raw.get("fallback_count")),
+        }
+        if consecutive_failures >= 3:
+            alerts.append({
+                "level": "critical",
+                "source": source,
+                "message": f"{label}行情源已连续失败 {consecutive_failures} 次",
+            })
+
+    task_failures = _as_int(task.get("consecutive_failures"))
+    if task_failures >= 3:
+        alerts.append({
+            "level": "critical",
+            "source": "task",
+            "message": f"自动验证任务已连续失败 {task_failures} 次",
+        })
+    return {
+        "enabled": settings.auto_verification_enabled,
+        "interval_minutes": interval,
+        "batch_size": settings.auto_verification_batch_size,
+        "task": {
+            "status": task.get("status", "never_run"),
+            "task_id": task.get("task_id"),
+            "last_started_at": task.get("last_started_at"),
+            "last_finished_at": last_finished_at,
+            "last_success_at": task.get("last_success_at"),
+            "last_error_at": task.get("last_error_at"),
+            "last_error": task.get("last_error"),
+            "consecutive_failures": task_failures,
+            "last_result": result,
+            "next_scheduled_at": next_scheduled_at,
+        },
+        "sources": sources,
+        "alerts": alerts,
+    }
 
 
 @router.get("/stats")
@@ -92,5 +189,6 @@ def runtime_stats(
             "assets": {status: int(count or 0) for status, count in media_asset_rows},
             "usage": vision_usage,
         },
+        "prediction_verification": _prediction_verification_runtime(redis_client),
         "database_pool": engine.pool.status(),
     }

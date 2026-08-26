@@ -9,15 +9,16 @@ function formatTime(value: string) {
 }
 
 export default function IntelligenceCard({ item, selected, onSelect }: { item: IntelligenceFeedItem; selected?: boolean; onSelect: () => void }) {
+  const kindLabel = item.kind === "risk" ? "风险线索" : item.kind === "news" ? "市场动态" : "博主观点";
   return (
     <article className={`intelligence-card ${selected ? "is-selected" : ""}`}>
-      <button className="intelligence-card-main" onClick={onSelect}>
-        <span className={`evidence-spine ${item.kind === "risk" ? "is-risk" : ""}`}><span /></span>
+      <button className="intelligence-card-main" onClick={onSelect} aria-pressed={selected} aria-controls="selected-evidence-panel">
+        <span className={`evidence-spine ${item.kind === "risk" ? "is-risk" : item.kind === "news" ? "is-news" : ""}`}><span /></span>
         <span className="intelligence-copy">
           <span className="intelligence-meta">
             <span className={`direction direction-${item.direction}`}>{directionMap[item.direction] || "中性"}</span>
             <span className={`lifecycle-chip lifecycle-${item.lifecycle}`}>{lifecycleMap[item.lifecycle] || "新出现"}</span>
-            <span>{item.kind === "risk" ? "风险线索" : "观点更新"}</span>
+            <span>{kindLabel}</span>
             <span>{item.time_bucket} · {formatTime(item.published_at)}</span>
           </span>
           <strong>{item.title}</strong>

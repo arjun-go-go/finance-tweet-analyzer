@@ -34,7 +34,7 @@ export interface IntelligenceEvidence {
 
 export interface IntelligenceFeedItem {
   id: string;
-  kind: "opinion" | "risk";
+  kind: "opinion" | "risk" | "news";
   title: string;
   summary: string;
   direction: string;
@@ -81,20 +81,50 @@ export interface IntelligenceFeedResponse {
     personalized_candidates: number;
     market_candidates: number;
     window: "24h" | "3d" | "7d";
-    kind: "all" | "risk" | "opinion";
+    kind: "all" | "risk" | "opinion" | "news";
     generated_at: string;
   };
+}
+
+export interface IntelligenceDigestResponse {
+  status: "ready" | "empty" | "scope_empty";
+  title: string;
+  executive_summary: string;
+  generated_at: string;
+  period_start: string;
+  period_end: string;
+  metrics: {
+    signal_count: number;
+    personalized_count: number;
+    source_count: number;
+    ticker_count: number;
+    opinion_count: number;
+    news_count: number;
+    risk_count: number;
+    reversal_count: number;
+    corroborated_count: number;
+  };
+  highlights: IntelligenceFeedItem[];
+  attention: IntelligenceFeedItem[];
+  context: IntelligenceFeedResponse["context"];
+  methodology: string;
 }
 
 export async function fetchIntelligenceFeed(
   limit = 20,
   window: "24h" | "3d" | "7d" = "24h",
-  kind: "all" | "risk" | "opinion" = "all",
+  kind: "all" | "risk" | "opinion" | "news" = "all",
 ): Promise<IntelligenceFeedResponse> {
   const params = new URLSearchParams({ limit: String(limit), window, kind });
   const res = await authFetch(`${API_BASE}/api/intelligence/feed?${params.toString()}`, { cache: "no-store" });
   if (!res.ok) throw new Error("无法加载今日情报，请检查后端服务或稍后重试。");
   return res.json() as Promise<IntelligenceFeedResponse>;
+}
+
+export async function fetchIntelligenceDigest(): Promise<IntelligenceDigestResponse> {
+  const res = await authFetch(`${API_BASE}/api/intelligence/digest`, { cache: "no-store" });
+  if (!res.ok) throw new Error("无法加载 Twitter 投资情报日报，请稍后重试。");
+  return res.json() as Promise<IntelligenceDigestResponse>;
 }
 
 export async function fetchDashboard() {
@@ -164,6 +194,49 @@ export async function fetchBloggers(params?: {
   });
   if (!res.ok) throw new Error("Failed to fetch bloggers");
   return res.json();
+}
+
+export interface UserAlertItem {
+  id: string;
+  kind: "high_risk" | "direction_reversal" | "new_prediction" | string;
+  severity: "high" | "info" | string;
+  title: string;
+  message: string;
+  target_url: string;
+  ticker: string | null;
+  blogger_handle: string | null;
+  status: "unread" | "read" | "dismissed";
+  occurred_at: string;
+  read_at: string | null;
+}
+
+export interface UserAlertListResponse {
+  items: UserAlertItem[];
+  total: number;
+  unread: number;
+  high_priority: number;
+}
+
+export async function fetchAlerts(status: "unread" | "read" | "dismissed" | "all" = "unread"): Promise<UserAlertListResponse> {
+  const res = await authFetch(`${API_BASE}/api/alerts?status=${status}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("提醒加载失败");
+  return res.json() as Promise<UserAlertListResponse>;
+}
+
+export async function updateAlert(id: string, action: "read" | "dismiss"): Promise<UserAlertItem> {
+  const res = await authFetch(`${API_BASE}/api/alerts/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) throw new Error("提醒状态更新失败");
+  return res.json() as Promise<UserAlertItem>;
+}
+
+export async function readAllAlerts(): Promise<{ updated: number }> {
+  const res = await authFetch(`${API_BASE}/api/alerts/read-all`, { method: "POST" });
+  if (!res.ok) throw new Error("全部标记已读失败");
+  return res.json() as Promise<{ updated: number }>;
 }
 
 export async function fetchTweetMediaBlob(tweetId: string, assetId: string): Promise<Blob> {
@@ -409,6 +482,12 @@ export type MarketVerificationEvidence = {
     provider_symbol: string;
     disclosure: string;
   } | null;
+  correction?: {
+    old_symbol?: string;
+    new_symbol?: string;
+    duplicate_prediction_id?: string;
+    reason?: string;
+  } | null;
   applied: boolean;
   created_at: string;
 };
@@ -435,6 +514,48 @@ export async function fetchPredictionReviewQueue(params?: {
     { cache: "no-store" },
   );
   if (!res.ok) throw new Error("人工复核队列加载失败");
+  return res.json();
+}
+
+export type PredictionLifecycleStatus = "tracking" | "due" | "review" | "verified" | "excluded";
+
+export type PredictionOperationStats = {
+  total: number;
+  tracking: number;
+  due: number;
+  review: number;
+  verified: number;
+  excluded: number;
+  auto_verified: number;
+  market_data_unavailable: number;
+};
+
+export async function fetchPredictionOperations(params?: {
+  status?: "all" | PredictionLifecycleStatus;
+  limit?: number;
+  offset?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.offset) sp.set("offset", String(params.offset));
+  const res = await authFetch(
+    `${API_BASE}/api/predictions/operations?${sp.toString()}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error("预测生命周期加载失败");
+  return res.json();
+}
+
+export async function retryPredictionMarketVerification(id: string) {
+  const res = await authFetch(
+    `${API_BASE}/api/predictions/${id}/retry-market-verification`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(data, "行情重试失败"));
+  }
   return res.json();
 }
 
@@ -824,14 +945,16 @@ export async function generateReport(
   ticker: string,
   timeRange?: string,
   focusAspects?: string[],
+  bloggerHandle?: string,
 ): Promise<{ id: string; status: string }> {
   const res = await authFetch(`${API_BASE}/api/reports/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ticker,
-      time_range: timeRange || null,
+      time_range: timeRange || "1w",
       focus_aspects: focusAspects || [],
+      blogger_handle: bloggerHandle || null,
     }),
   });
   if (!res.ok) throw new Error("Failed to generate report");
@@ -1021,15 +1144,63 @@ export interface TrackingItem {
   config: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  instrument: {
+    symbol?: string;
+    resolved_name?: string;
+    name?: string;
+    market?: string;
+    asset_type?: string;
+    validation_status?: string;
+    validation_sources?: string[];
+    price_proxy_symbol?: string;
+    price_proxy_disclosure?: string;
+  } | null;
+  monitor: {
+    intelligence_24h?: number;
+    direction?: "bullish" | "bearish" | "mixed" | "neutral";
+    direction_trend?: "up" | "down" | "flat";
+    bullish_count?: number;
+    bearish_count?: number;
+    active_predictions?: number;
+    latest_prediction_sentiment?: string | null;
+    risk_count?: number;
+    latest_title?: string | null;
+    latest_seen_at?: string | null;
+    latest_report?: {
+      id: string;
+      status: string;
+      created_at: string;
+      consensus: string | null;
+      error: string | null;
+    } | null;
+    alerts?: Array<{ type: string; level: string; message: string }>;
+  };
 }
 
 export interface TrackingListResponse {
   items: TrackingItem[];
   total: number;
+  summary: { intelligence_24h: number; attention: number; failed_reports: number };
+}
+
+export interface TrackingValidation {
+  accepted: boolean;
+  reason: string;
+  instrument: TrackingItem["instrument"];
+}
+
+export async function validateTracking(ticker: string): Promise<TrackingValidation> {
+  const res = await authFetch(`${API_BASE}/api/tracking/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticker }),
+  });
+  if (!res.ok) throw new Error("标的校验失败");
+  return res.json() as Promise<TrackingValidation>;
 }
 
 export async function listTracking(): Promise<TrackingListResponse> {
-  const res = await authFetch(`${API_BASE}/api/tracking`, {
+  const res = await authFetch(`${API_BASE}/api/tracking/`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to list tracking");
@@ -1040,12 +1211,15 @@ export async function createTracking(
   ticker: string,
   frequency: string,
 ): Promise<TrackingItem> {
-  const res = await authFetch(`${API_BASE}/api/tracking`, {
+  const res = await authFetch(`${API_BASE}/api/tracking/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ticker, frequency }),
   });
-  if (!res.ok) throw new Error("Failed to create tracking");
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(payload?.detail || "添加标的失败");
+  }
   return res.json() as Promise<TrackingItem>;
 }
 
@@ -1116,6 +1290,92 @@ export interface RetrievalDebugResponse {
   latency_ms: Record<string, number>;
 }
 
+// ============================================================
+// Research workspace API
+// ============================================================
+
+export interface ResearchTopic {
+  id: string;
+  title: string;
+  research_question: string;
+  mode: "quick" | "deep";
+  status: string;
+  tickers: string[];
+  source_scope: string[];
+  time_range: string;
+  current_conclusion: string | null;
+  monitor_enabled: boolean;
+  monitor_frequency: "daily" | "weekly";
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchWorkspace {
+  topic: ResearchTopic;
+  evidence: Array<{ id: string; evidence_key: string; source_type: string; source_id: string; tickers: string[]; author: string; published_at: string | null; excerpt: string; source_url: string; sentiment: string; verification_status: string; relevance_score: number }>;
+  conclusions: Array<{ id: string; version: number; conclusion: string; thesis: string; counter_evidence: string; risks: string[]; evidence_keys: string[]; confidence: number; created_at: string }>;
+}
+
+export async function createResearchTopic(data: { title: string; research_question: string; tickers: string[]; source_scope: string[]; time_range: string; conversation_id?: string | null }): Promise<ResearchTopic> {
+  const res = await authFetch(`${API_BASE}/api/research/topics`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...data, mode: "deep" }) });
+  if (!res.ok) throw new Error("创建研究课题失败");
+  return res.json();
+}
+
+export async function listResearchTopics(): Promise<ResearchTopic[]> {
+  const res = await authFetch(`${API_BASE}/api/research/topics`, { cache: "no-store" });
+  if (!res.ok) throw new Error("加载研究课题失败");
+  return res.json();
+}
+
+export async function getResearchWorkspace(id: string): Promise<ResearchWorkspace> {
+  const res = await authFetch(`${API_BASE}/api/research/topics/${id}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("加载研究工作区失败");
+  return res.json();
+}
+
+export async function runResearchTopic(id: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/api/research/topics/${id}/run`, { method: "POST" });
+  if (!res.ok) throw new Error("提交深度研究失败");
+}
+
+export async function updateResearchMonitor(id: string, enabled: boolean, frequency: "daily" | "weekly"): Promise<ResearchTopic> {
+  const res = await authFetch(`${API_BASE}/api/research/topics/${id}/monitor`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled, frequency }) });
+  if (!res.ok) throw new Error("更新持续监控失败");
+  return res.json();
+}
+
+export interface ResearchOpportunity {
+  id: string;
+  title: string;
+  summary: string;
+  tickers: string[];
+  importance_score: number;
+  reason: string;
+}
+
+export interface ResearchBrief {
+  generated_at: string;
+  personalized: Array<{ id: string; title: string; summary: string; tickers: string[]; importance_score: number }>;
+  risks: Array<{ id: string; title: string; summary: string; tickers: string[]; importance_score: number }>;
+  discoveries: Array<{ id: string; title: string; summary: string; tickers: string[]; importance_score: number }>;
+}
+
+export async function getResearchOpportunities(): Promise<ResearchOpportunity[]> {
+  const res = await authFetch(`${API_BASE}/api/research/opportunities`, { cache: "no-store" });
+  if (!res.ok) throw new Error("加载研究机会失败");
+  return res.json();
+}
+
+export async function getResearchBrief(): Promise<ResearchBrief> {
+  const res = await authFetch(`${API_BASE}/api/research/brief`, { cache: "no-store" });
+  if (!res.ok) throw new Error("加载每日研究简报失败");
+  return res.json();
+}
+
 export async function debugRetrieve(
   query: string,
   ticker?: string,
@@ -1168,6 +1428,38 @@ export interface RuntimeStats {
       total_tokens: number;
       provider_cost_usd: number;
     };
+  };
+  prediction_verification: {
+    enabled: boolean;
+    interval_minutes: number;
+    batch_size: number;
+    task: {
+      status: "never_run" | "running" | "success" | "failed";
+      task_id: string | null;
+      last_started_at: string | null;
+      last_finished_at: string | null;
+      last_success_at: string | null;
+      last_error_at: string | null;
+      last_error: string | null;
+      consecutive_failures: number;
+      last_result: Record<string, number | string>;
+      next_scheduled_at: string | null;
+    };
+    sources: Record<string, {
+      label: string;
+      status: "unknown" | "healthy" | "degraded" | "failed";
+      provider: string | null;
+      last_checked_at: string | null;
+      last_success_at: string | null;
+      last_error_at: string | null;
+      last_error: string | null;
+      consecutive_failures: number;
+      total_calls: number;
+      total_successes: number;
+      total_failures: number;
+      fallback_count: number;
+    }>;
+    alerts: Array<{ level: string; source: string; message: string }>;
   };
   database_pool: string;
 }

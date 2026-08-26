@@ -15,10 +15,12 @@ from loguru import logger
 from app.core.config import settings
 from app.core.resilience import resilient_tool
 from app.models.instrument_correction_rule import InstrumentCorrectionRule
+from app.schemas.instrument import InstrumentVerification
 
 
 _CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_LOCK = threading.Lock()
+_PROVIDER_AVAILABILITY: dict[str, bool] = {}
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,23}$")
 _A_SHARE_RE = re.compile(r"^(\d{6})(?:\.(SH|SZ|BJ))?$")
 _HK_SHARE_RE = re.compile(r"^(\d{4,5})(?:\.HK)?$")
@@ -35,11 +37,23 @@ _SEC_VERIFIED_COMPANY_ALIASES = {"spacex": "SPCX"}
 
 def is_downstream_verified_ticker(item: Any) -> bool:
     """Return whether a resolved ticker is safe for structured downstream use."""
+    verification = item.get("verification") if isinstance(item, dict) else None
+    if isinstance(verification, dict):
+        verified = (
+            verification.get("status") == "verified"
+            and verification.get("downstream_eligible") is True
+            and verification.get("tradable") is True
+        )
+    else:
+        verified = (
+            isinstance(item, dict)
+            and item.get("validation_status") == "verified"
+            and item.get("tradable") is True
+        )
     if not (
         isinstance(item, dict)
         and bool(str(item.get("symbol") or "").strip())
-        and item.get("validation_status") == "verified"
-        and item.get("tradable") is True
+        and verified
     ):
         return False
     symbol = str(item.get("symbol") or "").upper()
@@ -49,6 +63,73 @@ def is_downstream_verified_ticker(item: Any) -> bool:
         (asset_type == "equity" and market in _SUPPORTED_EQUITY_MARKETS)
         or (asset_type.startswith("crypto") and market == "CRYPTO")
         or (asset_type == "commodity" and market == "COMMODITY" and symbol in {"WTI", "XAU"})
+    )
+
+
+def _apply_verification(
+    item: dict,
+    *,
+    status: str,
+    reason_code: str,
+    reason: str,
+    validated_at: str,
+    sources: list[str] | None = None,
+    attempted_sources: list[str] | None = None,
+    authoritative_source: str | None = None,
+    tradable: bool = False,
+    listing_status: str = "unverified",
+) -> None:
+    unique_sources = list(dict.fromkeys(sources or []))
+    evidence = []
+    for provider in dict.fromkeys(attempted_sources or []):
+        if provider == authoritative_source:
+            provider_status = "matched"
+        elif provider in unique_sources:
+            provider_status = "supporting_match"
+        elif _PROVIDER_AVAILABILITY.get(provider) is False:
+            provider_status = "unavailable"
+        else:
+            provider_status = "no_match"
+        evidence.append({"provider": provider, "status": provider_status})
+
+    downstream_eligible = status == "verified" and tradable
+    verification = InstrumentVerification(
+        status=status,
+        reason_code=reason_code,
+        reason=reason,
+        is_verified=status == "verified",
+        downstream_eligible=downstream_eligible,
+        tradable=tradable,
+        listing_status=listing_status,
+        authoritative_source=authoritative_source,
+        sources=unique_sources,
+        evidence=evidence,
+        validated_at=validated_at,
+    ).model_dump()
+    item["verification"] = verification
+
+    # Compatibility projection for existing API consumers and stored snapshots.
+    item["validation_status"] = status
+    item["validation_reason_code"] = reason_code
+    item["validation_reason"] = reason
+    item["validation_sources"] = unique_sources
+    item["validation_evidence"] = evidence
+    item["validated_at"] = validated_at
+    item["tradable"] = tradable
+    item["listing_status"] = listing_status
+
+
+def _provider_name(cache_name: str) -> str:
+    if cache_name.startswith("akshare"):
+        return "akshare"
+    if cache_name.startswith("sec_company"):
+        return "sec_edgar"
+    return cache_name
+
+
+def _all_attempted_providers_unavailable(providers: list[str]) -> bool:
+    return bool(providers) and all(
+        _PROVIDER_AVAILABILITY.get(provider) is False for provider in providers
     )
 
 
@@ -275,9 +356,12 @@ def _load_binance_catalog() -> dict[str, Any]:
 
 def _catalog(name: str, loader: Callable[[], Any]) -> Any | None:
     value = _cached(name, loader)
+    provider = _provider_name(name)
     if isinstance(value, str):
+        _PROVIDER_AVAILABILITY[provider] = False
         logger.warning("Instrument provider {} unavailable: {}", name, value)
         return None
+    _PROVIDER_AVAILABILITY[provider] = True
     return value
 
 
@@ -388,7 +472,9 @@ def _openfigi_matches(symbols: list[str]) -> dict[str, dict]:
     if not settings.openfigi_validation_enabled or not symbols:
         return {}
     value = _map_openfigi(symbols)
-    return value if isinstance(value, dict) else {}
+    available = isinstance(value, dict)
+    _PROVIDER_AVAILABILITY["openfigi"] = available
+    return value if available else {}
 
 
 def _commodity_match(symbol: str) -> dict | None:
@@ -474,10 +560,6 @@ def resolve_analysis_tickers(analyses: list[dict], db: Any = None) -> list[dict]
     ]
     for item in candidate_items:
         _apply_legacy_hints(item)
-    candidates = {
-        str(item.get("symbol") or "").strip().lstrip("$").upper()
-        for item in candidate_items
-    }
     non_equity_symbols = {
         str(item.get("symbol") or "").strip().lstrip("$").upper()
         for item in candidate_items
@@ -509,23 +591,45 @@ def resolve_analysis_tickers(analyses: list[dict], db: Any = None) -> list[dict]
             symbol = str(ticker.get("symbol") or "").strip().lstrip("$").upper()
             if not _SYMBOL_RE.fullmatch(symbol):
                 rejected.append({"raw": symbol, "reason": "invalid_symbol_format"})
+                ticker["symbol"] = symbol
+                ticker["market"] = "UNKNOWN"
+                _apply_verification(
+                    ticker,
+                    status="invalid",
+                    reason_code="invalid_symbol_format",
+                    reason="标的代码格式无效，无法调用公开数据源核验",
+                    validated_at=validated_at,
+                )
+                resolved.append(ticker)
                 continue
 
-            asset_hint = ticker.get("asset_type", "unknown")
-            market_hint = ticker.get("market_hint", "unknown")
+            ticker["symbol"] = symbol
+            asset_hint = str(ticker.get("asset_type") or "unknown").lower()
+            market_hint = str(ticker.get("market_hint") or "unknown").upper()
             is_crypto_hint = asset_hint == "crypto" or market_hint == "CRYPTO"
+            attempted_sources: list[str] = []
             if is_crypto_hint:
+                attempted_sources = ["binance"]
                 match = _binance_match(symbol)
             elif asset_hint == "commodity" or market_hint == "COMMODITY":
+                attempted_sources = (
+                    ["eia_pet_rwtc_d"] if symbol == "WTI" else ["binance_paxg_proxy"]
+                )
                 match = _commodity_match(symbol)
             elif asset_hint in {"index", "forex"}:
+                attempted_sources = []
                 match = None
             else:
+                if market_hint in {"CN", "HK"} or _A_SHARE_RE.fullmatch(symbol) or _HK_SHARE_RE.fullmatch(symbol):
+                    attempted_sources = ["akshare"]
+                else:
+                    attempted_sources = ["sec_edgar", "openfigi"]
                 if market_hint == "US" or re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol):
                     match = _sec_match(symbol) or _akshare_match(symbol)
                 else:
                     match = _akshare_match(symbol) or _sec_match(symbol)
-                if match is None and asset_hint == "unknown" and market_hint == "unknown":
+                if match is None and asset_hint == "unknown" and market_hint == "UNKNOWN":
+                    attempted_sources.append("binance")
                     match = _binance_match(symbol)
             sources: list[str] = []
             external_ids: dict[str, str] = {}
@@ -551,8 +655,6 @@ def resolve_analysis_tickers(analyses: list[dict], db: Any = None) -> list[dict]
                 ticker["market"] = match["market"]
                 ticker["asset_type"] = match.get("asset_type", "equity")
                 ticker["resolved_name"] = match.get("name", "")
-                ticker["listing_status"] = "listed"
-                ticker["tradable"] = True
                 if not ticker.get("original_name"):
                     ticker["original_name"] = match.get("name", "")
                 if match.get("exchange"):
@@ -562,31 +664,103 @@ def resolve_analysis_tickers(analyses: list[dict], db: Any = None) -> list[dict]
                 if match.get("price_proxy_symbol"):
                     ticker["price_proxy_symbol"] = match["price_proxy_symbol"]
                     ticker["price_proxy_disclosure"] = match["price_proxy_disclosure"]
+                _apply_verification(
+                    ticker,
+                    status="verified",
+                    reason_code="authoritative_public_match",
+                    reason=f"已通过 {match['source']} 确认标准身份与行情映射",
+                    validated_at=validated_at,
+                    sources=sources,
+                    attempted_sources=attempted_sources,
+                    authoritative_source=match["source"],
+                    tradable=True,
+                    listing_status=match.get("listing_status") or "listed",
+                )
             elif figi:
                 ticker["symbol"] = str(figi.get("ticker") or symbol).upper()
-                ticker["market"] = figi.get("exchCode") or "GLOBAL"
+                ticker["market"] = (
+                    market_hint if market_hint in _SUPPORTED_EQUITY_MARKETS else "UNKNOWN"
+                )
+                ticker["exchange"] = figi.get("exchCode") or ""
                 ticker["asset_type"] = "equity"
                 ticker["resolved_name"] = figi.get("name") or ""
-                ticker["listing_status"] = "listed"
-                ticker["tradable"] = True
                 if not ticker.get("original_name"):
                     ticker["original_name"] = figi.get("name") or ""
-            else:
-                ticker["market"] = market_hint if market_hint != "unknown" else "UNKNOWN"
+                _apply_verification(
+                    ticker,
+                    status="ambiguous",
+                    reason_code="supporting_match_without_authority",
+                    reason="OpenFIGI 找到候选映射，但缺少对应市场权威数据源确认，暂不进入预测与排行",
+                    validated_at=validated_at,
+                    sources=["openfigi"],
+                    attempted_sources=attempted_sources,
+                    tradable=False,
+                    listing_status="identity_candidate",
+                )
+            elif asset_hint in {"index", "forex"}:
+                ticker["market"] = market_hint if market_hint != "UNKNOWN" else "UNKNOWN"
                 ticker["asset_type"] = asset_hint
-                ticker["listing_status"] = "unverified"
-                ticker["tradable"] = False
+                _apply_verification(
+                    ticker,
+                    status="unsupported",
+                    reason_code="unsupported_asset_type",
+                    reason="当前产品仅核验 A股、港股、美股、原油、黄金和加密货币",
+                    validated_at=validated_at,
+                    attempted_sources=attempted_sources,
+                )
+            else:
+                ticker["market"] = market_hint if market_hint != "UNKNOWN" else "UNKNOWN"
+                ticker["asset_type"] = asset_hint
+                providers_unavailable = _all_attempted_providers_unavailable(
+                    attempted_sources
+                )
+                _apply_verification(
+                    ticker,
+                    status="provider_unavailable" if providers_unavailable else "unverified",
+                    reason_code=(
+                        "all_providers_unavailable"
+                        if providers_unavailable
+                        else "no_authoritative_public_match"
+                    ),
+                    reason=(
+                        "对应市场的公开核验数据源暂时不可用，请稍后重试"
+                        if providers_unavailable
+                        else "已启用的公开数据源未能确认该标的标准身份或行情映射"
+                    ),
+                    validated_at=validated_at,
+                    attempted_sources=attempted_sources,
+                )
 
-            ticker["validation_status"] = "verified" if sources else "unverified"
-            ticker["validation_sources"] = list(dict.fromkeys(sources))
             ticker["external_ids"] = external_ids
-            ticker["validated_at"] = validated_at
             resolved.append(ticker)
 
         analysis["tickers"] = resolved
         if rejected:
             analysis["rejected_tickers"] = rejected
     _apply_human_correction_rules(analyses, db)
+    for analysis in analyses:
+        for item in analysis.get("tickers") or []:
+            if not isinstance(item, dict) or not item.get("correction_rule_id"):
+                continue
+            sources = list(dict.fromkeys(item.get("validation_sources") or []))
+            status = str(item.get("validation_status") or "manual_corrected")
+            tradable = item.get("tradable") is True and status == "verified"
+            authoritative_source = next(
+                (source for source in sources if source != "human_correction_rule"),
+                "human_correction_rule",
+            )
+            _apply_verification(
+                item,
+                status="verified" if tradable else "manual_corrected",
+                reason_code="human_correction_rule_applied",
+                reason="已应用管理员复核规则修正标的身份",
+                validated_at=validated_at,
+                sources=sources,
+                attempted_sources=sources,
+                authoritative_source=authoritative_source,
+                tradable=tradable,
+                listing_status=str(item.get("listing_status") or "unlisted_or_unknown"),
+            )
     return analyses
 
 
@@ -616,6 +790,27 @@ def validate_instrument_candidate(
         if not match:
             return {"accepted": False, "reason": "黄金代理行情 PAXGUSDT 当前不可用"}
         is_gold = normalized == "XAU"
+        instrument = {
+            **match,
+            "original_name": name.strip(),
+            "resolved_name": match["name"],
+        }
+        _apply_verification(
+            instrument,
+            status="verified",
+            reason_code="authoritative_public_match",
+            reason=(
+                "已映射到 Binance PAXGUSDT 黄金代理行情"
+                if is_gold
+                else "已映射到 EIA WTI 日度现货价格序列 PET.RWTC.D"
+            ),
+            validated_at=datetime.now(timezone.utc).isoformat(),
+            sources=[match["source"]],
+            attempted_sources=[match["source"]],
+            authoritative_source=match["source"],
+            tradable=True,
+            listing_status=match.get("listing_status") or "reference_series",
+        )
         return {
             "accepted": True,
             "reason": (
@@ -623,33 +818,33 @@ def validate_instrument_candidate(
                 if is_gold
                 else "已映射到 EIA WTI 日度现货价格序列 PET.RWTC.D"
             ),
-            "instrument": {
-                **match,
-                "original_name": name.strip(),
-                "resolved_name": match["name"],
-                "validation_status": "verified",
-                "tradable": True,
-                "validation_sources": [match["source"]],
-                "validated_at": datetime.now(timezone.utc).isoformat(),
-            },
+            "instrument": instrument,
         }
 
     if market == "OTHER" or asset_type == "other":
+        instrument = {
+            "symbol": normalized,
+            "original_name": name.strip(),
+            "resolved_name": name.strip(),
+            "asset_type": asset_type,
+            "market": market,
+        }
+        _apply_verification(
+            instrument,
+            status="manual_corrected",
+            reason_code="manual_non_tradable_identity",
+            reason="已记录为人工确认的非上市或非行情标的，不参与自动收益验证",
+            validated_at=datetime.now(timezone.utc).isoformat(),
+            sources=["manual_correction"],
+            attempted_sources=["manual_correction"],
+            authoritative_source="manual_correction",
+            tradable=False,
+            listing_status="unlisted_or_unknown",
+        )
         return {
             "accepted": True,
             "reason": "已记录为人工确认的非上市/非行情标的，不参与自动收益验证",
-            "instrument": {
-                "symbol": normalized,
-                "original_name": name.strip(),
-                "resolved_name": name.strip(),
-                "asset_type": asset_type,
-                "market": market,
-                "validation_status": "manual_corrected",
-                "tradable": False,
-                "listing_status": "unlisted_or_unknown",
-                "validation_sources": ["manual_correction"],
-                "validated_at": datetime.now(timezone.utc).isoformat(),
-            },
+            "instrument": instrument,
         }
 
     analyses = [{

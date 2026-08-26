@@ -2,16 +2,26 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from app.agents.chat.tool_results import tool_ok
+
 
 def generate_tracking_report_impl(db, user_id: UUID, ticker: str) -> str:
-    """Create and run a tracking report, returning the user-facing summary."""
-    from app.services.report_service import create_and_run_report
+    """Queue a report and return immediately; generation runs in a worker."""
+    from app.services.report_service import create_report_record
 
-    report = create_and_run_report(db, user_id, ticker, trigger_type="chat")
-    if report.status == "done":
-        summary = report.summary or "报告生成完成"
-        return (
-            f"{ticker} 跟踪报告已生成\n\n{summary}\n\n"
-            f"评级: {report.consensus or 'N/A'}\n报告ID: {report.id}"
-        )
-    return f"报告生成失败: {report.error_detail or '未知错误'}"
+    report = create_report_record(
+        db,
+        user_id,
+        ticker,
+        trigger_type="chat",
+        query=f"生成 {ticker.upper()} 当前研究报告，重点说明最新观点、重要变化、方向性预测和主要风险。",
+    )
+    return tool_ok(
+        f"{ticker.upper()} 研究报告已进入后台生成队列。报告ID: {report.id}。可前往报告页面查看实时进度。",
+        data={
+            "report_id": str(report.id),
+            "ticker": report.ticker,
+            "status": report.status,
+            "path": f"/reports/{report.id}",
+        },
+    )

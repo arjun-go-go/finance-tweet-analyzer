@@ -41,7 +41,9 @@ const TRIGGER_CONFIG: Record<string, { color: string; label: string }> = {
 const SOURCE_BADGE_STYLES: Record<string, string> = {
   documents: "bg-blue-100 text-blue-700",
   tweets: "bg-green-100 text-green-700",
+  tweet: "bg-green-100 text-green-700",
   analyses: "bg-purple-100 text-purple-700",
+  analysis: "bg-purple-100 text-purple-700",
   structured: "bg-orange-100 text-orange-700",
   kol: "bg-green-100 text-green-700",
   research: "bg-blue-100 text-blue-700",
@@ -53,9 +55,11 @@ const SOURCE_BADGE_STYLES: Record<string, string> = {
 const SOURCE_BADGE_LABELS: Record<string, string> = {
   documents: "文档",
   tweets: "推文",
+  tweet: "推文原文",
   analyses: "分析",
+  analysis: "结构化分析",
   structured: "结构化",
-  kol: "KOL",
+  kol: "博主观点",
   research: "研报",
   news: "新闻",
   risk: "风险",
@@ -249,7 +253,7 @@ export default function ReportDetailPage() {
         if (cancelled) return;
         const err = e as { message?: string; status?: number };
         if (err.message?.includes("404") || err.status === 404) {
-          setError("报告不存在");
+          setError("观点摘要不存在");
         } else {
           setError("加载失败");
         }
@@ -296,7 +300,7 @@ export default function ReportDetailPage() {
           onClick={() => router.push("/reports")}
           className="mt-4 text-blue-600 hover:underline text-sm"
         >
-          ← 返回报告列表
+          ← 返回观点摘要列表
         </button>
       </div>
     );
@@ -319,7 +323,7 @@ export default function ReportDetailPage() {
               onClick={() => router.push("/reports")}
               className="text-blue-600 hover:underline text-sm"
             >
-              ← 返回报告列表
+              ← 返回观点摘要列表
             </button>
             <StatusBadge status="generating" />
           </div>
@@ -350,14 +354,14 @@ export default function ReportDetailPage() {
             onClick={() => router.push("/reports")}
             className="text-blue-600 hover:underline text-sm"
           >
-            ← 返回报告列表
+            ← 返回观点摘要列表
           </button>
           <StatusBadge status="failed" />
         </div>
 
         <div className="bg-white rounded-lg shadow p-6">
           <h1 className="text-xl font-bold mb-4">
-            {report.title || `${report.ticker} 分析报告`}
+            {report.title || `${report.ticker} 博主观点摘要`}
           </h1>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4">
             <p className="text-red-700 font-medium mb-1">生成失败</p>
@@ -385,10 +389,10 @@ export default function ReportDetailPage() {
             onClick={() => router.push("/reports")}
             className="text-blue-600 hover:underline text-sm"
           >
-            ← 返回报告列表
+            ← 返回观点摘要列表
           </button>
           <h1 className="text-lg font-bold text-gray-800">
-            {report.title || `${report.ticker} 分析报告`}
+            {report.title || `${report.ticker} 博主观点摘要`}
           </h1>
           <span className="text-sm text-gray-500">
             {formatDateTime(report.created_at)}
@@ -447,7 +451,7 @@ export default function ReportDetailPage() {
           className="bg-white rounded-lg shadow p-6"
         >
           <h2 className="text-base font-semibold text-gray-800 mb-4">
-            引用来源
+            Twitter 证据来源
           </h2>
           <div className="divide-y divide-gray-100">
             {report.citations.map((citation) => {

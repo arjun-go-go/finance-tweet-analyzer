@@ -55,6 +55,8 @@ celery.conf.update(
         "app.scheduler.tasks.backfill_signals_task": {"queue": "embed"},
         "app.scheduler.tasks.scheduled_report_task": {"queue": "report"},
         "app.scheduler.tasks.report_streaming_task": {"queue": "report"},
+        "app.scheduler.tasks.deep_research_task": {"queue": "report"},
+        "app.scheduler.tasks.scan_due_research_task": {"queue": "default"},
         "app.scheduler.tasks.scan_due_tracking_task": {"queue": "default"},
         "app.scheduler.tasks.gc_vector_task": {"queue": "default"},
         "app.scheduler.tasks.reindex_elasticsearch_chunks_task": {"queue": "default"},
@@ -115,6 +117,11 @@ celery.conf.beat_schedule = {
         "schedule": 600,
         "kwargs": {"batch_size": 15},
         "options": {"queue": "embed"},
+    },
+    "scan-due-research": {
+        "task": "app.scheduler.tasks.scan_due_research_task",
+        "schedule": 300,
+        "options": {"queue": "default"},
     },
     "auto-verify-predictions-periodic": {
         "task": "app.scheduler.tasks.auto_verify_predictions_task",

@@ -44,7 +44,6 @@ def test_get_current_admin_accepts_configured_admin(monkeypatch):
         ("app.api.analysis", "analyze_multiple_bloggers"),
         ("app.api.tweets", "import_tweets_endpoint"),
         ("app.api.bloggers", "upsert_blogger_endpoint"),
-        ("app.api.bloggers", "toggle_fetch"),
         ("app.api.predictions", "verify_endpoint"),
         ("app.api.admin_traces", "list_tool_route_traces"),
     ],

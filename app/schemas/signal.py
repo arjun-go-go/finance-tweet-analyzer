@@ -1,131 +1,189 @@
+from __future__ import annotations
+
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class PriceTarget(BaseModel):
+    """推文或图片中明确出现的价格水平。"""
+
+    symbol: str = Field(default="", description="关联的标准化标的代码")
+    target_type: Literal["entry", "target", "stop", "support", "resistance", "other"] = "other"
+    value: str = Field(default="", description="保留原文中的价格、区间和单位")
+    currency: str = ""
+    condition: str = ""
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _clean_symbol(cls, value):
+        return str(value or "").strip().lstrip("$").upper()
 
 
 class TickerDetail(BaseModel):
-    """单个投资标的的细粒度分析结果。
+    """单个候选投资标的及作者对它表达的关系。"""
 
-    每个标的独立 sentiment/horizon，支持"看多BTC同时看空ETH"的多标的分化场景。
-    """
-    symbol: str = Field(..., description="标准化金融代码(如 BTC, AAPL, 600519.SH, XAU, WTI)")
-    original_name: str = Field(default="", description="推文中出现的原始名称/黑话(如 大饼, 茅台, 纳指)")
-    asset_type: Literal["equity", "crypto", "commodity", "unknown"] = Field(
-        default="unknown", description="Candidate asset class hint for deterministic validation"
+    symbol: str = Field(..., description="候选标准代码，如 BTC、AAPL、600519.SH、XAU、WTI")
+    original_name: str = Field(default="", description="推文中出现的原始名称或黑话")
+    asset_type: Literal["equity", "crypto", "commodity", "unknown"] = "unknown"
+    market_hint: Literal["CN", "HK", "US", "CRYPTO", "COMMODITY", "unknown"] = "unknown"
+    sentiment: Literal["bullish", "bearish", "neutral"] = "neutral"
+    horizon: Literal["short", "medium", "long", "unknown"] = "unknown"
+    mention_type: Literal[
+        "recommendation", "prediction", "reference", "news", "benchmark", "unknown"
+    ] = Field(
+        default="unknown",
+        description="作者如何使用该标的；提及、新闻转述不等于推荐",
     )
-    market_hint: Literal["CN", "HK", "US", "CRYPTO", "COMMODITY", "unknown"] = Field(
-        default="unknown", description="Candidate market hint for selecting a validation source"
-    )
-    sentiment: Literal["bullish", "bearish", "neutral"] = Field(
-        default="neutral", description="针对该标的的具体情绪"
-    )
-    horizon: Literal["short", "medium", "long", "unknown"] = Field(
-        default="unknown", description="投资周期: short(日内~几天), medium(几周~几月), long(半年+)"
+    evidence: list[str] = Field(
+        default_factory=list,
+        description="将该标的与作者态度关联起来的原文证据或忠实转述",
     )
 
     @field_validator("symbol", mode="before")
     @classmethod
-    def _clean_symbol(cls, v):
-        """去除 LLM 输出中常见的 $ 前缀和空格。"""
-        if not isinstance(v, str):
-            return ""
-        return v.strip().lstrip("$").upper()
+    def _clean_symbol(cls, value):
+        return str(value or "").strip().lstrip("$").upper()
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _ensure_evidence_list(cls, value):
+        return [str(item) for item in value if item] if isinstance(value, list) else []
+
+    @model_validator(mode="after")
+    def _normalize_asset_market_pair(self):
+        if self.asset_type == "commodity":
+            self.market_hint = "COMMODITY"
+        elif self.asset_type == "crypto":
+            self.market_hint = "CRYPTO"
+        return self
 
 
 class TweetAnalysis(BaseModel):
-    """单条推文的投资分析结果。
+    """Twitter 投资信息提取协议 v2。"""
 
-    生产级 Schema：
-        - Literal 枚举约束情绪/周期值，避免 LLM 自由发挥
-        - field_validator 容错 LLM 偶尔返回 null / 超范围值
-        - reasoning (CoT) 提升分析准确率并支持审计追溯
-        - per-ticker 独立 sentiment/horizon 支持多标的分化
-    """
-    reasoning: str = Field(
-        default="",
-        description="分析逻辑链：1.识别标的与黑话 2.判断真实情绪(防反讽) 3.结合博主背景评估置信度",
+    reasoning: str = Field(default="", description="简要说明识别、归因和判断依据")
+
+    # v2 使用 is_investment_relevant；related 暂时保留给现有下游消费方。
+    is_investment_relevant: bool = Field(
+        default=False,
+        description="是否包含可供投资研究或决策使用的实质信息",
     )
-    is_investment_related: bool = Field(
-        default=False, description="是否包含实质投资/交易相关内容"
+    is_investment_related: bool = Field(default=False, description="v1 兼容字段")
+    statement_type: Literal[
+        "recommendation", "prediction", "news_relay", "recap", "risk_warning",
+        "fact", "opinion", "non_investment",
+    ] = "non_investment"
+    opinion_source: Literal["author", "quoted", "third_party", "unclear"] = "unclear"
+    markets: list[Literal["CN", "HK", "US", "COMMODITY", "CRYPTO"]] = Field(default_factory=list)
+
+    overall_sentiment: Literal["bullish", "bearish", "neutral", "mixed"] = "neutral"
+    tickers: list[TickerDetail] = Field(default_factory=list)
+    thesis: str = Field(default="", description="作者的核心投资论点")
+    key_points: list[str] = Field(default_factory=list, description="v1 兼容的核心观点列表")
+    catalysts: list[str] = Field(default_factory=list)
+    risk_factors: list[str] = Field(default_factory=list)
+    entry_conditions: list[str] = Field(default_factory=list)
+    invalidation_conditions: list[str] = Field(default_factory=list)
+    price_targets: list[PriceTarget] = Field(default_factory=list)
+    text_evidence: list[str] = Field(default_factory=list)
+    is_prediction: bool = Field(
+        default=False,
+        description="是否包含有方向、可在未来用外部行情验证的判断",
     )
-    overall_sentiment: Literal["bullish", "bearish", "neutral", "mixed"] = Field(
-        default="neutral",
-        description="推文整体情绪倾向(多标的方向冲突时为 mixed)",
-    )
-    tickers: list[TickerDetail] = Field(
-        default_factory=list, description="提及的投资标的明细列表"
-    )
-    key_points: list[str] = Field(
-        default_factory=list,
-        description="核心投资逻辑或催化剂(中文简述，无实质逻辑则留空)",
-    )
-    risk_factors: list[str] = Field(
-        default_factory=list, description="明确提及的风险因素或警告"
-    )
-    confidence: float = Field(
-        default=0.0, ge=0.0, le=1.0,
-        description="分析置信度(0-1)。非投资/纯闲聊/反讽难断/低信誉博主应<0.3",
-    )
-    media_summary: str = Field(
-        default="", description="结合图片识别证据形成的图片信息摘要；无图片时为空"
-    )
-    media_evidence: list[str] = Field(
-        default_factory=list, description="支持最终判断的可核对图片证据"
-    )
+    is_sponsored: bool = Field(default=False)
+
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    media_summary: str = ""
+    media_evidence: list[str] = Field(default_factory=list)
     text_image_consistency: Literal[
         "consistent", "complementary", "conflict", "image_only", "unclear", "no_media"
-    ] = Field(default="no_media", description="推文文字与图片表达关系")
-    media_confidence: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="图片证据提取置信度"
-    )
+    ] = "no_media"
+    media_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    analysis_schema_version: Literal["v2"] = "v2"
 
-    # ----------------------------------------------------------
-    # LLM 输出容错 validators
-    # ----------------------------------------------------------
+    @model_validator(mode="before")
+    @classmethod
+    def _sync_relevance_flags(cls, data):
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if "is_investment_relevant" not in normalized and "is_investment_related" in normalized:
+            normalized["is_investment_relevant"] = normalized["is_investment_related"]
+        if "is_investment_related" not in normalized and "is_investment_relevant" in normalized:
+            normalized["is_investment_related"] = normalized["is_investment_relevant"]
+        if "statement_type" not in normalized:
+            relevant = normalized.get("is_investment_relevant", normalized.get("is_investment_related", False))
+            normalized["statement_type"] = "opinion" if relevant else "non_investment"
+        return normalized
+
     @field_validator("tickers", mode="before")
     @classmethod
-    def _ensure_tickers_list(cls, v):
-        """兼容 LLM 偶尔返回 null 或非数组。"""
-        return v if isinstance(v, list) else []
+    def _ensure_tickers_list(cls, value):
+        return value if isinstance(value, list) else []
 
-    @field_validator("key_points", "risk_factors", "media_evidence", mode="before")
+    @field_validator(
+        "key_points", "catalysts", "risk_factors", "entry_conditions",
+        "invalidation_conditions", "text_evidence", "media_evidence",
+        mode="before",
+    )
     @classmethod
-    def _ensure_str_list(cls, v):
-        """确保列表字段为字符串列表，过滤 None 和空串。"""
-        if not isinstance(v, list):
+    def _ensure_str_list(cls, value):
+        return [str(item) for item in value if item] if isinstance(value, list) else []
+
+    @field_validator("markets", mode="before")
+    @classmethod
+    def _normalize_markets(cls, value):
+        if not isinstance(value, list):
             return []
-        return [str(x) for x in v if x]
+        allowed = {"CN", "HK", "US", "COMMODITY", "CRYPTO"}
+        return list(dict.fromkeys(str(item).upper() for item in value if str(item).upper() in allowed))
 
-    @field_validator("confidence", mode="before")
+    @field_validator("confidence", "media_confidence", mode="before")
     @classmethod
-    def _clamp_confidence(cls, v):
-        """将 LLM 输出的 confidence 钳位到 [0, 1]。"""
-        if v is None:
+    def _clamp_confidence(cls, value):
+        if value is None:
             return 0.0
-        return max(0.0, min(1.0, float(v)))
+        return max(0.0, min(1.0, float(value)))
 
     @field_validator("overall_sentiment", mode="before")
     @classmethod
-    def _normalize_sentiment(cls, v):
-        """容错：LLM 可能返回中文或大写。"""
-        if not isinstance(v, str):
+    def _normalize_sentiment(cls, value):
+        if not isinstance(value, str):
             return "neutral"
         mapping = {
             "看多": "bullish", "看好": "bullish", "买入": "bullish",
             "看空": "bearish", "看衰": "bearish", "卖出": "bearish",
             "中性": "neutral", "观望": "neutral",
         }
-        normalized = v.strip().lower()
+        normalized = value.strip().lower()
         return mapping.get(normalized, normalized) if normalized else "neutral"
+
+    @model_validator(mode="after")
+    def _derive_compatible_fields(self):
+        self.is_investment_related = self.is_investment_relevant
+        if self.statement_type == "non_investment":
+            self.is_investment_relevant = False
+            self.is_investment_related = False
+            self.is_prediction = False
+        ticker_markets = [item.market_hint for item in self.tickers if item.market_hint != "unknown"]
+        if ticker_markets:
+            self.markets = list(dict.fromkeys(ticker_markets))
+        if not self.thesis and self.key_points:
+            self.thesis = self.key_points[0]
+        if self.thesis and not self.key_points:
+            self.key_points = [self.thesis]
+        return self
 
 
 class TickerSummary(BaseModel):
-    """按标的聚合的投资建议"""
+    """按标的聚合的投资观点摘要。"""
+
     ticker: str
-    mention_count: int = Field(description="被多少条推文/博主提及")
-    bloggers: list[str] = Field(description="提及该标的的博主列表")
-    consensus: str = Field(description="综合观点: strong_buy, buy, neutral, sell, strong_sell")
-    bullish_count: int = Field(description="看好的推文数")
-    bearish_count: int = Field(description="看空的推文数")
-    recommendation_score: float = Field(description="综合推荐度 0-100")
-    summary: str = Field(description="关键观点汇总，中文")
+    mention_count: int
+    bloggers: list[str]
+    consensus: str
+    bullish_count: int
+    bearish_count: int
+    recommendation_score: float
+    summary: str

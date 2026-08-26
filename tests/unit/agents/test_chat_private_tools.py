@@ -17,7 +17,7 @@ def test_generate_tracking_report_passes_authenticated_user(monkeypatch):
     captured = {}
     monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
-    def create_report(db, passed_user_id, ticker, trigger_type):
+    def create_report(db, passed_user_id, ticker, trigger_type, **_kwargs):
         captured.update(
             user_id=passed_user_id,
             ticker=ticker,
@@ -28,9 +28,10 @@ def test_generate_tracking_report_passes_authenticated_user(monkeypatch):
             summary="summary",
             consensus="neutral",
             id=uuid.uuid4(),
+            ticker=ticker,
         )
 
-    monkeypatch.setattr(report_service, "create_and_run_report", create_report)
+    monkeypatch.setattr(report_service, "create_report_record", create_report)
 
     chat_agent.generate_tracking_report.invoke(
         {"ticker": "TSLA", "time_range": "1w"},
@@ -49,12 +50,15 @@ def test_generate_tracking_report_requires_explicit_confirmation(monkeypatch):
     called = False
     monkeypatch.setattr(definitions, "SessionLocal", _Db)
 
-    def create_report(db, passed_user_id, ticker, trigger_type):
+    def create_report(db, passed_user_id, ticker, trigger_type, **_kwargs):
         nonlocal called
         called = True
-        return SimpleNamespace(status="done", summary="summary", consensus="neutral", id=uuid.uuid4())
+        return SimpleNamespace(
+            status="done", summary="summary", consensus="neutral",
+            id=uuid.uuid4(), ticker=ticker,
+        )
 
-    monkeypatch.setattr(report_service, "create_and_run_report", create_report)
+    monkeypatch.setattr(report_service, "create_report_record", create_report)
 
     result = chat_agent.generate_tracking_report.invoke(
         {"ticker": "TSLA", "time_range": "1w"},

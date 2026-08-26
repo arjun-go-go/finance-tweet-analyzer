@@ -13,7 +13,9 @@ from app.schemas.prediction import (
 from app.services.prediction_service import (
     correct_prediction_instrument,
     exclude_prediction,
+    list_prediction_operations,
     list_prediction_review_queue,
+    retry_prediction_market_verification,
     validate_prediction_instrument,
     verify_prediction,
 )
@@ -42,6 +44,28 @@ def review_queue_endpoint(
     return list_prediction_review_queue(
         db, status=status, limit=limit, offset=offset
     )
+
+
+@router.get("/operations")
+def prediction_operations_endpoint(
+    status: str = Query(
+        "all", pattern="^(all|tracking|due|review|verified|excluded)$"
+    ),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    return list_prediction_operations(db, status=status, limit=limit, offset=offset)
+
+
+@router.post("/{prediction_id}/retry-market-verification")
+def retry_market_verification_endpoint(
+    prediction_id: str,
+    _admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    return retry_prediction_market_verification(db, prediction_id)
 
 
 @router.post("/{prediction_id}/verify")

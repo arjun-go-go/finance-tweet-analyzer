@@ -22,6 +22,9 @@ interface AnalysisData {
     tradable?: boolean;
     validation_status?: string;
     validation_sources?: string[];
+    verification?: {
+      downstream_eligible: boolean;
+    };
     risks?: Array<{
       category: string;
       description: string;
@@ -90,7 +93,9 @@ export default function TweetAnalysisCard({
   const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
   const isAnalyzed = status === "analyzed";
   const verifiedTickers = (analysis?.tickers || []).filter(
-    (ticker) => ticker.validation_status === "verified" && ticker.tradable === true,
+    (ticker) => ticker.verification
+      ? ticker.verification.downstream_eligible === true
+      : ticker.validation_status === "verified" && ticker.tradable === true,
   );
 
   // Extract quick summary from analysis for card header

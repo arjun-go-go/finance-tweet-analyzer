@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.analysis import AnalysisResult
@@ -451,6 +451,203 @@ def list_prediction_review_queue(
     }
 
 
+def _latest_verification_subquery():
+    ranked = (
+        select(
+            PredictionMarketVerification.id.label("verification_id"),
+            PredictionMarketVerification.prediction_id,
+            PredictionMarketVerification.status,
+            func.row_number()
+            .over(
+                partition_by=PredictionMarketVerification.prediction_id,
+                order_by=PredictionMarketVerification.created_at.desc(),
+            )
+            .label("row_number"),
+        )
+        .subquery()
+    )
+    return (
+        select(ranked.c.verification_id, ranked.c.prediction_id, ranked.c.status)
+        .where(ranked.c.row_number == 1)
+        .subquery()
+    )
+
+
+def list_prediction_operations(
+    db: Session,
+    *,
+    status: str = "all",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """Return the complete prediction lifecycle with latest audit evidence."""
+    latest = _latest_verification_subquery()
+    now = datetime.now(timezone.utc)
+    unresolved_statuses = ("manual_review", "market_data_unavailable")
+    review_filter = (
+        Prediction.verdict.is_(None)
+        & latest.c.status.in_(unresolved_statuses)
+    )
+    due_filter = (
+        Prediction.verdict.is_(None)
+        & (Prediction.verifiable_at <= now)
+        & or_(
+            latest.c.status.is_(None),
+            ~latest.c.status.in_(unresolved_statuses),
+        )
+    )
+    tracking_filter = (
+        Prediction.verdict.is_(None)
+        & (Prediction.verifiable_at > now)
+        & or_(
+            latest.c.status.is_(None),
+            ~latest.c.status.in_(unresolved_statuses),
+        )
+    )
+    verified_filter = Prediction.verdict.in_(("correct", "partial", "incorrect"))
+    excluded_filter = Prediction.verdict == "excluded"
+    state_filters = {
+        "tracking": tracking_filter,
+        "due": due_filter,
+        "review": review_filter,
+        "verified": verified_filter,
+        "excluded": excluded_filter,
+    }
+
+    selected_filter = state_filters.get(status)
+    base = (
+        select(Prediction, Tweet, PredictionMarketVerification)
+        .join(Tweet, Tweet.id == Prediction.tweet_id)
+        .outerjoin(latest, latest.c.prediction_id == Prediction.id)
+        .outerjoin(
+            PredictionMarketVerification,
+            PredictionMarketVerification.id == latest.c.verification_id,
+        )
+    )
+    count_query = (
+        select(func.count())
+        .select_from(Prediction)
+        .outerjoin(latest, latest.c.prediction_id == Prediction.id)
+    )
+    if selected_filter is not None:
+        base = base.where(selected_filter)
+        count_query = count_query.where(selected_filter)
+
+    lifecycle_order = case(
+        (review_filter, 0),
+        (due_filter, 1),
+        (tracking_filter, 2),
+        (verified_filter, 3),
+        (excluded_filter, 4),
+        else_=5,
+    )
+    rows = db.execute(
+        base.order_by(
+            lifecycle_order,
+            Prediction.verifiable_at.asc().nulls_last(),
+            Prediction.published_at.desc(),
+        )
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    def lifecycle_status(prediction: Prediction, verification) -> str:
+        if prediction.verdict == "excluded":
+            return "excluded"
+        if prediction.verdict in {"correct", "partial", "incorrect"}:
+            return "verified"
+        if verification and verification.status in unresolved_statuses:
+            return "review"
+        if prediction.verifiable_at and prediction.verifiable_at <= now:
+            return "due"
+        return "tracking"
+
+    items = []
+    for prediction, tweet, verification in rows:
+        item = _serialize_prediction(prediction, tweet, verification)
+        item["lifecycle_status"] = lifecycle_status(prediction, verification)
+        items.append(item)
+
+    stats = {
+        name: int(
+            db.scalar(
+                select(func.count())
+                .select_from(Prediction)
+                .outerjoin(latest, latest.c.prediction_id == Prediction.id)
+                .where(predicate)
+            )
+            or 0
+        )
+        for name, predicate in state_filters.items()
+    }
+    stats["total"] = sum(stats.values())
+    stats["auto_verified"] = int(
+        db.scalar(
+            select(func.count()).select_from(Prediction).where(
+                Prediction.verified_by == "market_auto_v1"
+            )
+        )
+        or 0
+    )
+    stats["market_data_unavailable"] = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Prediction)
+            .join(latest, latest.c.prediction_id == Prediction.id)
+            .where(
+                Prediction.verdict.is_(None),
+                latest.c.status == "market_data_unavailable",
+            )
+        )
+        or 0
+    )
+    return {"items": items, "total": int(db.scalar(count_query) or 0), "stats": stats}
+
+
+def retry_prediction_market_verification(db: Session, prediction_id: str) -> dict:
+    """Retry one due prediction whose latest market-data attempt failed."""
+    from app.services.market_verification_service import verify_due_prediction
+
+    try:
+        pid = uuid.UUID(prediction_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Prediction not found") from exc
+    prediction = db.get(Prediction, pid)
+    if prediction is None:
+        raise HTTPException(status_code=404, detail="Prediction not found")
+    if prediction.verdict is not None:
+        raise HTTPException(status_code=409, detail="Prediction already resolved")
+    latest = db.execute(
+        select(PredictionMarketVerification)
+        .where(PredictionMarketVerification.prediction_id == prediction.id)
+        .order_by(PredictionMarketVerification.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if latest is None or latest.status != "market_data_unavailable":
+        raise HTTPException(status_code=409, detail="Prediction is not waiting for market-data retry")
+    now = datetime.now(timezone.utc)
+    if prediction.verifiable_at and prediction.verifiable_at > now:
+        raise HTTPException(status_code=409, detail="Prediction is not due yet")
+
+    verify_due_prediction(db, prediction, as_of=now)
+    db.commit()
+    refreshed = db.get(Prediction, prediction.id)
+    verification = db.execute(
+        select(PredictionMarketVerification)
+        .where(PredictionMarketVerification.prediction_id == prediction.id)
+        .order_by(PredictionMarketVerification.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    tweet = db.get(Tweet, prediction.tweet_id)
+    item = _serialize_prediction(refreshed, tweet, verification)
+    item["lifecycle_status"] = (
+        "verified"
+        if refreshed.verdict in {"correct", "partial", "incorrect"}
+        else "review"
+    )
+    return item
+
+
 def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
     """批量保存预测记录（Celery 预测任务调用），内置去重逻辑。"""
     from datetime import timedelta
@@ -459,6 +656,13 @@ def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
 
     inserted = 0
     for cand in predictions:
+        if (
+            cand.get("eligibility_passed") is not True
+            or cand.get("creation_rule_version") != "prediction_eligibility_v2"
+            or not cand.get("analysis_id")
+            or not cand.get("tweet_id")
+        ):
+            continue
         if cand.get("sentiment") not in {"bullish", "bearish"}:
             continue
         pub = cand.get("published_at")
@@ -478,7 +682,8 @@ def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
         if existing:
             continue
 
-        db.add(Prediction(
+        prediction = Prediction(
+            id=uuid.uuid4(),
             analysis_id=uuid.UUID(cand["analysis_id"]) if cand.get("analysis_id") else None,
             tweet_id=uuid.UUID(cand["tweet_id"]),
             blogger_handle=cand["blogger_handle"],
@@ -487,7 +692,14 @@ def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
             investment_horizon=cand.get("investment_horizon", "unknown"),
             published_at=cand["published_at"],
             verifiable_at=cand["verifiable_at"],
-        ))
+            instrument_snapshot=cand.get("instrument_snapshot"),
+            creation_rule_version=cand.get("creation_rule_version"),
+            creation_evidence=cand.get("creation_evidence"),
+        )
+        db.add(prediction)
+        from app.services.alert_service import publish_prediction_alerts
+
+        publish_prediction_alerts(db, prediction)
         inserted += 1
 
     return inserted

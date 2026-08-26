@@ -22,6 +22,7 @@ EVENT_TASKS: dict[str, tuple[str, str]] = {
     "analysis.job_requested": ("app.scheduler.tasks.user_analysis_job_task", "analysis"),
     "blogger.analysis_requested": ("app.scheduler.tasks.manual_analysis_task", "analysis"),
     "blogger.fetch_requested": ("app.scheduler.tasks.fetch_blogger_tweets_task", "ingest"),
+    "research.run_requested": ("app.scheduler.tasks.deep_research_task", "report"),
 }
 
 
@@ -53,13 +54,15 @@ def _task_message(event: OutboxEvent) -> tuple[str, str, list, dict, str]:
     elif event.event_type == "document.ingest_requested":
         args = [payload["document_id"]]
     elif event.event_type == "report.generate_requested":
-        args = [payload["report_id"], payload["user_id"], payload["ticker"]]
+        args = [payload["report_id"], payload["user_id"], payload.get("query") or f"生成 {payload['ticker']} 的 Twitter 博主观点摘要"]
     elif event.event_type == "analysis.job_requested":
         args = [payload["job_id"]]
     elif event.event_type == "blogger.analysis_requested":
         args = [payload["blogger_handles"]]
     elif event.event_type == "blogger.fetch_requested":
         args = [payload["blogger_handle"]]
+    elif event.event_type == "research.run_requested":
+        args = [payload["topic_id"], payload["user_id"]]
     else:
         raise ValueError(f"Unsupported outbox event type: {event.event_type}")
 

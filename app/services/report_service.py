@@ -18,12 +18,14 @@ def create_report_record(
     ticker: str,
     trigger_type: str,
     tracked_ticker_id: UUID | None = None,
+    title: str | None = None,
+    query: str | None = None,
 ) -> Report:
     """Insert a pending Report row (status='generating') without running the pipeline."""
     report = Report(
         user_id=user_id,
         ticker=ticker.upper(),
-        title=f"{ticker.upper()} 跟踪报告",
+        title=title or f"{ticker.upper()} 博主观点摘要",
         trigger_type=trigger_type,
         tracked_ticker_id=tracked_ticker_id,
         status="generating",
@@ -37,6 +39,7 @@ def create_report_record(
             "report_id": str(report.id),
             "user_id": str(user_id),
             "ticker": report.ticker,
+            "query": query or f"生成 {report.ticker} 的 Twitter 博主观点摘要",
         },
     )
     db.commit()
@@ -55,7 +58,7 @@ def create_and_run_report(
     report = Report(
         user_id=user_id,
         ticker=ticker.upper(),
-        title=f"{ticker.upper()} 跟踪报告",
+        title=f"{ticker.upper()} 博主观点摘要",
         trigger_type=trigger_type,
         tracked_ticker_id=tracked_ticker_id,
     )
@@ -64,7 +67,7 @@ def create_and_run_report(
     db.refresh(report)
 
     try:
-        result = generate_report(str(user_id), f"生成 {ticker} 跟踪报告")
+        result = generate_report(str(user_id), f"生成 {ticker} 的 Twitter 博主观点摘要")
 
         synthesis = result.get("synthesis") or {}
         sections_data = {s["name"]: s for s in result.get("sections", [])}

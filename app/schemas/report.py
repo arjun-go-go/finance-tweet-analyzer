@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
 class ReportGenerateRequest(BaseModel):
-    ticker: str = Field(..., max_length=20, examples=["TSLA"])
-    time_range: str = Field(default="1w", examples=["1w", "1d", "1m"])
+    ticker: str = Field(..., min_length=1, max_length=20, examples=["TSLA"])
+    time_range: Literal["1d", "1w", "2w", "1m", "3m"] = "1w"
     focus_aspects: list[str] | None = None
+    blogger_handle: str | None = Field(
+        default=None,
+        pattern=r"^@?[A-Za-z0-9_]{1,15}$",
+        description="可选 Twitter Handle；为空时汇总关注范围内全部博主。",
+    )
 
 
 class ReportResponse(BaseModel):

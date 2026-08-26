@@ -23,6 +23,22 @@ interface TickerDetail {
   validation_sources?: string[];
   external_ids?: Record<string, string>;
   validated_at?: string;
+  validation_reason?: string;
+  validation_reason_code?: string;
+  verification?: {
+    schema_version?: string;
+    status?: "verified" | "unverified" | "ambiguous" | "unsupported" | "invalid" | "provider_unavailable" | "manual_corrected";
+    reason_code?: string;
+    reason?: string;
+    is_verified?: boolean;
+    downstream_eligible: boolean;
+    tradable?: boolean;
+    listing_status?: string;
+    authoritative_source?: string | null;
+    sources?: string[];
+    evidence?: Array<{ provider: string; status: string; detail?: string }>;
+    validated_at?: string;
+  };
   risks?: TickerRisk[];
   ticker_risk_level?: string;
 }
@@ -111,6 +127,15 @@ const VALIDATION_SOURCE_LABEL: Record<string, string> = {
   binance_paxg_proxy: "Binance PAXG 黄金代理",
 };
 
+const VALIDATION_STATUS_LABEL: Record<string, string> = {
+  unverified: "公开数据源未确认",
+  ambiguous: "存在同名或多市场候选",
+  unsupported: "当前产品暂不支持",
+  invalid: "代码格式无效",
+  provider_unavailable: "公开数据源暂时不可用",
+  manual_corrected: "已人工确认，非自动行情标的",
+};
+
 interface AnalysisInlineProps {
   analysis: AnalysisData;
 }
@@ -130,10 +155,14 @@ export default function AnalysisInline({ analysis }: AnalysisInlineProps) {
 
   const overallSentiment = SENTIMENT_CONFIG[analysis.overall_sentiment] || SENTIMENT_CONFIG.neutral;
   const verifiedTickers = analysis.tickers.filter(
-    (ticker) => ticker.validation_status === "verified" && ticker.tradable === true,
+    (ticker) => ticker.verification
+      ? ticker.verification.downstream_eligible === true
+      : ticker.validation_status === "verified" && ticker.tradable === true,
   );
   const unverifiedTickers = analysis.tickers.filter(
-    (ticker) => ticker.validation_status !== "verified" || ticker.tradable !== true,
+    (ticker) => ticker.verification
+      ? ticker.verification.downstream_eligible !== true
+      : ticker.validation_status !== "verified" || ticker.tradable !== true,
   );
 
   return (
@@ -166,7 +195,7 @@ export default function AnalysisInline({ analysis }: AnalysisInlineProps) {
             const tickerSentiment = SENTIMENT_CONFIG[ticker.sentiment] || SENTIMENT_CONFIG.neutral;
             const riskLevel = ticker.ticker_risk_level || "low";
             const validationKey = `${ticker.symbol}-${index}`;
-            const sources = (ticker.validation_sources || []).map(
+            const sources = (ticker.verification?.sources || ticker.validation_sources || []).map(
               (source) => VALIDATION_SOURCE_LABEL[source] || source,
             );
             return (
@@ -261,14 +290,21 @@ export default function AnalysisInline({ analysis }: AnalysisInlineProps) {
                 <div key={`${ticker.symbol}-${index}`} className="rounded border border-amber-100 bg-white/80 p-2">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs font-bold text-slate-700">{ticker.symbol}</span>
-                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">暂未核验</span>
+                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">
+                      {VALIDATION_STATUS_LABEL[ticker.verification?.status || ticker.validation_status || "unverified"] || "暂未核验"}
+                    </span>
                     <span className="text-[11px] text-slate-500">
                       {ASSET_TYPE_LABEL[ticker.asset_type || ""] || ticker.asset_type || "类型待确认"}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                    系统从原文中识别到该候选，但当前公开数据源未能确认其标准身份或交易状态。
+                    {ticker.verification?.reason || ticker.validation_reason || "系统从原文中识别到该候选，但当前公开数据源未能确认其标准身份或交易状态。"}
                   </p>
+                  {(ticker.verification?.evidence?.length ?? 0) > 0 && (
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      核验路径：{(ticker.verification?.evidence || []).map((item) => `${VALIDATION_SOURCE_LABEL[item.provider] || item.provider} ${item.status === "matched" || item.status === "supporting_match" ? "有候选" : item.status === "unavailable" ? "暂不可用" : "未匹配"}`).join(" · ")}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>

@@ -25,6 +25,8 @@ class TweetAnalysisItem(BaseModel):
     created_at: str
     published_at: str
     media: list[TweetMediaItem] = []
+    prediction_status: str
+    prediction_decision: dict | None = None
 
 
 class TweetAnalysesResponse(BaseModel):
@@ -106,6 +108,8 @@ def list_tweet_analyses(
             created_at=ar.created_at.isoformat() if ar.created_at else "",
             published_at=tw.published_at.isoformat() if tw.published_at else "",
             media=media_map.get(str(tw.id), []),
+            prediction_status=ar.prediction_status,
+            prediction_decision=ar.prediction_decision,
         )
         for ar, tw in rows
     ]

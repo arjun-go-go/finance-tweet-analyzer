@@ -29,6 +29,7 @@ from app.memory.compression import compress_messages, should_compress
 from app.middleware.content_filter import content_filter
 from app.models.user import User
 from app.services.trace_service import TraceCollector
+from app.agents.chat.tool_results import parse_tool_envelope
 from app.schemas.chat import (
     ChatRequest,
     ConversationCreate,
@@ -199,6 +200,17 @@ TOOL_LABELS = {
     "fetch_and_save_tweets": "正在采集推文...",
     "trigger_tweet_analysis": "正在提交分析任务...",
     "query_database": "正在查询数据库...",
+    "get_blogger_overview": "正在读取博主档案...",
+    "get_blogger_recent_analysis": "正在读取最近分析...",
+    "get_blogger_predictions": "正在读取博主预测...",
+    "get_ticker_predictions": "正在读取标的预测...",
+    "get_prediction_review_summary": "正在汇总预测复核...",
+    "search_my_documents": "正在检索私人资料...",
+    "search_public_signals": "正在检索市场证据...",
+    "list_my_tracked_tickers": "正在读取关注标的...",
+    "list_my_followed_bloggers": "正在读取关注博主...",
+    "set_blogger_follow": "正在更新正式关注列表...",
+    "generate_tracking_report": "正在创建异步研究报告...",
 }
 
 
@@ -316,6 +328,20 @@ def chat_endpoint(
             ):
                 if stream_mode == "updates":
                     for node_name, node_output in chunk.items():
+                        if node_name == "agent":
+                            agent_messages = node_output.get("messages", [])
+                            for agent_message in agent_messages:
+                                content = getattr(agent_message, "content", "")
+                                tool_calls = getattr(agent_message, "tool_calls", None)
+                                if content and not tool_calls:
+                                    ai_content_parts.clear()
+                                    ai_content_parts.append(content)
+                                    yield {
+                                        "id": f"{conversation_id}:{seq + 1}:{chunk_index[0]}",
+                                        "event": "token",
+                                        "data": json.dumps({"content": content}, ensure_ascii=False),
+                                    }
+                                    chunk_index[0] += 1
                         if node_name == "tools":
                             yield {
                                 "id": f"{conversation_id}:{seq + 1}:{chunk_index[0]}",
@@ -339,6 +365,16 @@ def chat_endpoint(
                                         "name": t_name,
                                         "content": tool_msg.content,
                                     })
+
+                                    envelope = parse_tool_envelope(tool_msg.content)
+                                    evidence = ((envelope or {}).get("data") or {}).get("evidence") or []
+                                    if evidence:
+                                        yield {
+                                            "id": f"{conversation_id}:{seq + 1}:{chunk_index[0]}",
+                                            "event": "evidence",
+                                            "data": json.dumps({"tool": t_name, "items": evidence}, ensure_ascii=False, default=str),
+                                        }
+                                        chunk_index[0] += 1
 
                                     trace_collector.add(
                                         node_name="tools",
@@ -387,16 +423,9 @@ def chat_endpoint(
                                 chunk_index[0] += 1
                         continue
 
-                    if msg.content:
-                        ai_content_parts.append(msg.content)
-                        yield {
-                            "id": f"{conversation_id}:{seq + 1}:{chunk_index[0]}",
-                            "event": "token",
-                            "data": json.dumps(
-                                {"content": msg.content}, ensure_ascii=False
-                            ),
-                        }
-                        chunk_index[0] += 1
+                    # Final answer text is emitted from the completed agent node above,
+                    # after deterministic Claim–Evidence verification. Raw model chunks
+                    # are intentionally not sent to the client.
 
             # Save AI response and tool messages to mirror table
             ai_content = "".join(ai_content_parts)

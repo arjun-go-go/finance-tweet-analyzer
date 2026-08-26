@@ -89,9 +89,13 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
             "text_image_consistency": media.get("text_image_consistency", "unclear"),
         }
         media_text = json.dumps(media_for_classification, ensure_ascii=False) if media else "无图片证据"
+        relationship_text = json.dumps(
+            t.get("conversation_context") or {}, ensure_ascii=False
+        )[:1200]
         tweet_lines.append(
             f"[ID: {t['id']}] 博主: {t['author_handle']}\n"
-            f"推文文字: {content}\n图片识别证据: {media_text}"
+            f"推文文字: {content}\n图片识别证据: {media_text}\n"
+            f"Twitter 关系上下文: {relationship_text}"
         )
 
     # 整批再做一次总长度兜底

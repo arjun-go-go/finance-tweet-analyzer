@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -31,9 +31,17 @@ class TweetListItem(BaseModel):
     analysis_next_retry_at: str | None = None
     analysis_started_at: str | None = None
     analysis_completed_at: str | None = None
+    failure_stage: str | None = None
+    processing_updated_at: str | None = None
     metrics: dict | None = None
     analysis: dict | None = None
     media: list[TweetMediaItem] = []
+    tweet_type: str = "original"
+    conversation_tweet_id: str | None = None
+    in_reply_to_tweet_id: str | None = None
+    quoted_tweet_id: str | None = None
+    reposted_tweet_id: str | None = None
+    referenced_tweets: list[dict] = Field(default_factory=list)
 
 
 class TweetListResponse(BaseModel):
@@ -130,9 +138,20 @@ def list_tweets(
                 t.analysis_completed_at.isoformat()
                 if t.analysis_completed_at else None
             ),
+            failure_stage=t.failure_stage,
+            processing_updated_at=(
+                t.processing_updated_at.isoformat()
+                if t.processing_updated_at else None
+            ),
             metrics=t.metrics,
             analysis=analysis_map.get(str(t.id)),
             media=media_map.get(str(t.id), []),
+            tweet_type=t.tweet_type or "original",
+            conversation_tweet_id=t.conversation_tweet_id,
+            in_reply_to_tweet_id=t.in_reply_to_tweet_id,
+            quoted_tweet_id=t.quoted_tweet_id,
+            reposted_tweet_id=t.reposted_tweet_id,
+            referenced_tweets=t.referenced_tweets or [],
         )
         for t in rows
     ]

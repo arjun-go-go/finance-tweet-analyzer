@@ -34,6 +34,8 @@ class Prediction(Base, TimestampMixin):
     verified_by: Mapped[str | None] = mapped_column(String(64), default=None)
     note: Mapped[str | None] = mapped_column(Text, default=None)
     instrument_snapshot: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    creation_rule_version: Mapped[str | None] = mapped_column(String(32), default=None)
+    creation_evidence: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     __table_args__ = (
         Index("ix_predictions_handle_verdict", "blogger_handle", "verdict"),

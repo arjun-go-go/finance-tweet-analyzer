@@ -1,11 +1,11 @@
 """
 报告生成 LangGraph Agent
 ============================================================
-职责：根据用户查询，自动生成一份结构化的金融跟踪报告。
+职责：根据用户查询，基于 Twitter 博主原文与分析结果生成结构化观点摘要。
 
 整体管线（StateGraph 编排）：
-  parse_intent → multi_retrieve（5路并行） → fuse(RRF) → rerank
-                → generate_section（5 章节 Send 并行） → synthesize
+  parse_intent → multi_retrieve（4路并行） → fuse(RRF) → rerank
+                → generate_section（4 章节 Send 并行） → synthesize
 
 设计决策：
 1. LangGraph StateGraph：有状态的 DAG 执行引擎
@@ -13,10 +13,10 @@
    - Annotated[list, operator.add] 实现并行节点结果的自动合并
 
 2. Send 并行检索：parse_intent 后通过 conditional_edges + Send
-   将 4 个检索任务并行派发，互不阻塞，显著降低总延迟
+   将 4 个 Twitter 情报检索任务并行派发，互不阻塞，显著降低总延迟
 
 3. 分段生成 → 综合：
-   - 先按主题（KOL/研报/新闻/风险/历史）分别生成章节（用 Signal LLM，快且便宜）
+   - 先按主题（原始观点/结构化分析/风险分歧/预测验证）分别生成章节（用 Signal LLM，快且便宜）
    - 再由 Report LLM（Claude，更强推理能力）综合所有章节输出最终报告
    - 好处：并行生成 + 专业模型分工
 
@@ -42,13 +42,7 @@ from app.agents.llm import get_report_llm, get_signal_llm
 from app.agents.self_query_agent import QueryIntent, parse_intent
 from app.core.config import settings
 from app.prompts import get_prompt
-from app.rag.fusion import reciprocal_rank_fusion
-from app.rag.reranker import rerank, apply_time_decay
-from app.rag.retrievers.analysis_retriever import retrieve_analyses
-from app.rag.retrievers.bm25_retriever import retrieve_bm25
-from app.rag.retrievers.document_retriever import retrieve_documents
-from app.rag.retrievers.structured_retriever import retrieve_structured
-from app.rag.retrievers.tweet_retriever import retrieve_tweets
+from app.rag.hybrid_retrieval import fuse_results, rank_results, run_retriever_path
 
 
 class ReportState(TypedDict):
@@ -61,8 +55,8 @@ class ReportState(TypedDict):
     user_id: str                                          # 当前用户 ID
     query: str                                            # 原始查询文本
     intent: dict | None                                   # 解析后的结构化意图
-    query_embedding: list[float] | None                   # parse_intent 阶段预计算的查询向量（5 路向量检索复用）
-    retrieve_results: Annotated[list[list[dict]], operator.add]  # 4路检索结果（并行追加）
+    query_embedding: list[float] | None                   # parse_intent 阶段预计算的查询向量（推文与分析检索复用）
+    retrieve_results: Annotated[list[list[dict]], operator.add]  # 4 路 Twitter 情报检索结果（并行追加）
     retrieval_errors: Annotated[dict[str, str], operator.or_]    # 各路检索的失败原因（path -> message）
     fused: list[dict]                                     # RRF 融合后的文档列表
     reranked: list[dict]                                  # Rerank 精排后的文档列表
@@ -76,7 +70,7 @@ class ReportState(TypedDict):
 class RetrieveSubState(TypedDict):
     """检索子节点的输入状态（由 Send 派发）。"""
 
-    path: str       # 检索路径标识：documents/tweets/analyses/structured
+    path: str       # 检索路径标识：tweets/analyses/structured/bm25
     user_id: str
     intent: dict
     query_embedding: list[float] | None  # 由 parse_intent 阶段预计算的查询向量
@@ -95,11 +89,10 @@ class SectionSubState(TypedDict):
 # 每个章节对应一组 source_type，rerank 后按类型分配相关文档给各章节
 # ============================================================
 SECTION_DEFINITIONS = [
-    {"name": "kol_views", "title": "KOL 观点", "source_types": ["tweet"]},
-    {"name": "research_views", "title": "研报观点", "source_types": ["document"]},
-    {"name": "news_updates", "title": "新闻动态", "source_types": ["document", "tweet"]},
-    {"name": "risk_alerts", "title": "风险提示", "source_types": ["analysis", "structured"]},
-    {"name": "historical_review", "title": "历史预测回顾", "source_types": ["structured"]},
+    {"name": "source_views", "title": "博主原始观点", "source_type": "kol", "source_types": ["tweet"]},
+    {"name": "analyzed_views", "title": "观点结构化分析", "source_type": "analysis", "source_types": ["analysis"]},
+    {"name": "risk_alerts", "title": "风险与观点分歧", "source_type": "risk", "source_types": ["tweet", "analysis"]},
+    {"name": "prediction_review", "title": "历史预测验证", "source_type": "history", "source_types": ["structured"]},
 ]
 
 # 章节生成 & 综合 Prompt 从 YAML 注册表加载
@@ -135,12 +128,12 @@ def parse_intent_node(state: ReportState) -> dict:
 
 
 def route_retrieval(state: ReportState) -> list[Send]:
-    """条件边：将 5 条检索路径通过 Send 并行派发。
+    """条件边：将 4 条 Twitter 情报检索路径通过 Send 并行派发。
 
     每条路径接收相同的 intent + user_id + 预计算的 query_embedding，
     独立执行后结果自动合并到 retrieve_results。
     """
-    paths = ["documents", "tweets", "analyses", "structured", "bm25"]
+    paths = ["tweets", "analyses", "structured", "bm25"]
     return [
         Send(
             f"retrieve_{path}",
@@ -155,55 +148,48 @@ def route_retrieval(state: ReportState) -> list[Send]:
     ]
 
 
-def retrieve_documents_node(state: RetrieveSubState) -> dict:
-    """检索路径 1：用户私有文档。"""
+def retrieve_tweets_node(state: RetrieveSubState) -> dict:
+    """检索路径 1：公共推文原文。"""
     intent = QueryIntent(**state["intent"])
     try:
-        results = retrieve_documents(
-            intent,
-            uuid.UUID(state["user_id"]),
+        results = run_retriever_path(
+            "tweets", intent, user_id=uuid.UUID(state["user_id"]),
             query_embedding=state.get("query_embedding"),
         )
-        return {"retrieve_results": [results]}
-    except Exception as e:
-        return {"retrieve_results": [[]], "retrieval_errors": {"documents": f"{type(e).__name__}: {e}"}}
-
-
-def retrieve_tweets_node(state: RetrieveSubState) -> dict:
-    """检索路径 2：公共推文信号。"""
-    intent = QueryIntent(**state["intent"])
-    try:
-        results = retrieve_tweets(intent, query_embedding=state.get("query_embedding"))
         return {"retrieve_results": [results]}
     except Exception as e:
         return {"retrieve_results": [[]], "retrieval_errors": {"tweets": f"{type(e).__name__}: {e}"}}
 
 
 def retrieve_analyses_node(state: RetrieveSubState) -> dict:
-    """检索路径 3：LLM 分析结果信号。"""
+    """检索路径 2：LLM 分析结果信号。"""
     intent = QueryIntent(**state["intent"])
     try:
-        results = retrieve_analyses(intent, query_embedding=state.get("query_embedding"))
+        results = run_retriever_path(
+            "analyses", intent, user_id=uuid.UUID(state["user_id"]),
+            query_embedding=state.get("query_embedding"),
+        )
         return {"retrieve_results": [results]}
     except Exception as e:
         return {"retrieve_results": [[]], "retrieval_errors": {"analyses": f"{type(e).__name__}: {e}"}}
 
 
 def retrieve_structured_node(state: RetrieveSubState) -> dict:
-    """检索路径 4：PostgreSQL 结构化预测数据。"""
+    """检索路径 3：PostgreSQL 结构化预测数据。"""
     intent = QueryIntent(**state["intent"])
     try:
-        results = retrieve_structured(intent)
+        results = run_retriever_path("structured", intent, user_id=uuid.UUID(state["user_id"]))
         return {"retrieve_results": [results]}
     except Exception as e:
         return {"retrieve_results": [[]], "retrieval_errors": {"structured": f"{type(e).__name__}: {e}"}}
 
 
 def retrieve_bm25_node(state: RetrieveSubState) -> dict:
-    """检索路径 5：PostgreSQL 全文检索（BM25）。"""
+    """检索路径 4：Elasticsearch 公共 Twitter 情报关键词检索。"""
     intent = QueryIntent(**state["intent"])
     try:
-        results = retrieve_bm25(intent, user_id=uuid.UUID(state["user_id"]))
+        # 不传 user_id，确保 BM25 只检索公共 Twitter 索引，不召回私人资料。
+        results = run_retriever_path("bm25", intent, user_id=None)
         return {"retrieve_results": [results]}
     except Exception as e:
         return {"retrieve_results": [[]], "retrieval_errors": {"bm25": f"{type(e).__name__}: {e}"}}
@@ -214,41 +200,21 @@ def fuse_node(state: ReportState) -> dict:
     all_results = state.get("retrieve_results", [])
     if not any(all_results):
         return {"fused": [], "status": "no_results", "error": "所有检索路径返回空结果"}
-    fused = reciprocal_rank_fusion(all_results, k=settings.rag_rrf_k, top_n=30)
+
+    intent = QueryIntent(**state["intent"]) if state.get("intent") else None
+    fused = fuse_results(
+        all_results,
+        ticker=intent.ticker if intent else "",
+        allowed_source_types={"tweet", "analysis", "structured"},
+        top_n=30,
+    )
+    if not fused and intent and intent.ticker and intent.ticker != "UNKNOWN":
+        return {
+            "fused": [],
+            "status": "no_results",
+            "error": f"未检索到 {intent.ticker} 的 Twitter 直接证据，已停止生成观点摘要",
+        }
     return {"fused": fused, "status": "reranking"}
-
-
-def _apply_source_quota(
-    ranked_pairs: list[tuple[int, float]],
-    fused: list[dict],
-    quota_map: dict[str, int],
-    total_top_n: int,
-) -> list[dict]:
-    """按 source_type 配额挑选 rerank 结果，剩余名额按全局打分补齐。
-
-    保证小类型（如 structured）即使全局得分低也能进入最终 top_n，
-    避免章节因 source 缺失而无法生成。
-    """
-    counts: dict[str, int] = {k: 0 for k in quota_map}
-    picked: list[dict] = []
-    leftover: list[dict] = []
-    for idx, _score in ranked_pairs:
-        if idx >= len(fused):
-            continue
-        item = fused[idx]
-        st = item.get("source_type", "unknown")
-        if counts.get(st, 0) < quota_map.get(st, 0):
-            picked.append(item)
-            counts[st] = counts.get(st, 0) + 1
-        else:
-            leftover.append(item)
-        if len(picked) >= total_top_n:
-            break
-    for item in leftover:
-        if len(picked) >= total_top_n:
-            break
-        picked.append(item)
-    return picked
 
 
 def rerank_node(state: ReportState) -> dict:
@@ -263,24 +229,17 @@ def rerank_node(state: ReportState) -> dict:
     if intent:
         query = f"{intent.ticker} {' '.join(intent.keywords)}".strip() or query
 
-    documents = [item["content"] for item in fused]
-    # 取全量打分以便配额算法可见所有候选
-    ranked_pairs = rerank(query, documents, top_n=len(documents))
-    reranked = _apply_source_quota(
-        ranked_pairs,
+    reranked, _ = rank_results(
+        query,
         fused,
-        settings.report_rerank_quota,
-        settings.reranker_top_n,
+        top_n=settings.reranker_top_n,
+        quota_map=settings.report_rerank_quota,
     )
-    reranked = apply_time_decay(reranked)
-    # 写入全局引用号：章节 prompt 与 synthesis prompt 共用同一套 [N]，与 DB citations.index 对齐
-    for i, item in enumerate(reranked):
-        item["global_index"] = i + 1
     return {"reranked": reranked, "status": "generating"}
 
 
 def route_sections(state: ReportState) -> list[Send]:
-    """条件边：将 5 个章节通过 Send 并行派发，独立调用 Signal LLM。"""
+    """条件边：将 4 个观点章节通过 Send 并行派发，独立调用 Signal LLM。"""
     reranked = state.get("reranked", [])
     if not reranked:
         return [Send("generate_section", {"section_def": {"name": "empty", "title": "无数据", "source_types": []}, "reranked": []})]
@@ -333,6 +292,7 @@ def generate_section_node(state: SectionSubState) -> dict:
         return {"sections": [{
             "name": "empty",
             "title": "无数据",
+            "source_type": "kol",
             "content": "",
             "error": "检索未返回相关信息",
         }]}
@@ -345,6 +305,7 @@ def generate_section_node(state: SectionSubState) -> dict:
         return {"sections": [{
             "name": section_def["name"],
             "title": section_def["title"],
+            "source_type": section_def["source_type"],
             "content": "",
             "error": "相关数据有限，暂无可用素材",
         }]}
@@ -376,6 +337,7 @@ def generate_section_node(state: SectionSubState) -> dict:
     return {"sections": [{
         "name": section_def["name"],
         "title": section_def["title"],
+        "source_type": section_def["source_type"],
         "content": content,
         "error": error_msg,
     }]}
@@ -453,15 +415,14 @@ def build_report_graph() -> StateGraph:
     """构建并编译报告生成图。
 
     图结构：
-      START → parse_intent → [Send: retrieve_documents, retrieve_tweets,
-                              retrieve_analyses, retrieve_structured]
+      START → parse_intent → [Send: retrieve_tweets, retrieve_analyses,
+                              retrieve_structured, retrieve_bm25]
             → fuse → (条件) → rerank → generate_sections → synthesize → END
     """
     graph = StateGraph(ReportState)
 
     # 注册所有节点
     graph.add_node("parse_intent", parse_intent_node)
-    graph.add_node("retrieve_documents", retrieve_documents_node)
     graph.add_node("retrieve_tweets", retrieve_tweets_node)
     graph.add_node("retrieve_analyses", retrieve_analyses_node)
     graph.add_node("retrieve_structured", retrieve_structured_node)
@@ -474,7 +435,6 @@ def build_report_graph() -> StateGraph:
     # 定义边：顺序 + 并行 + 条件
     graph.add_edge(START, "parse_intent")
     graph.add_conditional_edges("parse_intent", route_retrieval)  # Send 并行派发
-    graph.add_edge("retrieve_documents", "fuse")    # 5 路检索完成后汇聚到 fuse
     graph.add_edge("retrieve_tweets", "fuse")
     graph.add_edge("retrieve_analyses", "fuse")
     graph.add_edge("retrieve_structured", "fuse")

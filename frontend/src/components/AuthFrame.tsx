@@ -9,12 +9,12 @@ export default function AuthFrame({ mode, children }: { mode: "login" | "registe
         <div className="auth-thesis-copy">
           <p>AI investment intelligence</p>
           <h1>市场观点很多，<br />值得相信的很少。</h1>
-          <span>持续追踪博主、标的和私人研究资料，把分散信息整理成可验证、可回溯的投资情报。</span>
+          <span>持续追踪 Twitter 博主与标的，把分散观点整理成可验证、可回溯的投资情报。</span>
         </div>
         <div className="auth-proof">
           <div><b>01</b><span>重要观点自动聚合</span></div>
           <div><b>02</b><span>每个结论回到原始证据</span></div>
-          <div><b>03</b><span>私人资料与市场观点联合研究</span></div>
+          <div><b>03</b><span>观点变化与预测结果持续验证</span></div>
         </div>
       </section>
       <section className="auth-form-side">
@@ -29,4 +29,3 @@ export default function AuthFrame({ mode, children }: { mode: "login" | "registe
     </main>
   );
 }
-

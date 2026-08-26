@@ -4,6 +4,39 @@ from uuid import UUID
 
 from app.services import user_resource_service
 from app.services import tracking_service
+from app.services import user_resource_service
+from app.agents.chat.tool_results import tool_ok, tool_error
+
+
+def set_blogger_follow_impl(db, user_id: UUID, handle: str, *, follow: bool) -> str:
+    from sqlalchemy import func, select
+    from app.models.blogger import Blogger
+    from app.core.config import settings
+
+    normalized = handle.strip().lstrip("@").lower()
+    blogger = db.execute(
+        select(Blogger).where(func.lower(Blogger.handle) == normalized)
+    ).scalar_one_or_none()
+    if not blogger:
+        return tool_error("BLOGGER_NOT_FOUND", f"未找到博主 @{normalized}。请先新增信息源或获取博主资料。")
+    if follow:
+        user_resource_service.follow_blogger(
+            db,
+            user_id,
+            blogger.id,
+            max_follows=settings.max_followed_bloggers_per_user,
+        )
+        db.commit()
+        return tool_ok(
+            f"已将 @{blogger.handle} 加入正式关注列表。",
+            data={"blogger_id": str(blogger.id), "handle": blogger.handle, "followed": True},
+        )
+    removed = user_resource_service.unfollow_blogger(db, user_id, blogger.id)
+    db.commit()
+    return tool_ok(
+        f"已取消关注 @{blogger.handle}。" if removed else f"@{blogger.handle} 当前不在正式关注列表中。",
+        data={"blogger_id": str(blogger.id), "handle": blogger.handle, "followed": False},
+    )
 
 
 def list_my_tracked_tickers_impl(db, user_id: UUID) -> str:

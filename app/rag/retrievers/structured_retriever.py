@@ -89,20 +89,28 @@ def retrieve_structured(intent: QueryIntent) -> list[dict]:
             })
 
         # 路径 2：ticker_summary 汇总分析
+        ticker_summary_stmt = select(AnalysisResult).where(
+            AnalysisResult.analysis_type == "ticker_summary"
+        )
         if has_ticker:
-            ticker_summaries = db.execute(
-                select(AnalysisResult).where(
-                    AnalysisResult.analysis_type == "ticker_summary",
-                    AnalysisResult.result["ticker"].astext == intent.ticker,
-                )
-            ).scalars().all()
+            ticker_summary_stmt = ticker_summary_stmt.where(
+                AnalysisResult.result["ticker"].astext == intent.ticker
+            )
         else:
-            ticker_summaries = db.execute(
-                select(AnalysisResult)
-                .where(AnalysisResult.analysis_type == "ticker_summary")
-                .order_by(AnalysisResult.result["recommendation_score"].desc())
-                .limit(5)
-            ).scalars().all()
+            ticker_summary_stmt = ticker_summary_stmt.order_by(
+                AnalysisResult.result["recommendation_score"].desc()
+            ).limit(5)
+
+        ticker_summaries = db.execute(ticker_summary_stmt).scalars().all()
+        if intent.blogger_filter:
+            allowed_bloggers = {handle.lower() for handle in intent.blogger_filter}
+            ticker_summaries = [
+                item
+                for item in ticker_summaries
+                if allowed_bloggers.intersection(
+                    str(handle).lower() for handle in (item.result or {}).get("bloggers", [])
+                )
+            ]
 
         for ts in ticker_summaries:
             data = ts.result or {}

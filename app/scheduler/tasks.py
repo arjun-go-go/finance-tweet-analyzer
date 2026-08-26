@@ -34,6 +34,11 @@ from app.services.analysis_service import (
     analyze_single_tweet,
     reset_analysis_state,
 )
+from app.services.tweet_state_service import (
+    ANALYSIS_READY_STATES,
+    TweetProcessingState,
+    transition_tweet_state,
+)
 
 logger = get_task_logger(__name__)
 
@@ -52,6 +57,12 @@ def analyze_tweet_task(self, tweet_id: str) -> dict:
             return {"tweet_id": tweet_id, "status": "skipped", "reason": "not_found"}
         if tweet.status == "analyzed":
             return {"tweet_id": tweet_id, "status": "skipped", "reason": "already_analyzed"}
+        if TweetProcessingState(tweet.status) not in ANALYSIS_READY_STATES:
+            return {
+                "tweet_id": tweet_id,
+                "status": "skipped",
+                "reason": f"not_analysis_ready:{tweet.status}",
+            }
         return analyze_single_tweet(db, tweet_id)
     finally:
         db.close()
@@ -89,8 +100,17 @@ def archive_tweet_media_task(self, tweet_id: str) -> dict:
     db = SessionLocal()
     try:
         return archive_tweet_media(db, tweet_id)
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        tweet = db.get(Tweet, UUID(tweet_id))
+        if tweet is not None:
+            transition_tweet_state(
+                tweet,
+                TweetProcessingState.FAILED,
+                failure_stage="media_archive",
+                error=str(exc),
+            )
+            db.commit()
         raise
     finally:
         db.close()
@@ -488,13 +508,21 @@ def user_analysis_job_task(self, job_id: str) -> dict:
 )
 def auto_verify_predictions_task(self, batch_size: int | None = None) -> dict:
     """Verify due predictions from completed public market bars."""
-    from app.services.market_verification_service import run_due_market_verifications
+    from app.services.market_verification_service import (
+        record_auto_verification_runtime,
+        run_due_market_verifications,
+    )
 
+    task_id = str(self.request.id or "")
+    record_auto_verification_runtime("running", task_id=task_id)
     db = SessionLocal()
     try:
-        return run_due_market_verifications(db, batch_size=batch_size)
-    except Exception:
+        result = run_due_market_verifications(db, batch_size=batch_size)
+        record_auto_verification_runtime("success", task_id=task_id, result=result)
+        return result
+    except Exception as error:
         db.rollback()
+        record_auto_verification_runtime("failed", task_id=task_id, error=str(error))
         raise
     finally:
         db.close()
@@ -541,7 +569,11 @@ def prediction_batch_task(self) -> dict:
 
         logger.info("[Celery] Found %d analyses awaiting prediction", len(pending_analyses))
 
-        from app.agents.prediction_agent import prediction_agent_node
+        from app.agents.prediction_agent import (
+            PREDICTION_RULE_VERSION,
+            evaluate_prediction_eligibility,
+            prediction_agent_node,
+        )
         from app.models.tweet import Tweet as TweetModel
 
         tweet_ids = [ar.tweet_id for ar in pending_analyses]
@@ -553,22 +585,31 @@ def prediction_batch_task(self) -> dict:
         analyses_for_prediction = []
         tweets_for_prediction = []
         for ar in pending_analyses:
-            result_data = ar.result or {}
-            if not result_data.get("is_investment_related"):
-                ar.prediction_status = "skipped"
-                continue
+            result_data = dict(ar.result or {})
             tweet = tweet_map.get(ar.tweet_id)
             if tweet is None:
                 ar.prediction_status = "skipped"
+                ar.prediction_decision = {
+                    "rule_version": PREDICTION_RULE_VERSION,
+                    "eligible": False,
+                    "reason_codes": ["tweet_not_found"],
+                }
                 continue
             result_data["tweet_id"] = str(ar.tweet_id)
             result_data["author_handle"] = tweet.author_handle
-            analyses_for_prediction.append(result_data)
-            tweets_for_prediction.append({
+            tweet_payload = {
                 "id": str(tweet.id),
                 "published_at": tweet.published_at,
                 "author_handle": tweet.author_handle,
-            })
+                "tweet_type": tweet.tweet_type or "original",
+            }
+            decision = evaluate_prediction_eligibility(result_data, tweet_payload)
+            ar.prediction_decision = decision
+            if not decision["eligible"]:
+                ar.prediction_status = "skipped"
+                continue
+            analyses_for_prediction.append(result_data)
+            tweets_for_prediction.append(tweet_payload)
 
         if analyses_for_prediction:
             try:
@@ -583,10 +624,20 @@ def prediction_batch_task(self) -> dict:
                 for pred in predictions:
                     pred["analysis_id"] = ar_id_by_tweet.get(pred.get("tweet_id"))
 
-                stats["predictions_created"] = len(predictions)
-
                 from app.services.prediction_service import save_predictions_batch
-                save_predictions_batch(db, predictions)
+                stats["predictions_created"] = save_predictions_batch(db, predictions)
+
+                candidate_counts: dict[str, int] = {}
+                for prediction in predictions:
+                    key = str(prediction.get("tweet_id") or "")
+                    candidate_counts[key] = candidate_counts.get(key, 0) + 1
+                for ar in pending_analyses:
+                    if ar.prediction_status == "skipped" or not ar.prediction_decision:
+                        continue
+                    ar.prediction_decision = {
+                        **ar.prediction_decision,
+                        "candidate_count": candidate_counts.get(str(ar.tweet_id), 0),
+                    }
 
                 ticker_summaries = pred_result.get("ticker_summaries", [])
                 ref_tweet_id = pending_analyses[0].tweet_id
@@ -883,6 +934,29 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
                 parts.append("图文关系：" + result_data["text_image_consistency"])
             if result_data.get("key_points"):
                 parts.append("核心观点：" + "；".join(result_data["key_points"]))
+            if result_data.get("statement_type"):
+                parts.append("内容类型：" + str(result_data["statement_type"]))
+            if result_data.get("thesis"):
+                parts.append("投资论点：" + str(result_data["thesis"]))
+            if result_data.get("catalysts"):
+                parts.append("催化剂：" + "；".join(result_data["catalysts"]))
+            if result_data.get("entry_conditions"):
+                parts.append("触发条件：" + "；".join(result_data["entry_conditions"]))
+            if result_data.get("invalidation_conditions"):
+                parts.append("失效条件：" + "；".join(result_data["invalidation_conditions"]))
+            if result_data.get("price_targets"):
+                target_text = [
+                    " ".join(
+                        str(item.get(key) or "")
+                        for key in ("symbol", "target_type", "value", "currency")
+                    ).strip()
+                    for item in result_data["price_targets"]
+                    if isinstance(item, dict)
+                ]
+                if target_text:
+                    parts.append("关键价格：" + "；".join(target_text))
+            if result_data.get("is_sponsored"):
+                parts.append("内容属性：赞助或推广")
             if result_data.get("tickers"):
                 ticker_descs = []
                 for t in result_data["tickers"]:
@@ -1028,15 +1102,22 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
 )
 def scan_due_tracking_task(self) -> dict:
     """Scan for tracked tickers with next_run_at <= now, dispatch report tasks."""
-    from app.services.tracking_service import get_due_subscriptions
+    from app.services.tracking_service import (
+        get_due_subscriptions,
+        recover_stale_tracking_reports,
+    )
 
     db = SessionLocal()
-    stats = {"dispatched": 0}
+    stats = {"dispatched": 0, "recovered": 0}
     try:
+        stats["recovered"] = recover_stale_tracking_reports(db)
         due = get_due_subscriptions(db)
         for record in due:
-            scheduled_report_task.delay(str(record.id))
-            stats["dispatched"] += 1
+            from app.services.tracking_service import queue_tracking_report
+
+            report = queue_tracking_report(db, record, manual=False)
+            if report.status == "generating":
+                stats["dispatched"] += 1
     finally:
         db.close()
     logger.info("[Celery] scan_due_tracking: %s", stats)
@@ -1053,12 +1134,11 @@ def scan_due_tracking_task(self) -> dict:
     max_retries=3,
 )
 def scheduled_report_task(self, tracking_id: str) -> dict:
-    """Generate a scheduled report for a tracked ticker subscription."""
+    """Legacy entrypoint: queue a scheduled report through the outbox pipeline."""
     from uuid import UUID
 
     from app.models.tracked_ticker import TrackedTicker
-    from app.services.report_service import create_and_run_report
-    from app.services.tracking_service import advance_next_run
+    from app.services.tracking_service import queue_tracking_report
 
     db = SessionLocal()
     try:
@@ -1066,11 +1146,7 @@ def scheduled_report_task(self, tracking_id: str) -> dict:
         if not record or record.status != "active":
             return {"skipped": True}
 
-        report = create_and_run_report(
-            db, record.user_id, record.ticker,
-            trigger_type="scheduled", tracked_ticker_id=record.id,
-        )
-        advance_next_run(db, record.id)
+        report = queue_tracking_report(db, record, manual=False)
         return {"report_id": str(report.id), "status": report.status}
     except Exception:
         db.rollback()
@@ -1085,7 +1161,7 @@ def scheduled_report_task(self, tracking_id: str) -> dict:
     acks_late=True,
     max_retries=0,  # 失败不重试：用户已看到流式中断，重跑应由用户触发
 )
-def report_streaming_task(self, report_id: str, user_id: str, ticker: str) -> dict:
+def report_streaming_task(self, report_id: str, user_id: str, query: str) -> dict:
     """跑流式报告生成；通过 Redis pub/sub 推 SSE，增量写库。"""
     from uuid import UUID
 
@@ -1097,7 +1173,7 @@ def report_streaming_task(self, report_id: str, user_id: str, ticker: str) -> di
             db=db,
             report_id=UUID(report_id),
             user_id=UUID(user_id),
-            query=f"生成 {ticker} 跟踪报告",
+            query=query,
         )
     finally:
         db.close()
@@ -1295,6 +1371,80 @@ def reindex_elasticsearch_chunks_task(
 
         db.commit()
         return stats
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.deep_research_task",
+    acks_late=True,
+    max_retries=0,
+)
+def deep_research_task(self, topic_id: str, user_id: str) -> dict:
+    """Run one durable research topic and persist evidence/conclusion versions."""
+    from app.agents.deep_research import deep_research_graph
+    from app.models.research import ResearchTopic
+    from app.schemas.research import ResearchConclusionCreate, ResearchEvidenceCreate
+    from app.services import research_service
+
+    db = SessionLocal()
+    try:
+        topic = db.get(ResearchTopic, UUID(topic_id))
+        if not topic or str(topic.user_id) != user_id:
+            return {"status": "skipped", "reason": "not_found"}
+        topic.status = "running"
+        db.commit()
+        result = deep_research_graph.invoke({
+            "user_id": user_id,
+            "question": topic.research_question,
+            "tickers": topic.tickers,
+            "source_scope": topic.source_scope,
+            "evidence": [],
+            "synthesis": {},
+        })
+        for item in result.get("evidence") or []:
+            tickers = item.get("ticker") or []
+            if isinstance(tickers, str):
+                tickers = [part.strip() for part in tickers.split(",") if part.strip()]
+            research_service.add_evidence(db, topic, ResearchEvidenceCreate(
+                evidence_key=item["evidence_id"], source_type=item.get("source_type", "unknown"),
+                source_id=item.get("source_id", ""), tickers=tickers, author=item.get("author", ""),
+                published_at=item.get("published_at"), excerpt=item.get("content", ""),
+                source_url=item.get("source_url", ""), sentiment=item.get("sentiment", ""),
+                verification_status=item.get("verification_status", "indexed"),
+                relevance_score=item.get("relevance_score", 0.0), metadata=item,
+            ))
+        synthesis = result.get("synthesis") or {}
+        research_service.add_conclusion(db, topic, ResearchConclusionCreate(**synthesis))
+        research_service.finish_run(db, topic)
+        return {"status": "done", "topic_id": topic_id, "evidence_count": len(result.get("evidence") or [])}
+    except Exception as exc:
+        db.rollback()
+        topic = db.get(ResearchTopic, UUID(topic_id))
+        if topic:
+            research_service.finish_run(db, topic, error=str(exc)[:1000])
+        return {"status": "failed", "topic_id": topic_id, "error": str(exc)}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="app.scheduler.tasks.scan_due_research_task", acks_late=True)
+def scan_due_research_task(self) -> dict:
+    from datetime import datetime, timezone
+    from app.models.research import ResearchTopic
+    from app.services import research_service
+
+    db = SessionLocal()
+    try:
+        due = list(db.execute(select(ResearchTopic).where(
+            ResearchTopic.monitor_enabled.is_(True),
+            ResearchTopic.status.in_(("active", "failed")),
+            ResearchTopic.next_run_at <= datetime.now(timezone.utc),
+        ).with_for_update(skip_locked=True)).scalars())
+        for topic in due:
+            research_service.queue_run(db, topic)
+        return {"dispatched": len(due)}
     finally:
         db.close()
 

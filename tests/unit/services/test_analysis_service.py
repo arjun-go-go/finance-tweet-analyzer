@@ -7,14 +7,14 @@ from app.services.analysis_service import (
 )
 
 
-def _tweet(tweet_id: uuid.UUID):
-    return SimpleNamespace(id=tweet_id, status="pending")
+def _tweet(tweet_id: uuid.UUID, status: str = "pending"):
+    return SimpleNamespace(id=tweet_id, status=status)
 
 
 def test_mark_successful_tweets_leaves_missing_analysis_pending():
     successful_id = uuid.uuid4()
     failed_id = uuid.uuid4()
-    successful = _tweet(successful_id)
+    successful = _tweet(successful_id, status="analyzing")
     failed = _tweet(failed_id)
 
     completed = _mark_successful_tweets(

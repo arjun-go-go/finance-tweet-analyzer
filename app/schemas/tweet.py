@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.blogger import BloggerProfile
 
@@ -14,6 +14,12 @@ class TweetImportItem(BaseModel):
     metrics: dict | None = None
     media_urls: list[dict] | None = None
     raw_json: dict | None = None
+    tweet_type: str = "original"
+    conversation_tweet_id: str | None = None
+    in_reply_to_tweet_id: str | None = None
+    quoted_tweet_id: str | None = None
+    reposted_tweet_id: str | None = None
+    referenced_tweets: list[dict] = Field(default_factory=list)
 
 
 class TweetImportRequest(BaseModel):

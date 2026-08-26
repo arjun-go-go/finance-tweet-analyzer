@@ -18,6 +18,8 @@ from app.api.admin_traces import router as admin_traces_router
 from app.api.admin_es import router as admin_es_router
 from app.api.admin_runtime import router as admin_runtime_router
 from app.api.intelligence import router as intelligence_router
+from app.api.research import router as research_router
+from app.api.alerts import router as alerts_router
 from app.core.config import settings
 
 
@@ -39,6 +41,8 @@ def build_api_router() -> APIRouter:
     router.include_router(admin_es_router)
     router.include_router(admin_runtime_router)
     router.include_router(intelligence_router)
+    router.include_router(research_router)
+    router.include_router(alerts_router)
     if settings.debug_mode:
         from app.api.debug import router as debug_router
 

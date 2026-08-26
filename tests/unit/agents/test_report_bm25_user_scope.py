@@ -8,12 +8,13 @@ def test_retrieve_bm25_node_passes_user_id_to_keyword_retriever(monkeypatch):
     captured = {}
     intent = QueryIntent(ticker="BTC", keywords=["risk"])
 
-    def fake_retrieve_bm25(intent_arg, user_id=None):
+    def fake_run_retriever_path(path, intent_arg, *, user_id=None, query_embedding=None):
+        assert path == "bm25"
         captured["intent"] = intent_arg
         captured["user_id"] = user_id
         return [{"unique_id": "es:1"}]
 
-    monkeypatch.setattr(report_agent, "retrieve_bm25", fake_retrieve_bm25)
+    monkeypatch.setattr(report_agent, "run_retriever_path", fake_run_retriever_path)
 
     result = report_agent.retrieve_bm25_node(
         {

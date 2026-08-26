@@ -249,3 +249,88 @@ def build_user_intelligence_feed(
         "kind": kind,
         "generated_at": datetime.now(timezone.utc),
     }
+
+
+def build_user_daily_digest(db: Session, user_id: UUID) -> dict:
+    """Build an evidence-backed 24-hour Twitter digest for one user's research scope.
+
+    The digest is deliberately deterministic: every highlighted conclusion comes
+    from an existing intelligence item and keeps its original tweet evidence.
+    """
+    items, context = build_user_intelligence_feed(
+        db,
+        user_id,
+        limit=40,
+        window="24h",
+        kind="all",
+    )
+    personalized = [item for item in items if item["feed_bucket"] == "personalized"]
+    digest_items = personalized or items
+    risks = [
+        item
+        for item in items
+        if item["kind"] == "risk" or item["lifecycle"] == "reversed"
+    ]
+    risks.sort(
+        key=lambda item: (
+            item["lifecycle"] == "reversed",
+            item["importance_score"],
+            item["published_at"],
+        ),
+        reverse=True,
+    )
+
+    authors = {
+        evidence["author"].lower()
+        for item in items
+        for evidence in item["supporting_evidence"]
+    }
+    tickers = {ticker for item in items for ticker in item["tickers"]}
+    metrics = {
+        "signal_count": len(items),
+        "personalized_count": len(personalized),
+        "source_count": len(authors),
+        "ticker_count": len(tickers),
+        "opinion_count": sum(item["kind"] == "opinion" for item in items),
+        "news_count": sum(item["kind"] == "news" for item in items),
+        "risk_count": sum(item["kind"] == "risk" for item in items),
+        "reversal_count": sum(item["lifecycle"] == "reversed" for item in items),
+        "corroborated_count": sum(item["corroboration_count"] > 1 for item in items),
+    }
+
+    has_scope = bool(context["personalized"])
+    if not has_scope:
+        status = "scope_empty"
+        summary = "你尚未设置关注博主或监控标的，当前日报展示市场补充情报。完善研究范围后会自动切换为个性化日报。"
+    elif not items:
+        status = "empty"
+        summary = "过去 24 小时内，尚未发现通过投资相关性、来源归属和内容质量筛选的新情报。"
+    elif not personalized:
+        status = "empty"
+        summary = "过去 24 小时内没有匹配你关注范围的新情报，以下内容仅作为市场风险补充。"
+    else:
+        status = "ready"
+        clauses = [
+            f"过去 24 小时，关注范围内出现 {len(personalized)} 条有效情报",
+            f"覆盖 {len(authors)} 个独立来源、{len(tickers)} 个标的",
+        ]
+        if metrics["risk_count"]:
+            clauses.append(f"其中 {metrics['risk_count']} 条风险线索")
+        if metrics["reversal_count"]:
+            clauses.append(f"{metrics['reversal_count']} 条观点反转")
+        summary = "；".join(clauses) + "。"
+
+    generated_at = context["generated_at"]
+    return {
+        "status": status,
+        "title": "Twitter 投资情报日报",
+        "executive_summary": summary,
+        "generated_at": generated_at,
+        "period_start": generated_at - timedelta(hours=24),
+        "period_end": generated_at,
+        "metrics": metrics,
+        "highlights": digest_items[:5],
+        "attention": risks[:3],
+        "context": context,
+        "methodology": "仅汇总已完成结构化分析并保留原始推文证据的内容；不把广告、第三方转述或非投资讨论写入结论。",
+    }

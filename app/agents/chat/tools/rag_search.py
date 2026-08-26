@@ -2,91 +2,75 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from app.agents.chat.tool_results import tool_ok
+from app.rag.hybrid_retrieval import (
+    build_retrieval_intent,
+    evidence_from_items,
+    hybrid_retrieve,
+)
+
+
+def _render_evidence(items: list[dict]) -> str:
+    lines = []
+    for item in items:
+        header = f"[{item['evidence_id']}] {item['source_type']}"
+        if item.get("author"):
+            header += f" | @{item['author']}"
+        if item.get("published_at"):
+            header += f" | {str(item['published_at'])[:19]}"
+        if item.get("ticker"):
+            header += f" | {item['ticker']}"
+        lines.append(f"{header}\n{item['content']}")
+    return "\n\n".join(lines)
+
 
 def search_my_documents_impl(user_id: UUID, query: str, ticker: str = "") -> str:
-    """Search the authenticated user's private document vector index."""
-    from app.rag.embeddings import get_embedder
-    from app.rag.repository import UserDocumentRepository
-    from app.rag.vector_store import get_vector_store
-
-    repo = UserDocumentRepository(get_vector_store(), get_embedder())
-
-    try:
-        hits = repo.search(
-            user_id=user_id,
-            query=query,
-            k=5,
-        )
-    except Exception:
-        return "文档检索暂时不可用。"
-
-    if not hits:
+    """Search private documents through the shared vector + ES hybrid pipeline."""
+    intent = build_retrieval_intent(query, ticker=ticker)
+    result = hybrid_retrieve(
+        intent,
+        user_id=user_id,
+        query=query,
+        source_scope=["private_documents"],
+    )
+    evidence = evidence_from_items(result["reranked"])
+    if not evidence:
         return "未找到相关文档内容。"
-
-    results = []
-    for i, hit in enumerate(hits, 1):
-        meta = hit.metadata or {}
-        content_preview = hit.content[:500] if hit.content else meta.get("title", "")
-        source_id = meta.get("source_id") or meta.get("document_id") or meta.get("chunk_id")
-        source_uri = meta.get("source_uri") or meta.get("url")
-        source_parts = [f"来源ID: {source_id}"] if source_id else []
-        if source_uri:
-            source_parts.append(f"原文: {source_uri}")
-        source_line = " | ".join(source_parts)
-        results.append(
-            f"[{i}] {content_preview}" + (f"\n{source_line}" if source_line else "")
-        )
-    return "\n\n".join(results)
+    return tool_ok(
+        _render_evidence(evidence),
+        data={"evidence": evidence, "ticker": "" if intent.ticker == "UNKNOWN" else intent.ticker},
+    )
 
 
-def search_public_signals_impl(query: str, source_type: str = "analysis", blogger: str = "") -> str:
-    """Search the public signal vector index."""
-    from app.rag.embeddings import get_embedder
-    from app.rag.vector_store import get_vector_store
-
+def search_public_signals_impl(
+    query: str,
+    source_type: str = "analysis",
+    blogger: str = "",
+    user_id: UUID | None = None,
+) -> str:
+    """Search public signals through the shared Milvus + ES + PG pipeline."""
     if source_type not in ("analysis", "tweet"):
         return "参数错误：source_type 必须是 'analysis' 或 'tweet'。"
 
-    flt: dict = {"source_type": source_type}
-    if blogger:
-        flt["blogger_handle"] = blogger
-
-    try:
-        emb = get_embedder().embed_query(query)
-        hits = get_vector_store().query(
-            "public_signals",
-            query_embedding=emb,
-            k=10,
-            filter=flt,
-        )
-    except Exception:
-        return "公共信号检索暂时不可用。"
-
-    if not hits:
+    intent = build_retrieval_intent(query, blogger=blogger)
+    result = hybrid_retrieve(
+        intent,
+        user_id=user_id,
+        query=query,
+        source_scope=[source_type],
+    )
+    evidence = evidence_from_items(result["reranked"])
+    if not evidence:
         blogger_hint = f" 博主 @{blogger}" if blogger else ""
-        return f"未在公共信号库中找到与「{query}」相关的 {source_type} 内容{blogger_hint}。"
+        target = "" if intent.ticker == "UNKNOWN" else intent.ticker
+        target_hint = f"且直接属于 {target}" if target else ""
+        return f"未找到与“{query}”相关{target_hint}的 {source_type} 内容{blogger_hint}。"
 
-    results = []
-    for i, hit in enumerate(hits, 1):
-        meta = hit.metadata
-        blogger_handle = meta.get("blogger_handle", "未知博主")
-        sentiment = meta.get("sentiment", "")
-        horizon = meta.get("horizon", "")
-        published_at = meta.get("published_at") or meta.get("created_at")
-        source_id = meta.get("source_id") or meta.get("tweet_id") or meta.get("chunk_id")
-        source_uri = meta.get("source_uri") or meta.get("url")
-        score = hit.score
-        content_preview = hit.content[:1000] if hit.content else ""
-        header = f"[{i}] 博主: {blogger_handle}"
-        if sentiment:
-            header += f" | 情感: {sentiment}"
-        if horizon:
-            header += f" | 周期: {horizon}"
-        if published_at:
-            header += f" | 时间: {published_at}"
-        if source_id:
-            header += f" | 来源ID: {source_id}"
-        header += f" | 相关度: {score:.3f}"
-        source_line = f"\n原文: {source_uri}" if source_uri else ""
-        results.append(f"{header}\n{content_preview}{source_line}")
-    return "\n\n".join(results)
+    return tool_ok(
+        _render_evidence(evidence),
+        data={
+            "evidence": evidence,
+            "ticker": "" if intent.ticker == "UNKNOWN" else intent.ticker,
+            "retrieval_paths": list(result["paths"]),
+        },
+    )

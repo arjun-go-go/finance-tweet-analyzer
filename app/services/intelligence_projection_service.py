@@ -16,13 +16,33 @@ from app.models.tweet import Tweet
 from app.services.instrument_resolver import verified_ticker_symbols
 
 
-PROJECTION_VERSION = "v2"
+PROJECTION_VERSION = "v3"
 TOPIC_WINDOW_DAYS = 7
 TOPIC_SIMILARITY_THRESHOLD = 0.58
 
 
 def _ticker_symbols(result: dict) -> list[str]:
     return verified_ticker_symbols(result)
+
+
+def evaluate_intelligence_eligibility(result: dict, *, tweet_type: str) -> tuple[bool, str]:
+    """决定一条推文分析是否值得进入今日情报。"""
+    if not result.get("is_investment_relevant", result.get("is_investment_related", False)):
+        return False, "not_investment_relevant"
+    if result.get("is_sponsored"):
+        return False, "sponsored_content"
+
+    statement_type = str(result.get("statement_type") or "non_investment").lower()
+    if statement_type == "non_investment":
+        return False, "non_investment_statement"
+
+    opinion_source = str(result.get("opinion_source") or "unclear").lower()
+    author_statements = {"recommendation", "prediction", "risk_warning", "opinion"}
+    if statement_type in author_statements and opinion_source != "author":
+        return False, "opinion_not_from_author"
+    if tweet_type == "retweet" and opinion_source != "author" and statement_type not in {"news_relay", "fact"}:
+        return False, "pure_retweet"
+    return True, "eligible"
 
 
 def _unique_strings(values: list, *, limit: int = 5) -> list[str]:
@@ -199,14 +219,18 @@ def project_analysis_to_intelligence_event(
 
     tweet = db.get(Tweet, analysis.tweet_id)
     result = analysis.result or {}
-    if not tweet or not tweet.content or result.get("is_investment_related") is False:
+    eligible, eligibility_reason = evaluate_intelligence_eligibility(
+        result,
+        tweet_type=str(getattr(tweet, "tweet_type", "original") or "original") if tweet else "original",
+    )
+    if not tweet or not tweet.content or not eligible:
         if existing:
             previous_topic = db.get(IntelligenceTopic, existing.topic_id) if existing.topic_id else None
             db.delete(existing)
             db.flush()
             if previous_topic:
                 _refresh_topic(db, previous_topic)
-        return {"skipped": True, "reason": "tweet_not_eligible"}
+        return {"skipped": True, "reason": eligibility_reason if tweet else "tweet_not_found"}
 
     blogger = db.execute(
         select(Blogger).where(func.lower(Blogger.handle) == tweet.author_handle.lower())
@@ -219,10 +243,24 @@ def project_analysis_to_intelligence_event(
     risk_factors = _unique_strings(result.get("risk_factors") or [])
     key_points = _unique_strings(result.get("key_points") or [])
     risk_level = str(result.get("risk_level") or "").lower()
-    kind = "risk" if risk_level in {"high", "critical"} or len(risk_factors) >= 2 else "opinion"
+    statement_type = str(result.get("statement_type") or "opinion").lower()
+    if statement_type == "risk_warning" or risk_level in {"high", "critical"} or len(risk_factors) >= 2:
+        kind = "risk"
+    elif statement_type in {"news_relay", "recap", "fact"}:
+        kind = "news"
+    else:
+        kind = "opinion"
     primary_ticker = tickers[0] if tickers else "市场"
-    title = f"{primary_ticker} 出现新的风险线索" if kind == "risk" else f"{primary_ticker} · @{tweet.author_handle} {direction_label}观点"
-    summary = key_points[0] if key_points else str(result.get("risk_summary") or result.get("reasoning") or tweet.content)[:240]
+    if kind == "risk":
+        title = f"{primary_ticker} 出现新的风险线索"
+    elif kind == "news":
+        title = f"{primary_ticker} · @{tweet.author_handle} 转述市场动态"
+    else:
+        title = f"{primary_ticker} · @{tweet.author_handle} {direction_label}观点"
+    summary = str(result.get("thesis") or "").strip()
+    if not summary:
+        summary = key_points[0] if key_points else str(result.get("risk_summary") or result.get("reasoning") or tweet.content)
+    summary = summary[:240]
     confidence = float(result.get("confidence") or analysis.confidence or 0)
     credibility = float(blogger.credibility_score if blogger else 50.0)
 
@@ -276,6 +314,9 @@ def project_analysis_to_intelligence_event(
     db.flush()
 
     topic = _assign_event_to_topic(db, event)
+    from app.services.alert_service import publish_intelligence_alerts
+
+    alerts_created = publish_intelligence_alerts(db, event=event, topic=topic, tweet=tweet)
     if expire_topics:
         expire_stale_topics(db)
     return {
@@ -284,6 +325,7 @@ def project_analysis_to_intelligence_event(
         "event_id": str(event.id),
         "topic_id": str(topic.id),
         "lifecycle": topic.lifecycle,
+        "alerts_created": alerts_created,
     }
 
 

@@ -231,80 +231,142 @@ def _strip_text(text: str) -> str:
     return text.strip()
 
 
+def _unwrap_tweet_result(result: dict | None) -> dict:
+    """Normalize the wrappers used by different Twitter GraphQL responses."""
+    current = result or {}
+    if "result" in current and isinstance(current["result"], dict):
+        current = current["result"]
+    if "tweet" in current and isinstance(current["tweet"], dict):
+        current = current["tweet"]
+    return current
+
+
+def _tweet_full_text(tweet_obj: dict) -> str:
+    text = tweet_obj.get("legacy", {}).get("full_text", "")
+    try:
+        note_text = tweet_obj["note_tweet"]["note_tweet_results"]["result"]["text"]
+        if note_text:
+            return note_text
+    except (KeyError, TypeError):
+        pass
+    return text
+
+
+def _tweet_author(tweet_obj: dict) -> tuple[str, str, str]:
+    core = tweet_obj.get("core", {}).get("user_results", {}).get("result", {})
+    legacy = core.get("legacy", {}) if isinstance(core, dict) else {}
+    return (
+        str(core.get("rest_id", "")) if isinstance(core, dict) else "",
+        legacy.get("screen_name", ""),
+        legacy.get("name", ""),
+    )
+
+
+def _tweet_media(tweet_obj: dict, reference_type: str | None = None) -> list[dict]:
+    media_items = []
+    legacy = tweet_obj.get("legacy", {})
+    for media in legacy.get("extended_entities", {}).get("media", []):
+        item = {
+            "media_status_id": media.get("id_str", ""),
+            "media_url": media.get("media_url_https", ""),
+        }
+        if reference_type:
+            item["reference_type"] = reference_type
+            item["source_tweet_id"] = tweet_obj.get("rest_id", "")
+        if item["media_url"]:
+            media_items.append(item)
+    return media_items
+
+
+def _tweet_reference(reference_type: str, tweet_obj: dict) -> dict | None:
+    tweet_obj = _unwrap_tweet_result(tweet_obj)
+    if not tweet_obj.get("legacy"):
+        return None
+    _, handle, name = _tweet_author(tweet_obj)
+    legacy = tweet_obj["legacy"]
+    return {
+        "type": reference_type,
+        "tweet_id": tweet_obj.get("rest_id", ""),
+        "author_handle": handle,
+        "author_name": name,
+        "content": _strip_text(_tweet_full_text(tweet_obj)),
+        "published_at": (
+            _cst_to_iso(legacy["created_at"]) if legacy.get("created_at") else ""
+        ),
+        "media_urls": _tweet_media(tweet_obj, reference_type),
+    }
+
+
 def _parse_tweet_entry(entry: dict) -> dict | None:
     entry_id = entry.get("entryId", "")
     if not entry_id.startswith("tweet"):
         return None
 
     try:
-        tweets = entry["content"]["itemContent"]["tweet_results"]["result"]
+        tweets = _unwrap_tweet_result(
+            entry["content"]["itemContent"]["tweet_results"]["result"]
+        )
     except (KeyError, TypeError):
         return None
-
-    if "tweet" in tweets:
-        tweets = tweets["tweet"]
 
     if "legacy" not in tweets or "core" not in tweets:
         return None
 
     legacy = tweets["legacy"]
-    core = tweets["core"]["user_results"]["result"]
+    user_id, author_handle, author_name = _tweet_author(tweets)
+    if not author_handle:
+        return None
 
     item = {}
-    item["user_id"] = core["rest_id"]
-    item["name"] = core["legacy"]["name"]
-    item["user_name"] = core["legacy"]["screen_name"]
-
-    def get_full_text(tweet_obj):
-        text = tweet_obj.get("legacy", {}).get("full_text", "")
-        if "note_tweet" in tweet_obj:
-            try:
-                note_text = tweet_obj["note_tweet"]["note_tweet_results"]["result"]["text"]
-                if note_text:
-                    return note_text
-            except (KeyError, TypeError):
-                pass
-        return text
-
-    item["tweet_text"] = _strip_text(get_full_text(tweets))
+    item["user_id"] = user_id
+    item["name"] = author_name
+    item["user_name"] = author_handle
+    item["tweet_name"] = author_handle
+    item["tweet_text"] = _strip_text(_tweet_full_text(tweets))
     item["lang"] = legacy.get("lang", "")
-    item["views"] = int(tweets.get("views", {}).get("count", 0))
+    item["data_time_iso"] = (
+        _cst_to_iso(legacy["created_at"]) if legacy.get("created_at") else ""
+    )
+    item["data_id"] = tweets.get("rest_id", "")
+    item["retweets"] = legacy.get("retweet_count", 0)
+    item["favorites"] = legacy.get("favorite_count", 0)
+    item["replies"] = legacy.get("reply_count", 0)
+    item["bookmark_count"] = legacy.get("bookmark_count", 0)
+    item["quote_count"] = legacy.get("quote_count", 0)
+    item["views"] = int(tweets.get("views", {}).get("count", 0) or 0)
 
-    item["media_images"] = []
-    if "extended_entities" in legacy:
-        for media in legacy["extended_entities"].get("media", []):
-            item["media_images"].append({
-                "media_status_id": media["id_str"],
-                "media_url": media["media_url_https"],
-            })
+    item["conversation_tweet_id"] = (
+        legacy.get("conversation_id_str") or item["data_id"]
+    )
+    item["in_reply_to_tweet_id"] = legacy.get("in_reply_to_status_id_str")
+    item["quoted_tweet_id"] = legacy.get("quoted_status_id_str")
+    item["reposted_tweet_id"] = None
+    item["referenced_tweets"] = []
+    item["media_images"] = _tweet_media(tweets)
 
-    if "retweeted_status_result" in legacy:
-        retweeted = legacy["retweeted_status_result"]["result"]
-        if "tweet" in retweeted:
-            retweeted = retweeted["tweet"]
-        rt_legacy = retweeted.get("legacy", {})
-        rt_core = retweeted.get("core", {}).get("user_results", {}).get("result", {})
-
-        item["tweet_text"] = _strip_text(rt_legacy.get("full_text", ""))
-        item["data_time_iso"] = _cst_to_iso(rt_legacy["created_at"]) if rt_legacy.get("created_at") else ""
-        item["tweet_name"] = rt_core.get("legacy", {}).get("screen_name", "")
-        item["data_id"] = retweeted.get("rest_id", "")
-        item["retweets"] = rt_legacy.get("retweet_count", 0)
-        item["favorites"] = rt_legacy.get("favorite_count", 0)
-        item["replies"] = rt_legacy.get("reply_count", 0)
-        item["bookmark_count"] = rt_legacy.get("bookmark_count", 0)
-        item["quote_count"] = rt_legacy.get("quote_count", 0)
-        item["views"] = int(retweeted.get("views", {}).get("count", 0))
+    retweeted_result = legacy.get("retweeted_status_result")
+    quoted_result = tweets.get("quoted_status_result") or legacy.get("quoted_status_result")
+    if retweeted_result:
+        reference = _tweet_reference("reposted", retweeted_result)
+        item["tweet_type"] = "retweet"
         item["is_retweet"] = True
+        if reference:
+            item["reposted_tweet_id"] = reference["tweet_id"] or None
+            item["referenced_tweets"].append(reference)
+            item["media_images"].extend(reference["media_urls"])
+    elif quoted_result:
+        reference = _tweet_reference("quoted", quoted_result)
+        item["tweet_type"] = "quote"
+        item["is_retweet"] = False
+        if reference:
+            item["quoted_tweet_id"] = reference["tweet_id"] or item["quoted_tweet_id"]
+            item["referenced_tweets"].append(reference)
+            item["media_images"].extend(reference["media_urls"])
+    elif item["in_reply_to_tweet_id"]:
+        item["tweet_type"] = "reply"
+        item["is_retweet"] = False
     else:
-        item["data_time_iso"] = _cst_to_iso(legacy["created_at"]) if legacy.get("created_at") else ""
-        item["tweet_name"] = item["user_name"]
-        item["data_id"] = tweets.get("rest_id", "")
-        item["retweets"] = legacy.get("retweet_count", 0)
-        item["favorites"] = legacy.get("favorite_count", 0)
-        item["replies"] = legacy.get("reply_count", 0)
-        item["bookmark_count"] = legacy.get("bookmark_count", 0)
-        item["quote_count"] = legacy.get("quote_count", 0)
+        item["tweet_type"] = "original"
         item["is_retweet"] = False
 
     return item
@@ -425,5 +487,11 @@ def convert_tweets_to_import(raw_tweets: list[dict]) -> list[dict]:
             },
             "media_urls": tweet.get("media_images") or None,
             "raw_json": tweet,
+            "tweet_type": tweet.get("tweet_type", "original"),
+            "conversation_tweet_id": tweet.get("conversation_tweet_id"),
+            "in_reply_to_tweet_id": tweet.get("in_reply_to_tweet_id"),
+            "quoted_tweet_id": tweet.get("quoted_tweet_id"),
+            "reposted_tweet_id": tweet.get("reposted_tweet_id"),
+            "referenced_tweets": tweet.get("referenced_tweets") or [],
         })
     return items

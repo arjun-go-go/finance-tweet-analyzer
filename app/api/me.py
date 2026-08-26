@@ -45,6 +45,7 @@ from app.services.analysis_job_service import (
     mark_analysis_job_dispatch_failed,
     mark_analysis_job_dispatched,
 )
+from app.services.credibility import score_profile
 from app.services.outbox_service import enqueue_outbox_event
 
 
@@ -56,6 +57,7 @@ def _followed_blogger_item(
 ) -> BloggerListItem:
     verified_count = int(blogger.total_predictions or 0)
     correct_sum = float(blogger.correct_predictions or 0.0)
+    score = score_profile(correct_sum, verified_count)
     return BloggerListItem(
         id=str(blogger.id),
         handle=blogger.handle,
@@ -64,7 +66,7 @@ def _followed_blogger_item(
         avatar_url=blogger.avatar_url,
         followers_count=blogger.followers_count,
         market_focus=blogger.market_focus,
-        credibility_score=float(blogger.credibility_score),
+        **score,
         verified_count=verified_count,
         pending_count=pending_count,
         hit_rate=(correct_sum / verified_count if verified_count else None),

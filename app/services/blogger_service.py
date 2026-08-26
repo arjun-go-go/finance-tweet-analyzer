@@ -10,7 +10,7 @@ from app.models.prediction import Prediction
 from app.models.prediction_market_verification import PredictionMarketVerification
 from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
-from app.services.credibility import SCORED_VERDICTS, compute_score
+from app.services.credibility import SCORED_VERDICTS, score_profile
 
 
 def upsert_blogger(db: Session, profile: BloggerProfile) -> Blogger:
@@ -104,7 +104,7 @@ def list_bloggers_with_stats(db: Session, sort: str = "credibility") -> list[dic
 
     items = []
     for blogger, verified, correct_sum, pending in rows:
-        score = compute_score(float(correct_sum), int(verified))
+        score = score_profile(float(correct_sum), int(verified))
         hit_rate = float(correct_sum) / verified if verified else None
         items.append({
             "id": str(blogger.id),
@@ -114,7 +114,7 @@ def list_bloggers_with_stats(db: Session, sort: str = "credibility") -> list[dic
             "avatar_url": blogger.avatar_url,
             "followers_count": blogger.followers_count,
             "market_focus": blogger.market_focus,
-            "credibility_score": round(score, 2),
+            **score,
             "verified_count": int(verified),
             "pending_count": int(pending),
             "hit_rate": round(hit_rate, 4) if hit_rate is not None else None,
@@ -209,7 +209,7 @@ def get_blogger_detail(db: Session, handle: str) -> dict | None:
     ).all()
     recent_verified = [_serialize_prediction(p, t) for p, t in recent]
 
-    score = compute_score(float(correct_sum), int(verified_count))
+    score = score_profile(float(correct_sum), int(verified_count))
     hit_rate_overall = (
         round(float(correct_sum) / int(verified_count), 4)
         if verified_count
@@ -225,7 +225,7 @@ def get_blogger_detail(db: Session, handle: str) -> dict | None:
         "followers_count": blogger.followers_count,
         "market_focus": blogger.market_focus,
         "profile_updated_at": blogger.profile_updated_at,
-        "credibility_score": round(score, 2),
+        **score,
         "verified_count": int(verified_count),
         "pending_count": int(pending_count),
         "hit_rate_overall": hit_rate_overall,
@@ -331,6 +331,7 @@ def _serialize_market_verification(
         "identity": evidence.get("identity"),
         "identity_reason": evidence.get("identity_reason"),
         "price_proxy": evidence.get("price_proxy"),
+        "correction": evidence.get("correction"),
         "applied": verification.applied,
         "created_at": verification.created_at.isoformat(),
     }
@@ -355,6 +356,8 @@ def _serialize_prediction(
         "verified_by": p.verified_by,
         "note": p.note,
         "instrument_snapshot": p.instrument_snapshot,
+        "creation_rule_version": p.creation_rule_version,
+        "creation_evidence": p.creation_evidence,
         "market_verification": _serialize_market_verification(verification),
         "tweet": {
             "id": str(t.id),

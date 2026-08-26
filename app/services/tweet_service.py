@@ -2,6 +2,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from uuid import UUID
+from datetime import datetime, timezone
 
 from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
@@ -36,6 +37,14 @@ def import_tweets(
         ).scalar_one_or_none()
 
         if exists:
+            # Re-fetching an older tweet can enrich relationship metadata added
+            # after its initial import without changing the original content.
+            exists.tweet_type = item.tweet_type
+            exists.conversation_tweet_id = item.conversation_tweet_id
+            exists.in_reply_to_tweet_id = item.in_reply_to_tweet_id
+            exists.quoted_tweet_id = item.quoted_tweet_id
+            exists.reposted_tweet_id = item.reposted_tweet_id
+            exists.referenced_tweets = item.referenced_tweets
             skipped += 1
             continue
 
@@ -48,7 +57,14 @@ def import_tweets(
             metrics=item.metrics,
             media_urls=item.media_urls,
             raw_json=item.raw_json,
+            tweet_type=item.tweet_type,
+            conversation_tweet_id=item.conversation_tweet_id,
+            in_reply_to_tweet_id=item.in_reply_to_tweet_id,
+            quoted_tweet_id=item.quoted_tweet_id,
+            reposted_tweet_id=item.reposted_tweet_id,
+            referenced_tweets=item.referenced_tweets,
             status="media_pending" if isinstance(item.media_urls, list) and item.media_urls else "pending",
+            processing_updated_at=datetime.now(timezone.utc),
         )
         db.add(tweet)
         imported_tweets.append(tweet)

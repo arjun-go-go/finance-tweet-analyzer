@@ -8,3 +8,4 @@ class AgentState(MessagesState):
     memories: list
     tool_route: str = "read_only"
     allowed_tool_names: list[str]
+    answer_verification: dict

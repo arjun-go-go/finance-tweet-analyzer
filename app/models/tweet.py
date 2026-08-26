@@ -23,6 +23,18 @@ class Tweet(Base, TimestampMixin):
     metrics: Mapped[dict | None] = mapped_column(JSONB, default=None)
     media_urls: Mapped[Any | None] = mapped_column(JSONB, default=None)
     raw_json: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    tweet_type: Mapped[str] = mapped_column(
+        String(20), default="original", index=True
+    )
+    conversation_tweet_id: Mapped[str | None] = mapped_column(
+        String(64), default=None, index=True
+    )
+    in_reply_to_tweet_id: Mapped[str | None] = mapped_column(
+        String(64), default=None
+    )
+    quoted_tweet_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    reposted_tweet_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    referenced_tweets: Mapped[list] = mapped_column(JSONB, default=list)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     analysis_attempts: Mapped[int] = mapped_column(Integer, default=0)
     analysis_last_error: Mapped[str | None] = mapped_column(Text, default=None)
@@ -34,4 +46,8 @@ class Tweet(Base, TimestampMixin):
     )
     analysis_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
+    )
+    failure_stage: Mapped[str | None] = mapped_column(String(32), default=None)
+    processing_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None, index=True
     )

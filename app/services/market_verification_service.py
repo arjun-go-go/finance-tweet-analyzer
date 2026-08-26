@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -21,6 +22,7 @@ from app.models.prediction_market_verification import PredictionMarketVerificati
 from app.models.tweet import Tweet
 from app.services.credibility import recompute_blogger
 from app.services.instrument_resolver import is_downstream_verified_ticker
+from app.scheduler.locks import _get_redis
 
 
 MARKET_TIMEZONES = {
@@ -43,6 +45,88 @@ GOLD_HORIZON_THRESHOLDS = {
     "unknown": lambda: settings.gold_verification_medium_return_threshold,
 }
 AUTO_VERIFICATION_RULE_VERSION = "market_auto_v1"
+PREDICTION_RUNTIME_TASK_KEY = "runtime:prediction_verification:task"
+PREDICTION_RUNTIME_SOURCE_PREFIX = "runtime:prediction_verification:source:"
+
+
+def _runtime_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def record_market_source_runtime(
+    source: str,
+    *,
+    status: str,
+    provider: str,
+    error: str | None = None,
+    fallback_used: bool = False,
+) -> None:
+    """Record lightweight source health without affecting verification work."""
+    try:
+        redis_client = _get_redis()
+        key = f"{PREDICTION_RUNTIME_SOURCE_PREFIX}{source}"
+        now = _runtime_timestamp()
+        failures = int(redis_client.hget(key, "consecutive_failures") or 0)
+        mapping = {
+            "source": source,
+            "status": status,
+            "provider": provider,
+            "last_checked_at": now,
+            "consecutive_failures": 0 if status != "failed" else failures + 1,
+        }
+        if status == "failed":
+            mapping.update({"last_error_at": now, "last_error": (error or "unknown error")[:500]})
+        else:
+            mapping["last_success_at"] = now
+            if error:
+                mapping["last_error"] = error[:500]
+        pipe = redis_client.pipeline()
+        pipe.hset(key, mapping=mapping)
+        pipe.hincrby(key, "total_calls", 1)
+        pipe.hincrby(key, "total_failures" if status == "failed" else "total_successes", 1)
+        if fallback_used:
+            pipe.hincrby(key, "fallback_count", 1)
+        pipe.expire(key, 60 * 60 * 24 * 30)
+        pipe.execute()
+    except Exception as metrics_error:
+        logger.debug("Prediction source runtime metric skipped: {}", metrics_error)
+
+
+def record_auto_verification_runtime(
+    status: str,
+    *,
+    task_id: str | None = None,
+    result: dict | None = None,
+    error: str | None = None,
+) -> None:
+    """Record the latest automatic-verification task attempt in Redis."""
+    try:
+        redis_client = _get_redis()
+        now = _runtime_timestamp()
+        failures = int(redis_client.hget(PREDICTION_RUNTIME_TASK_KEY, "consecutive_failures") or 0)
+        mapping: dict[str, str | int] = {"status": status}
+        if task_id:
+            mapping["task_id"] = task_id
+        if status == "running":
+            mapping["last_started_at"] = now
+        elif status == "success":
+            mapping.update({
+                "last_finished_at": now,
+                "last_success_at": now,
+                "consecutive_failures": 0,
+                "last_result": json.dumps(result or {}, ensure_ascii=False),
+            })
+        elif status == "failed":
+            mapping.update({
+                "last_finished_at": now,
+                "last_error_at": now,
+                "last_error": (error or "unknown error")[:500],
+                "consecutive_failures": failures + 1,
+            })
+        redis_client.hset(PREDICTION_RUNTIME_TASK_KEY, mapping=mapping)
+        redis_client.expire(PREDICTION_RUNTIME_TASK_KEY, 60 * 60 * 24 * 30)
+    except Exception as metrics_error:
+        logger.debug("Prediction task runtime metric skipped: {}", metrics_error)
 
 
 @dataclass(frozen=True)
@@ -97,12 +181,25 @@ def _load_cn_prices(symbol: str, start_date: date, end_date: date) -> list[dict]
             symbol,
             primary_error,
         )
-        frame = ak.stock_zh_a_daily(
-            symbol=f"{prefix}{code}",
-            start_date=start_date.strftime("%Y%m%d"),
-            end_date=end_date.strftime("%Y%m%d"),
-            adjust="qfq",
+        try:
+            frame = ak.stock_zh_a_daily(
+                symbol=f"{prefix}{code}",
+                start_date=start_date.strftime("%Y%m%d"),
+                end_date=end_date.strftime("%Y%m%d"),
+                adjust="qfq",
+            )
+        except Exception as fallback_error:
+            record_market_source_runtime(
+                "cn", status="failed", provider="Eastmoney / Sina",
+                error=str(fallback_error), fallback_used=True,
+            )
+            raise
+        record_market_source_runtime(
+            "cn", status="degraded", provider="Sina",
+            error=str(primary_error), fallback_used=True,
         )
+    else:
+        record_market_source_runtime("cn", status="healthy", provider="Eastmoney")
     return _frame_records(frame)
 
 
@@ -129,7 +226,20 @@ def _load_hk_prices(symbol: str, start_date: date, end_date: date) -> list[dict]
             normalized,
             primary_error,
         )
-        frame = ak.stock_hk_daily(symbol=normalized, adjust="qfq")
+        try:
+            frame = ak.stock_hk_daily(symbol=normalized, adjust="qfq")
+        except Exception as fallback_error:
+            record_market_source_runtime(
+                "hk", status="failed", provider="Eastmoney / Sina",
+                error=str(fallback_error), fallback_used=True,
+            )
+            raise
+        record_market_source_runtime(
+            "hk", status="degraded", provider="Sina",
+            error=str(primary_error), fallback_used=True,
+        )
+    else:
+        record_market_source_runtime("hk", status="healthy", provider="Eastmoney")
     return _frame_records(frame)
 
 
@@ -141,7 +251,12 @@ def _load_hk_prices(symbol: str, start_date: date, end_date: date) -> list[dict]
 def _load_us_prices(symbol: str) -> list[dict]:
     import akshare as ak
 
-    frame = ak.stock_us_daily(symbol=symbol, adjust="qfq")
+    try:
+        frame = ak.stock_us_daily(symbol=symbol, adjust="qfq")
+    except Exception as error:
+        record_market_source_runtime("us", status="failed", provider="AKShare", error=str(error))
+        raise
+    record_market_source_runtime("us", status="healthy", provider="AKShare")
     return _frame_records(frame)
 
 
@@ -162,10 +277,16 @@ def _load_binance_edge_bar(
         params["startTime"] = start_ms
     if end_ms is not None:
         params["endTime"] = end_ms
-    with httpx.Client(timeout=settings.instrument_api_timeout_seconds) as client:
-        response = client.get(settings.binance_klines_url, params=params)
-        response.raise_for_status()
-        return response.json()
+    try:
+        with httpx.Client(timeout=settings.instrument_api_timeout_seconds) as client:
+            response = client.get(settings.binance_klines_url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as error:
+        record_market_source_runtime("binance", status="failed", provider="Binance", error=str(error))
+        raise
+    record_market_source_runtime("binance", status="healthy", provider="Binance")
+    return payload
 
 
 @resilient_tool(
@@ -190,10 +311,15 @@ def _load_eia_wti_prices(start_date: date, end_date: date) -> list[dict]:
         "offset": 0,
         "length": 5000,
     }
-    with httpx.Client(timeout=settings.instrument_api_timeout_seconds) as client:
-        response = client.get(url, params=params)
-        response.raise_for_status()
-        payload = response.json()
+    try:
+        with httpx.Client(timeout=settings.instrument_api_timeout_seconds) as client:
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as error:
+        record_market_source_runtime("eia", status="failed", provider="EIA", error=str(error))
+        raise
+    record_market_source_runtime("eia", status="healthy", provider="EIA")
     return list((payload.get("response") or {}).get("data") or [])
 
 

@@ -68,3 +68,29 @@ class IntelligenceFeedResponse(BaseModel):
     items: list[IntelligenceFeedItem]
     total: int
     context: IntelligenceFeedContext
+
+
+class IntelligenceDigestMetrics(BaseModel):
+    signal_count: int
+    personalized_count: int
+    source_count: int
+    ticker_count: int
+    opinion_count: int
+    news_count: int
+    risk_count: int
+    reversal_count: int
+    corroborated_count: int
+
+
+class IntelligenceDigestResponse(BaseModel):
+    status: str
+    title: str
+    executive_summary: str
+    generated_at: datetime
+    period_start: datetime
+    period_end: datetime
+    metrics: IntelligenceDigestMetrics
+    highlights: list[IntelligenceFeedItem]
+    attention: list[IntelligenceFeedItem]
+    context: IntelligenceFeedContext
+    methodology: str

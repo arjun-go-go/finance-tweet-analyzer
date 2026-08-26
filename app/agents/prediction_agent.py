@@ -16,13 +16,81 @@
     避免同一篇推文被重复处理时产生重复预测。
 """
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.schemas.signal import TickerSummary
 from app.services.instrument_resolver import is_downstream_verified_ticker
 
 # 投资周期 → 验证天数映射
 HORIZON_DAYS = {"short": 7, "medium": 30, "long": 180, "unknown": 30}
+PREDICTION_RULE_VERSION = "prediction_eligibility_v2"
+PREDICTION_MIN_CONFIDENCE = 0.65
+
+
+def _ticker_prediction_rejection_reason(ticker: dict) -> str | None:
+    if not is_downstream_verified_ticker(ticker):
+        return "instrument_not_verified"
+    if ticker.get("sentiment") not in {"bullish", "bearish"}:
+        return "direction_missing"
+    if ticker.get("mention_type") not in {"prediction", "recommendation"}:
+        return "mention_not_predictive"
+    if ticker.get("horizon") not in {"short", "medium", "long"}:
+        return "horizon_missing"
+    if not ticker.get("evidence"):
+        return "ticker_evidence_missing"
+    return None
+
+
+def evaluate_prediction_eligibility(
+    analysis: dict,
+    tweet: dict | None = None,
+) -> dict:
+    """Return the deterministic and auditable prediction creation decision."""
+    reason_codes: list[str] = []
+    if not (
+        analysis.get("is_investment_relevant")
+        or analysis.get("is_investment_related")
+    ):
+        reason_codes.append("not_investment_relevant")
+    if float(analysis.get("confidence") or 0) < PREDICTION_MIN_CONFIDENCE:
+        reason_codes.append("analysis_confidence_below_threshold")
+    if analysis.get("is_prediction") is not True:
+        reason_codes.append("not_future_prediction")
+    if analysis.get("statement_type") not in {"prediction", "recommendation"}:
+        reason_codes.append("statement_type_not_predictive")
+    if analysis.get("opinion_source") != "author":
+        reason_codes.append("opinion_not_author")
+    if analysis.get("is_sponsored") is True:
+        reason_codes.append("sponsored_content")
+    if (tweet or {}).get("tweet_type") == "retweet":
+        reason_codes.append("pure_retweet")
+    if not (analysis.get("text_evidence") or analysis.get("media_evidence")):
+        reason_codes.append("grounding_evidence_missing")
+
+    eligible_tickers: list[str] = []
+    rejected_tickers: list[dict] = []
+    for ticker in analysis.get("tickers") or []:
+        if not isinstance(ticker, dict):
+            rejected_tickers.append({"symbol": "", "reason_code": "invalid_ticker_object"})
+            continue
+        reason = _ticker_prediction_rejection_reason(ticker)
+        symbol = str(ticker.get("symbol") or "").upper()
+        if reason:
+            rejected_tickers.append({"symbol": symbol, "reason_code": reason})
+        elif symbol and symbol not in eligible_tickers:
+            eligible_tickers.append(symbol)
+    if not eligible_tickers:
+        reason_codes.append("no_eligible_instrument")
+
+    return {
+        "rule_version": PREDICTION_RULE_VERSION,
+        "eligible": not reason_codes,
+        "reason_codes": reason_codes,
+        "eligible_tickers": eligible_tickers,
+        "rejected_tickers": rejected_tickers,
+        "minimum_confidence": PREDICTION_MIN_CONFIDENCE,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def prediction_agent_node(state: dict) -> dict:
@@ -171,30 +239,24 @@ def _generate_predictions(analyses: list[dict], tweets: list[dict]) -> list[dict
     )
 
     for analysis in sorted_analyses:
-        # 跳过非投资相关
-        if not analysis.get("is_investment_related"):
-            continue
-        # 跳过低置信度
-        if analysis.get("confidence", 0) < 0.5:
+        tweet = tweet_by_id[analysis["tweet_id"]]
+        decision = evaluate_prediction_eligibility(analysis, tweet)
+        if not decision["eligible"]:
             continue
 
-        tweet = tweet_by_id[analysis["tweet_id"]]
         published_at: datetime = tweet["published_at"]
 
         # 为每个 ticker 生成一条预测
         raw_tickers = analysis.get("tickers", []) or []
 
         for ticker_item in raw_tickers:
-            if not is_downstream_verified_ticker(ticker_item):
+            if _ticker_prediction_rejection_reason(ticker_item) is not None:
                 continue
             ticker = ticker_item.get("symbol", "")
             sentiment = ticker_item.get("sentiment", "neutral")
             horizon = ticker_item.get("horizon", "unknown")
 
-            # A prediction must have a direction that can be scored later.
-            # Neutral mentions remain in analysis/ticker summaries, but are not
-            # predictions and must never enter the review queue or hit-rate data.
-            if not ticker or sentiment not in {"bullish", "bearish"}:
+            if not ticker:
                 continue
 
             days = HORIZON_DAYS.get(horizon, 30)
@@ -214,6 +276,10 @@ def _generate_predictions(analyses: list[dict], tweets: list[dict]) -> list[dict
                 "investment_horizon": horizon,
                 "published_at": published_at,
                 "verifiable_at": verifiable_at,
+                "instrument_snapshot": ticker_item,
+                "eligibility_passed": True,
+                "creation_rule_version": PREDICTION_RULE_VERSION,
+                "creation_evidence": decision,
             })
 
     return out

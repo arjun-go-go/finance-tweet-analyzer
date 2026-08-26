@@ -16,6 +16,10 @@ from app.models.tweet import Tweet
 from app.models.tweet_media_asset import TweetMediaAsset
 from app.rag.storage import TweetMediaStorage
 from app.services.outbox_service import enqueue_outbox_event
+from app.services.tweet_state_service import (
+    TweetProcessingState,
+    transition_tweet_state,
+)
 
 
 @resilient_tool(
@@ -95,10 +99,13 @@ def archive_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
     if tweet is None:
         raise ValueError(f"Tweet not found: {tweet_id}")
 
+    transition_tweet_state(tweet, TweetProcessingState.MEDIA_ARCHIVING)
+    db.commit()
+
     sources = _media_sources(tweet.media_urls)
     stats = {"tweet_id": str(tweet.id), "total": len(sources), "downloaded": 0, "skipped": 0, "failed": 0}
     if not sources:
-        tweet.status = "pending"
+        transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
         enqueue_outbox_event(db, "tweet.analysis_requested", {"tweet_id": str(tweet.id)})
         db.commit()
         return stats
@@ -167,8 +174,10 @@ def archive_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         "tweet.media_analyze_requested" if has_archived_media else "tweet.analysis_requested",
         {"tweet_id": str(tweet.id)},
     )
-    if not has_archived_media:
-        tweet.status = "pending"
+    if has_archived_media:
+        transition_tweet_state(tweet, TweetProcessingState.MEDIA_ANALYSIS_PENDING)
+    else:
+        transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
     db.commit()
     return stats
 

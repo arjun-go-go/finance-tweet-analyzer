@@ -33,7 +33,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from app.agents.llm import get_report_llm, get_signal_llm
+from app.agents.llm import get_signal_llm, get_sql_llm
 from app.core.config import settings
 from app.core.deps import SessionLocal
 from app.memory.identity import normalize_user_id
@@ -168,8 +168,6 @@ def sql_classify_node(state: SQLState) -> dict:
 
 class SQLGenResult(BaseModel):
     sql: str = Field(description="生成的 PostgreSQL SELECT 语句。如果无法生成，留空。")
-    thought_process: str = Field(default="", description="分步骤思考：1.意图理解 2.表关联 3.过滤条件 4.排序与限制")
-    confidence: float = Field(default=0.8, description="0.0-1.0 之间的置信度", ge=0.0, le=1.0)
 
 
 def _get_user_context(user_id: str) -> str:
@@ -221,7 +219,7 @@ def generate_sql_node(state: SQLState) -> dict:
     else:
         messages.append(HumanMessage(content=question))
 
-    llm = get_report_llm() if retry_count >= 2 else get_signal_llm()
+    llm = get_sql_llm()
     structured_llm = llm.with_structured_output(SQLGenResult)
 
     try:
@@ -229,7 +227,7 @@ def generate_sql_node(state: SQLState) -> dict:
         logger.info("[SQL] generate (retry={}): {}", retry_count, result.sql[:100] if result.sql else "(empty)")
         return {
             "generated_sql": result.sql,
-            "thought_process": result.thought_process,
+            "thought_process": "",
             "validation_error": "",
             "execution_error": "",
         }
@@ -333,8 +331,11 @@ def execute_sql_node(state: SQLState) -> dict:
             header = " | ".join(str(c) for c in columns)
             lines.append(header)
             lines.append("-" * len(header))
-            for row in rows[:20]:
-                lines.append(" | ".join(str(v) if v is not None else "-" for v in row))
+            for row in rows[:10]:
+                lines.append(" | ".join(
+                    (str(v)[:500] + ("…" if len(str(v)) > 500 else "")) if v is not None else "-"
+                    for v in row
+                ))
 
             return {"result": "\n".join(lines), "execution_error": ""}
 
@@ -404,7 +405,6 @@ def route_after_execution(state: SQLState) -> str:
 def build_sql_agent(checkpointer=None):
     graph = StateGraph(SQLState)
 
-    graph.add_node("sql_classify", sql_classify_node)
     graph.add_node("generate_sql", generate_sql_node)
     graph.add_node("validate_sql", validate_sql_node)
     graph.add_node("execute_sql", execute_sql_node)
@@ -412,8 +412,7 @@ def build_sql_agent(checkpointer=None):
     graph.add_node("clarify", clarify_node)
     graph.add_node("exceed_limit", exceed_limit_node)
 
-    graph.add_edge(START, "sql_classify")
-    graph.add_conditional_edges("sql_classify", route_by_sub_intent, ["generate_sql", "return_schema", "clarify"])
+    graph.add_edge(START, "generate_sql")
     graph.add_edge("generate_sql", "validate_sql")
     graph.add_conditional_edges("validate_sql", route_after_validation, ["execute_sql", "generate_sql", "exceed_limit"])
     graph.add_conditional_edges("execute_sql", route_after_execution)

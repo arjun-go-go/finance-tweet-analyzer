@@ -5,7 +5,7 @@ import Link from "next/link";
 import AppIcon from "@/components/AppIcon";
 import IntelligenceCard from "@/components/IntelligenceCard";
 import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
-import { fetchDashboard, fetchIntelligenceFeed, type IntelligenceFeedItem, type IntelligenceFeedResponse } from "@/lib/api";
+import { fetchDashboard, fetchIntelligenceDigest, fetchIntelligenceFeed, type IntelligenceDigestResponse, type IntelligenceFeedItem, type IntelligenceFeedResponse } from "@/lib/api";
 
 interface DashboardData {
   analyzed_tweets: number;
@@ -22,19 +22,21 @@ const SCORE_LABELS: Record<string, string> = { relevance: "与你相关", freshn
 
 export default function IntelligenceDashboard() {
   const [feed, setFeed] = useState<IntelligenceFeedResponse | null>(null);
+  const [digest, setDigest] = useState<IntelligenceDigestResponse | null>(null);
   const [stats, setStats] = useState<DashboardData | null>(null);
   const [selected, setSelected] = useState<IntelligenceFeedItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [windowRange, setWindowRange] = useState<"24h" | "3d" | "7d">("24h");
-  const [feedKind, setFeedKind] = useState<"all" | "risk" | "opinion">("all");
+  const [feedKind, setFeedKind] = useState<"all" | "risk" | "opinion" | "news">("all");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [feedData, statsData] = await Promise.all([fetchIntelligenceFeed(20, windowRange, feedKind), fetchDashboard()]);
+      const [feedData, digestData, statsData] = await Promise.all([fetchIntelligenceFeed(20, windowRange, feedKind), fetchIntelligenceDigest(), fetchDashboard()]);
       setFeed(feedData);
+      setDigest(digestData);
       setStats(statsData);
       setSelected(feedData.items[0] || null);
     } catch (err) {
@@ -49,16 +51,20 @@ export default function IntelligenceDashboard() {
   if (loading) return <PageLoading label="正在整理今天的市场观点" />;
   if (error || !feed) return <PageError detail={error || "情报接口没有返回数据。"} onRetry={load} />;
 
+  const riskCount = feed.items.filter((item) => item.kind === "risk").length;
+  const opinionCount = feed.items.filter((item) => item.kind === "opinion").length;
+  const corroboratedCount = feed.items.filter((item) => item.corroboration_count > 1).length;
+
   return (
-    <div>
-      <header className="page-header">
+    <div className="intelligence-dashboard-page">
+      <header className="page-header intelligence-hero">
         <div>
           <p className="page-eyebrow">Daily intelligence</p>
           <h1 className="page-title">今日情报</h1>
           <p className="page-subtitle">{formatDate(new Date().toISOString())} · 按重要性整理你关注的博主、标的与市场风险，每条结论都能回到原始证据。</p>
         </div>
         <div className="page-header-actions flex gap-2">
-          <Link href="/tracking" className="button-secondary"><AppIcon name="watchlist" />管理 Watchlist</Link>
+          <Link href="/tracking" className="button-secondary"><AppIcon name="watchlist" />管理标的监控</Link>
           <Link href="/chat" className="button-primary"><AppIcon name="research" />深入研究</Link>
         </div>
       </header>
@@ -70,13 +76,55 @@ export default function IntelligenceDashboard() {
         </div>
         <div className="research-scope-links">
           <Link href="/bloggers"><span>关注博主</span><b>{feed.context.followed_bloggers}</b></Link>
-          <Link href="/tracking"><span>Watchlist</span><b>{feed.context.tracked_tickers}</b></Link>
+          <Link href="/tracking"><span>监控标的</span><b>{feed.context.tracked_tickers}</b></Link>
           <Link href="/tweets?tab=analyzed"><span>已分析</span><b>{stats?.analyzed_tweets ?? 0}</b></Link>
         </div>
       </div>
 
-      <div className="dashboard-grid">
+      {digest && (
+        <section className="daily-digest" aria-label="Twitter 投资情报日报">
+          <div className="daily-digest-copy">
+            <div className="daily-digest-heading">
+              <div>
+                <span>24 小时自动汇总</span>
+                <h2>{digest.title}</h2>
+              </div>
+              <b className={`daily-digest-status is-${digest.status}`}>
+                {digest.status === "ready" ? "已生成" : digest.status === "scope_empty" ? "待完善范围" : "暂无新增"}
+              </b>
+            </div>
+            <p>{digest.executive_summary}</p>
+            <small>{digest.methodology}</small>
+          </div>
+          <div className="daily-digest-metrics">
+            <div><span>有效情报</span><b>{digest.metrics.personalized_count}</b></div>
+            <div><span>独立来源</span><b>{digest.metrics.source_count}</b></div>
+            <div><span>风险线索</span><b>{digest.metrics.risk_count}</b></div>
+            <div><span>观点反转</span><b>{digest.metrics.reversal_count}</b></div>
+          </div>
+          {digest.highlights.length > 0 && (
+            <div className="daily-digest-highlights">
+              <strong>今日重点</strong>
+              {digest.highlights.slice(0, 3).map((item) => (
+                <button key={item.id} onClick={() => setSelected(feed.items.find((candidate) => candidate.id === item.id) || item)}>
+                  <span>@{item.author} · {item.tickers.join(", ") || "市场"}</span>
+                  <b>{item.title}</b>
+                  <i>{item.importance_score}</i>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      <div className={`dashboard-grid ${selected ? "has-selection" : "is-focus"}`}>
         <section className="dashboard-main">
+          <div className="intelligence-briefing" aria-label="本期情报摘要">
+            <div><span>博主有效观点</span><b>{opinionCount}</b></div>
+            <div><span>风险线索</span><b>{riskCount}</b></div>
+            <div><span>多源印证</span><b>{corroboratedCount}</b></div>
+            <p>仅展示投资相关、非赞助且完成来源归因的 Twitter 信息。</p>
+          </div>
           <div className="feed-toolbar">
             <div className="section-heading"><h2>与你相关的重要变化</h2><span>显示 {feed.items.length} / {feed.total} 条候选</span></div>
             <div className="feed-filters">
@@ -84,14 +132,14 @@ export default function IntelligenceDashboard() {
                 {([['24h', '24 小时'], ['3d', '近 3 日'], ['7d', '近 7 日']] as const).map(([value, label]) => <button key={value} className={windowRange === value ? "is-active" : ""} onClick={() => setWindowRange(value)}>{label}</button>)}
               </div>
               <div className="feed-filter-group" aria-label="情报类型">
-                {([['all', '全部'], ['risk', '风险'], ['opinion', '观点']] as const).map(([value, label]) => <button key={value} className={feedKind === value ? "is-active" : ""} onClick={() => setFeedKind(value)}>{label}</button>)}
+                {([['all', '全部'], ['opinion', '观点'], ['risk', '风险'], ['news', '动态']] as const).map(([value, label]) => <button key={value} className={feedKind === value ? "is-active" : ""} onClick={() => setFeedKind(value)}>{label}</button>)}
               </div>
             </div>
           </div>
           {(!feed.context.personalized || feed.context.fallback_to_market) && (
             <div className="feed-mode-notice">
               <AppIcon name="alerts" />
-              <span>{feed.context.fallback_to_market ? "暂时没有匹配关注范围的新内容，以下补充展示市场最新情报。" : "当前展示市场最新情报。关注博主或添加 Watchlist 标的后，首页会切换为个性化情报。"}</span>
+              <span>{feed.context.fallback_to_market ? "暂时没有匹配关注范围的新内容，以下补充展示市场最新情报。" : "当前展示市场最新情报。关注博主或添加监控标的后，首页会切换为个性化情报。"}</span>
               <Link href={feed.context.followed_bloggers === 0 ? "/bloggers" : "/tracking"}>完善研究范围</Link>
             </div>
           )}
@@ -104,10 +152,13 @@ export default function IntelligenceDashboard() {
           )}
         </section>
 
-        <aside className="dashboard-side">
+        <aside className="dashboard-side" id="selected-evidence-panel" aria-live="polite">
           {selected ? (
             <div className="evidence-panel">
-              <div className="evidence-panel-header"><span><AppIcon name="evidence" />Evidence trail</span><strong>{selected.title}</strong></div>
+              <div className="evidence-panel-header">
+                <div><span><AppIcon name="evidence" />Evidence trail</span><strong>{selected.title}</strong></div>
+                <button onClick={() => setSelected(null)} aria-label="关闭证据面板"><AppIcon name="close" /></button>
+              </div>
               <div className="evidence-panel-body">
                 <div className="evidence-source"><span>@{selected.evidence.author}</span><span>{selected.time_bucket} · 置信度 {Math.round(selected.confidence * 100)}%</span></div>
                 <p className="evidence-excerpt">{selected.evidence.excerpt}</p>

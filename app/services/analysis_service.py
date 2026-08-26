@@ -14,6 +14,11 @@ from app.models.tweet import Tweet
 from app.models.tweet_media_analysis import TweetMediaAnalysis
 from app.services.instrument_resolver import resolve_analysis_tickers
 from app.services.trace_service import write_trace_immediate
+from app.services.tweet_context_service import build_tweet_contexts
+from app.services.tweet_state_service import (
+    TweetProcessingState,
+    transition_tweet_state,
+)
 
 BATCH_SIZE = 10
 
@@ -25,16 +30,16 @@ def analysis_eligible_clause(now: datetime | None = None):
         seconds=settings.analysis_processing_timeout_seconds
     )
     return or_(
-        Tweet.status == "pending",
+        Tweet.status == TweetProcessingState.ANALYSIS_PENDING.value,
         and_(
-            Tweet.status == "retrying",
+            Tweet.status == TweetProcessingState.RETRYING.value,
             or_(
                 Tweet.analysis_next_retry_at.is_(None),
                 Tweet.analysis_next_retry_at <= current,
             ),
         ),
         and_(
-            Tweet.status == "analyzing",
+            Tweet.status == TweetProcessingState.ANALYZING.value,
             or_(
                 Tweet.analysis_started_at.is_(None),
                 Tweet.analysis_started_at <= stale_before,
@@ -44,7 +49,7 @@ def analysis_eligible_clause(now: datetime | None = None):
 
 
 def reset_analysis_state(tweet: Tweet) -> None:
-    tweet.status = "pending"
+    transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
     tweet.analysis_attempts = 0
     tweet.analysis_last_error = None
     tweet.analysis_next_retry_at = None
@@ -155,7 +160,7 @@ def _mark_successful_tweets(
         tweet for tweet in tweets if str(tweet.id) in successful_ids
     ]
     for tweet in successful_tweets:
-        tweet.status = "analyzed"
+        transition_tweet_state(tweet, TweetProcessingState.ANALYZED)
         tweet.analysis_last_error = None
         tweet.analysis_next_retry_at = None
         tweet.analysis_started_at = None
@@ -166,7 +171,7 @@ def _mark_successful_tweets(
 def _mark_analysis_started(tweets: list[Tweet]) -> None:
     started_at = datetime.now(timezone.utc)
     for tweet in tweets:
-        tweet.status = "analyzing"
+        transition_tweet_state(tweet, TweetProcessingState.ANALYZING)
         tweet.analysis_attempts = (tweet.analysis_attempts or 0) + 1
         tweet.analysis_last_error = None
         tweet.analysis_next_retry_at = None
@@ -189,7 +194,12 @@ def _mark_analysis_failed(
         tweet.analysis_started_at = None
         tweet.analysis_completed_at = None
         if attempts >= settings.analysis_max_attempts:
-            tweet.status = "failed"
+            transition_tweet_state(
+                tweet,
+                TweetProcessingState.FAILED,
+                failure_stage="text_analysis",
+                error=error_text,
+            )
             tweet.analysis_next_retry_at = None
             failed += 1
             continue
@@ -198,7 +208,12 @@ def _mark_analysis_failed(
             settings.analysis_retry_base_seconds * (2 ** max(attempts - 1, 0)),
             settings.analysis_retry_max_seconds,
         )
-        tweet.status = "retrying"
+        transition_tweet_state(
+            tweet,
+            TweetProcessingState.RETRYING,
+            failure_stage="text_analysis",
+            error=error_text,
+        )
         tweet.analysis_next_retry_at = current + timedelta(seconds=delay_seconds)
         retrying += 1
     return retrying, failed
@@ -252,6 +267,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             )
         ).scalars().all()
         media_context_by_tweet = {row.tweet_id: row.result for row in media_rows if row.result}
+        conversation_context_by_tweet = build_tweet_contexts(db, batch_tweets)
         tweet_dicts = [
             {
                 "id": str(t.id),
@@ -259,6 +275,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 "author_handle": t.author_handle,
                 "published_at": t.published_at,
                 "media_context": media_context_by_tweet.get(t.id),
+                "conversation_context": conversation_context_by_tweet.get(t.id, {}),
             }
             for t in batch_tweets
         ]
@@ -298,6 +315,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             tweet_id_str = analysis.pop("tweet_id")
             author = analysis.pop("author_handle")
             tid = uuid.UUID(tweet_id_str)
+            analysis["analysis_schema_version"] = settings.user_analysis_pipeline_version
 
             existing = db.execute(
                 select(AnalysisResult).where(
@@ -312,6 +330,8 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 existing.confidence = analysis.get("confidence", 0.0)
                 existing.batch_id = batch_id
                 existing.prediction_status = "pending"
+                existing.prediction_decision = None
+                existing.pipeline_version = settings.user_analysis_pipeline_version
                 analysis_result_ids.append(existing.id)
                 db.execute(
                     delete(Prediction).where(Prediction.tweet_id == tid)
@@ -327,6 +347,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                     confidence=analysis.get("confidence", 0.0),
                     batch_id=batch_id,
                     prediction_status="pending",
+                    pipeline_version=settings.user_analysis_pipeline_version,
                 ))
                 analysis_result_ids.append(analysis_result_id)
 

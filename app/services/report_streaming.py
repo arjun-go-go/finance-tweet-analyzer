@@ -45,7 +45,11 @@ def _publish(report_id: UUID | str, event: str, data: dict) -> None:
     try:
         _get_publisher().publish(
             channel_for(report_id),
-            json.dumps({"event": event, "data": data}, ensure_ascii=False),
+            json.dumps(
+                {"event": event, "data": data},
+                ensure_ascii=False,
+                default=str,
+            ),
         )
     except Exception as e:  # publish 失败不能阻塞主流程
         logger.warning(f"SSE publish failed for {report_id}: {e}")
@@ -91,6 +95,8 @@ def _persist_synthesis(db: Session, report_id: UUID, synthesis: dict, latency_ms
         )
     )
     db.commit()
+    from app.services.tracking_service import finish_tracking_report
+    finish_tracking_report(db, report_id, success=True)
 
 
 def _persist_failure(db: Session, report_id: UUID, error: str) -> None:
@@ -101,6 +107,8 @@ def _persist_failure(db: Session, report_id: UUID, error: str) -> None:
         )
     )
     db.commit()
+    from app.services.tracking_service import finish_tracking_report
+    finish_tracking_report(db, report_id, success=False, error=error)
 
 
 # --- 主入口 ---
@@ -114,9 +122,12 @@ def run_report_streaming(
 ) -> dict:
     """跑流式报告生成，边发 SSE 边写库。返回最终状态摘要。"""
     start = time.perf_counter()
+    from app.services.tracking_service import mark_tracking_report_generating
+    mark_tracking_report_generating(db, report_id)
     _publish(report_id, "start", {"report_id": str(report_id), "status": "generating"})
 
     try:
+        pipeline_error: str | None = None
         for node_name, node_output in generate_report_streaming(str(user_id), query):
             # parse_intent: 推送 intent 解析完成
             if node_name == "parse_intent":
@@ -136,9 +147,10 @@ def run_report_streaming(
             # fuse: RRF 合并完成
             elif node_name == "fuse":
                 fused = node_output.get("fused") or []
+                pipeline_error = node_output.get("error") or pipeline_error
                 _publish(report_id, "fused", {
                     "count": len(fused),
-                    "error": node_output.get("error"),
+                    "error": pipeline_error,
                 })
             # rerank: 精排完成 → 落库 citations + 推送
             elif node_name == "rerank":
@@ -161,6 +173,12 @@ def run_report_streaming(
                     "latency_ms": latency,
                 })
 
+        report = db.get(Report, report_id)
+        if report and report.status != "done":
+            error = pipeline_error or "没有检索到足够证据，无法生成有效简报"
+            _persist_failure(db, report_id, error)
+            _publish(report_id, "error", {"error": error})
+            return {"status": "failed", "report_id": str(report_id), "error": error}
         _publish(report_id, "done", {})
         return {"status": "done", "report_id": str(report_id)}
 

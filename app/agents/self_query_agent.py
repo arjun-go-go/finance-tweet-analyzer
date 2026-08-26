@@ -66,9 +66,15 @@ def _fallback_parse(query: str) -> QueryIntent:
             ticker = t
             break
 
+    range_days = 7
+    range_match = re.search(r"过去\s*(24\s*小时|\d+\s*天)", query)
+    if range_match:
+        raw_range = range_match.group(1).replace(" ", "")
+        range_days = 1 if raw_range == "24小时" else int(raw_range.removesuffix("天"))
+
     return QueryIntent(
         ticker=ticker or "UNKNOWN",
-        time_range_start=now - timedelta(days=7),
+        time_range_start=now - timedelta(days=range_days),
         time_range_end=now,
         focus_aspects=["sentiment", "risk", "technical"],
         keywords=[w for w in query.split() if len(w) > 1],

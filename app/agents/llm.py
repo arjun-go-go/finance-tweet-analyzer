@@ -21,7 +21,10 @@ def get_signal_llm() -> ChatOpenAI:
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         temperature=0.1,
-        timeout=90,
+        timeout=settings.signal_llm_timeout_seconds,
+        max_retries=settings.signal_llm_max_retries,
+        max_completion_tokens=settings.signal_llm_max_completion_tokens,
+        extra_body={"reasoning": {"effort": settings.signal_llm_reasoning_effort}},
         http_client=httpx.Client(proxy=settings.http_proxy),
     )
 
@@ -37,6 +40,20 @@ def get_report_llm() -> ChatOpenAI:
         base_url=settings.openrouter_base_url,
         temperature=0.1,
         timeout=120,
+        http_client=httpx.Client(proxy=settings.http_proxy),
+    )
+
+
+def get_sql_llm() -> ChatOpenAI:
+    """Low-latency Text-to-SQL model with a strict request budget."""
+    return ChatOpenAI(
+        model=settings.signal_model,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        temperature=0.0,
+        timeout=25,
+        max_retries=0,
+        max_completion_tokens=500,
         http_client=httpx.Client(proxy=settings.http_proxy),
     )
 

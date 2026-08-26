@@ -8,15 +8,15 @@ import { logout } from "@/lib/auth";
 
 const primary = [
   { href: "/", label: "今日情报", icon: "pulse" as const },
-  { href: "/tracking", label: "Watchlist", icon: "watchlist" as const },
+  { href: "/alerts", label: "研究提醒", icon: "alerts" as const },
   { href: "/bloggers", label: "信息源", icon: "sources" as const },
+  { href: "/tweets", label: "推文情报", icon: "tweets" as const },
+  { href: "/tracking", label: "关注标的", icon: "watchlist" as const },
   { href: "/chat", label: "研究助手", icon: "research" as const },
-  { href: "/reports", label: "简报", icon: "briefs" as const },
 ];
 
 const library = [
-  { href: "/tweets", label: "推文情报", icon: "tweets" as const },
-  { href: "/documents", label: "私人资料", icon: "documents" as const },
+  { href: "/reports", label: "观点摘要", icon: "briefs" as const },
 ];
 
 function NavLink({ item, active, onClick }: { item: { href: string; label: string; icon: IconName }; active: boolean; onClick?: () => void }) {
@@ -46,7 +46,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <nav className="workspace-nav" aria-label="主导航">
         <p className="workspace-nav-label">工作台</p>
         {primary.map((item) => <NavLink key={item.href} item={item} active={isActive(item.href)} onClick={() => setOpen(false)} />)}
-        <p className="workspace-nav-label workspace-nav-label-spaced">资料库</p>
+        <p className="workspace-nav-label workspace-nav-label-spaced">研究输出</p>
         {library.map((item) => <NavLink key={item.href} item={item} active={isActive(item.href)} onClick={() => setOpen(false)} />)}
       </nav>
       <div className="workspace-sidebar-footer">

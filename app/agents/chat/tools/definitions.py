@@ -23,6 +23,13 @@ from app.agents.chat.tools.analysis_jobs import (
     confirm_tweet_analysis_impl as _confirm_tweet_analysis_impl,
     preview_tweet_analysis_impl as _preview_tweet_analysis_impl,
 )
+from app.agents.chat.tools.business_queries import (
+    get_blogger_overview_impl as _get_blogger_overview_impl,
+    get_blogger_predictions_impl as _get_blogger_predictions_impl,
+    get_blogger_recent_analysis_impl as _get_blogger_recent_analysis_impl,
+    get_prediction_review_summary_impl as _get_prediction_review_summary_impl,
+    get_ticker_predictions_impl as _get_ticker_predictions_impl,
+)
 from app.agents.chat.tools.ingestion import (
     fetch_profile_impl as _fetch_profile_impl,
     fetch_tweets_impl as _fetch_tweets_impl,
@@ -37,6 +44,7 @@ from app.agents.chat.tools.reports import (
 from app.agents.chat.tools.user_resources import (
     list_my_followed_bloggers_impl as _list_my_followed_bloggers_impl,
     list_my_tracked_tickers_impl as _list_my_tracked_tickers_impl,
+    set_blogger_follow_impl as _set_blogger_follow_impl,
 )
 from app.core.config import settings
 from app.core.deps import SessionLocal
@@ -217,6 +225,73 @@ class TrackingReportArgs(BaseModel):
             raise ValueError("ticker 不能为空。")
         return v
 
+
+class BloggerFollowArgs(BaseModel):
+    blogger_handle: str = Field(description="Twitter Handle，不含 @。")
+    action: str = Field(description="follow 或 unfollow。")
+
+    @field_validator("blogger_handle")
+    @classmethod
+    def _validate_follow_handle(cls, v: str) -> str:
+        value = v.strip().lstrip("@")
+        if not _HANDLE_RE.match(value):
+            raise ValueError("无效的 Twitter Handle")
+        return value
+
+    @field_validator("action")
+    @classmethod
+    def _validate_follow_action(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"follow", "unfollow"}:
+            raise ValueError("action 只能是 follow 或 unfollow")
+        return value
+
+
+class BloggerQueryArgs(BaseModel):
+    blogger_handle: str = Field(description="Twitter Handle，不含 @。")
+    limit: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("blogger_handle")
+    @classmethod
+    def _validate_blogger_handle(cls, v: str) -> str:
+        value = v.strip().lstrip("@")
+        if not _HANDLE_RE.match(value):
+            raise ValueError("无效的 Twitter Handle")
+        return value
+
+
+class PredictionQueryArgs(BloggerQueryArgs):
+    status: str = Field(default="all", description="all、pending 或 verified")
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"all", "pending", "verified"}:
+            raise ValueError("status 只能是 all、pending 或 verified")
+        return value
+
+
+class TickerPredictionArgs(BaseModel):
+    ticker: str = Field(description="证券或加密货币代码，例如 NVDA、BTC。")
+    status: str = Field(default="all", description="all、pending 或 verified")
+    limit: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("ticker")
+    @classmethod
+    def _validate_prediction_ticker(cls, v: str) -> str:
+        value = v.strip().upper().lstrip("$")
+        if not re.fullmatch(r"[A-Z0-9.\-]{1,20}", value):
+            raise ValueError("无效的标的代码")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def _validate_prediction_status(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"all", "pending", "verified"}:
+            raise ValueError("status 只能是 all、pending 或 verified")
+        return value
 
 # ============================================================
 # 工具定义
@@ -405,6 +480,56 @@ def query_database(natural_language_query: str, config: RunnableConfig) -> str:
     return _truncate_result(result)
 
 
+@tool(args_schema=BloggerQueryArgs)
+def get_blogger_overview(blogger_handle: str, limit: int = 5) -> str:
+    """查询已入库博主的资料、粉丝、可信度和预测统计；不调用 Twitter API。"""
+    db = SessionLocal()
+    try:
+        return _get_blogger_overview_impl(db, blogger_handle)
+    finally:
+        db.close()
+
+
+@tool(args_schema=BloggerQueryArgs)
+def get_blogger_recent_analysis(blogger_handle: str, limit: int = 5) -> str:
+    """查询已入库博主最近的分析结果和重要观点。"""
+    db = SessionLocal()
+    try:
+        return _get_blogger_recent_analysis_impl(db, blogger_handle, limit)
+    finally:
+        db.close()
+
+
+@tool(args_schema=PredictionQueryArgs)
+def get_blogger_predictions(blogger_handle: str, status: str = "all", limit: int = 5) -> str:
+    """查询某个博主最近的预测、方向和复核状态。"""
+    db = SessionLocal()
+    try:
+        return _get_blogger_predictions_impl(db, blogger_handle, status, limit)
+    finally:
+        db.close()
+
+
+@tool(args_schema=TickerPredictionArgs)
+def get_ticker_predictions(ticker: str, status: str = "all", limit: int = 5) -> str:
+    """查询某个标的最近的博主预测、方向和复核状态。"""
+    db = SessionLocal()
+    try:
+        return _get_ticker_predictions_impl(db, ticker, status, limit)
+    finally:
+        db.close()
+
+
+@tool
+def get_prediction_review_summary() -> str:
+    """查询预测复核的待处理、正确、部分正确、错误和排除数量。"""
+    db = SessionLocal()
+    try:
+        return _get_prediction_review_summary_impl(db)
+    finally:
+        db.close()
+
+
 # ============================================================
 # 工具注册 & ToolNode
 # ------------------------------------------------------------
@@ -418,9 +543,9 @@ def generate_tracking_report(
     time_range: str = "1w",
     config: RunnableConfig = None,
 ) -> str:
-    """生成指定金融标的的跟踪报告（基于 RAG 多路召回 + Rerank + LLM 合成）。
+    """生成指定金融标的的 Twitter 博主观点摘要（基于多路召回 + Rerank + LLM 合成）。
 
-    【触发场景】：用户要求生成报告、分析某个标的的最近动态、周报等。
+    【触发场景】：用户要求汇总博主观点、分析某个标的的最近 Twitter 动态、日报或周报等。
     【参数】：ticker 为标的代码（如 TSLA、BTC），time_range 为时间范围（1d/1w/1m）。
     """
     from uuid import UUID
@@ -478,7 +603,12 @@ def search_public_signals(query: str, source_type: str = "analysis", blogger: st
       - query_database 查的是结构化 SQL 数据库（analysis_results / tweets 表）
       - 此工具查的是向量语义库 public_signals，适合找"意思相近"的内容
     """
-    return _search_public_signals_impl(query, source_type, blogger)
+    user_id_value = ((config or {}).get("metadata") or {}).get("user_id")
+    try:
+        user_id = UUID(user_id_value)
+    except (TypeError, ValueError, AttributeError):
+        user_id = None
+    return _search_public_signals_impl(query, source_type, blogger, user_id)
 
 @tool
 def list_my_tracked_tickers(config: RunnableConfig = None) -> str:
@@ -520,6 +650,29 @@ def list_my_followed_bloggers(config: RunnableConfig = None) -> str:
     db = SessionLocal()
     try:
         return _list_my_followed_bloggers_impl(db, user_id)
+    finally:
+        db.close()
+
+
+@tool(args_schema=BloggerFollowArgs)
+def set_blogger_follow(
+    blogger_handle: str,
+    action: str,
+    config: RunnableConfig = None,
+) -> str:
+    """将已入库博主加入或移出当前用户的正式关注列表。"""
+    try:
+        user_id = UUID(_get_authenticated_user_id(config))
+    except (TypeError, ValueError, AttributeError):
+        return "用户身份无效，无法修改正式关注列表。"
+    db = SessionLocal()
+    try:
+        return _set_blogger_follow_impl(
+            db,
+            user_id,
+            blogger_handle,
+            follow=action == "follow",
+        )
     finally:
         db.close()
 
@@ -592,7 +745,9 @@ def confirm_tweet_analysis(task_id: str, config: RunnableConfig = None) -> str:
 tools = [
     fetch_and_save_profile, fetch_and_save_tweets,
     preview_tweet_analysis, confirm_tweet_analysis,
+    get_blogger_overview, get_blogger_recent_analysis,
+    get_blogger_predictions, get_ticker_predictions, get_prediction_review_summary,
     query_database, search_public_signals,
     generate_tracking_report, search_my_documents, list_my_tracked_tickers,
-    list_my_followed_bloggers,
+    list_my_followed_bloggers, set_blogger_follow,
 ]

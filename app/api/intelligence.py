@@ -6,18 +6,28 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.core.deps import get_db
 from app.models.user import User
-from app.schemas.intelligence import IntelligenceFeedResponse
-from app.services.intelligence_service import build_user_intelligence_feed
+from app.schemas.intelligence import IntelligenceDigestResponse, IntelligenceFeedResponse
+from app.services.intelligence_service import build_user_daily_digest, build_user_intelligence_feed
 
 
 router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
+
+
+@router.get("/digest", response_model=IntelligenceDigestResponse)
+def get_daily_digest(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> IntelligenceDigestResponse:
+    return IntelligenceDigestResponse.model_validate(
+        build_user_daily_digest(db, current_user.id)
+    )
 
 
 @router.get("/feed", response_model=IntelligenceFeedResponse)
 def get_intelligence_feed(
     limit: int = Query(20, ge=1, le=50),
     window: Literal["24h", "3d", "7d"] = Query("24h"),
-    kind: Literal["all", "risk", "opinion"] = Query("all"),
+    kind: Literal["all", "risk", "opinion", "news"] = Query("all"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> IntelligenceFeedResponse:

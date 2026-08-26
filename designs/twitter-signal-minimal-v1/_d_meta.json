@@ -1,0 +1,48 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "极简投资情报原型": {
+      "versions": [
+        {
+          "path": "极简投资情报原型.html",
+          "createdAt": "2026-08-26T04:02:00.207Z",
+          "status": "needs-review"
+        },
+        {
+          "path": "极简投资情报原型 v2.html",
+          "createdAt": "2026-08-26T04:27:08.524Z",
+          "status": "needs-review"
+        },
+        {
+          "path": "极简投资情报原型 v3.html",
+          "createdAt": "2026-08-26T04:42:38.674Z",
+          "status": "needs-review"
+        },
+        {
+          "path": "极简投资情报完整原型 v4.html",
+          "createdAt": "2026-08-26T05:07:56.052Z",
+          "status": "needs-review",
+          "subtitle": "完整 C 端产品原型：首次体验、四大主页面、详情页、系统入口与关键状态",
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "path": "极简投资情报完整原型 v5.html",
+          "createdAt": "2026-08-26T05:42:10.372Z",
+          "status": "needs-review",
+          "subtitle": "完整闭环 C 端原型：助手全状态、Thread 与多图证据、预测四态、管理操作、异常恢复与账户设置",
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-08-26T04:02:00.208Z",
+  "updatedAt": "2026-08-26T05:42:10.375Z"
+}

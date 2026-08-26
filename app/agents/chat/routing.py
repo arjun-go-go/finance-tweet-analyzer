@@ -1,30 +1,40 @@
 from __future__ import annotations
 
+import re
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 READ_ONLY_TOOL_NAMES = [
+    "get_blogger_overview",
+    "get_blogger_recent_analysis",
+    "get_blogger_predictions",
+    "get_ticker_predictions",
+    "get_prediction_review_summary",
     "query_database",
     "search_public_signals",
     "search_my_documents",
     "list_my_tracked_tickers",
     "list_my_followed_bloggers",
 ]
-INGEST_TOOL_NAMES = READ_ONLY_TOOL_NAMES + [
-    "fetch_and_save_profile",
-    "fetch_and_save_tweets",
-]
-INGEST_PROFILE_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["fetch_and_save_profile"]
-INGEST_TWEET_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["fetch_and_save_tweets"]
-ANALYSIS_TOOL_NAMES = READ_ONLY_TOOL_NAMES + [
-    "preview_tweet_analysis",
-    "confirm_tweet_analysis",
-]
-ANALYSIS_PREVIEW_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["preview_tweet_analysis"]
-ANALYSIS_CONFIRM_TOOL_NAMES = READ_ONLY_TOOL_NAMES + ["confirm_tweet_analysis"]
-REPORT_TOOL_NAMES = READ_ONLY_TOOL_NAMES + [
-    "generate_tracking_report",
-]
+INGEST_TOOL_NAMES = ["fetch_and_save_profile", "fetch_and_save_tweets"]
+BLOGGER_OVERVIEW_TOOL_NAMES = ["get_blogger_overview"]
+BLOGGER_ANALYSIS_TOOL_NAMES = ["get_blogger_recent_analysis"]
+BLOGGER_PREDICTION_TOOL_NAMES = ["get_blogger_predictions"]
+TICKER_PREDICTION_TOOL_NAMES = ["get_ticker_predictions"]
+PREDICTION_REVIEW_TOOL_NAMES = ["get_prediction_review_summary"]
+FOLLOW_TOOL_NAMES = ["set_blogger_follow"]
+INGEST_PROFILE_TOOL_NAMES = ["fetch_and_save_profile"]
+INGEST_TWEET_TOOL_NAMES = ["fetch_and_save_tweets"]
+ANALYSIS_TOOL_NAMES = ["preview_tweet_analysis", "confirm_tweet_analysis"]
+ANALYSIS_PREVIEW_TOOL_NAMES = ["preview_tweet_analysis"]
+ANALYSIS_CONFIRM_TOOL_NAMES = ["confirm_tweet_analysis"]
+REPORT_TOOL_NAMES = ["generate_tracking_report"]
+PUBLIC_SIGNAL_TOOL_NAMES = ["search_public_signals"]
+PRIVATE_DOCUMENT_TOOL_NAMES = ["search_my_documents"]
+DATABASE_QUERY_TOOL_NAMES = ["query_database"]
+FOLLOWED_BLOGGER_TOOL_NAMES = ["list_my_followed_bloggers"]
+TRACKED_TICKER_TOOL_NAMES = ["list_my_tracked_tickers"]
 
 
 def latest_human_text(state: dict) -> str:
@@ -58,6 +68,36 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
     normalized = text.lower().strip()
     normalized_context = context_text.lower()
 
+    handle_match = re.search(r"@([A-Za-z0-9_]{1,15})", text)
+    plain_handle_match = re.search(r"(?:博主|kol)\s+([A-Za-z0-9_]{1,15})", text, re.IGNORECASE)
+    has_handle = bool(handle_match or plain_handle_match)
+    if any(word in normalized for word in ("预测复核概况", "预测复核统计", "待复核预测", "prediction review")):
+        return "prediction_review", PREDICTION_REVIEW_TOOL_NAMES
+    if has_handle and any(word in normalized for word in ("最近分析", "分析结果", "分析观点", "重要观点", "recent analysis")):
+        return "blogger_analysis", BLOGGER_ANALYSIS_TOOL_NAMES
+    if has_handle and any(word in normalized for word in ("预测", "命中", "胜率", "predictions")):
+        return "blogger_predictions", BLOGGER_PREDICTION_TOOL_NAMES
+    if (
+        has_handle
+        and any(word in normalized for word in ("资料", "简介", "粉丝", "可信度", "主页", "档案", "profile"))
+        and not any(word in normalized for word in ("更新", "获取最新", "同步"))
+    ):
+        return "blogger_overview", BLOGGER_OVERVIEW_TOOL_NAMES
+    if not has_handle and any(word in normalized for word in ("预测", "prediction")) and re.search(r"(?:\$)?[A-Z]{2,10}\b", text):
+        return "ticker_predictions", TICKER_PREDICTION_TOOL_NAMES
+
+    if any(word in normalized for word in ("我关注的博主", "关注了哪些博主", "我的博主", "关注列表")):
+        return "followed_bloggers", FOLLOWED_BLOGGER_TOOL_NAMES
+    if any(word in normalized for word in ("关注标的", "订阅标的", "我的标的", "watchlist")):
+        return "tracked_tickers", TRACKED_TICKER_TOOL_NAMES
+    if any(word in normalized for word in ("私人文档", "私人资料", "我上传的", "我的文档", "文档里")):
+        return "private_documents", PRIVATE_DOCUMENT_TOOL_NAMES
+
+    if re.search(r"(?:取消关注|不再关注|unfollow)\s*@?[A-Za-z0-9_]{1,15}", normalized):
+        return "follow", FOLLOW_TOOL_NAMES
+    if re.search(r"(?:正式关注|加入.*关注列表|关注博主|(?:^|\s)关注|follow)\s*@?[A-Za-z0-9_]{1,15}", normalized):
+        return "follow", FOLLOW_TOOL_NAMES
+
     confirmation_words = ("确认", "好的", "可以", "执行", "开始", "go ahead", "confirm")
     confirmation_phrases = (
         "确认提交",
@@ -83,7 +123,7 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
     report_words = ("报告", "日报", "周报", "跟踪报告", "生成报告", "report")
     report_actions = ("生成", "写", "做", "创建", "出", "给我", "generate", "create", "write")
     if any(neg in normalized for neg in negation_words) and any(word in normalized for word in report_words):
-        return "read_only", READ_ONLY_TOOL_NAMES
+        return "public_signals", PUBLIC_SIGNAL_TOOL_NAMES
 
     ingest_negations = (
         "不要抓取",
@@ -98,7 +138,7 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
         "do not fetch",
     )
     if any(phrase in normalized for phrase in ingest_negations):
-        return "read_only", READ_ONLY_TOOL_NAMES
+        return "public_signals", PUBLIC_SIGNAL_TOOL_NAMES
 
     if any(word in normalized for word in report_words) and (
         "report" in normalized or any(action in normalized for action in report_actions)
@@ -132,9 +172,6 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
         return "analysis", ANALYSIS_PREVIEW_TOOL_NAMES
 
     profile_words = (
-        "主页信息",
-        "主页资料",
-        "个人简介",
         "更新资料",
         "获取资料",
         "最新资料",
@@ -159,7 +196,15 @@ def classify_tool_route(text: str, context_text: str = "") -> tuple[str, list[st
     if any(word in normalized for word in ingest_words):
         return "ingest", INGEST_TWEET_TOOL_NAMES
 
-    return "read_only", READ_ONLY_TOOL_NAMES
+    if any(word in normalized for word in (
+        "博主排行", "粉丝排名", "历史统计", "总共有多少", "数据库", "跨博主统计",
+    )):
+        return "database_query", DATABASE_QUERY_TOOL_NAMES
+    if any(word in normalized for word in (
+        "观点", "怎么看", "市场情绪", "风险信号", "最近消息", "相关推文", "twitter", "推文",
+    )) or re.search(r"(?:\$)?[A-Z]{2,10}\b", text):
+        return "public_signals", PUBLIC_SIGNAL_TOOL_NAMES
+    return "conversation", []
 
 
 def has_explicit_report_confirmation(message: str, ticker: str) -> bool:
