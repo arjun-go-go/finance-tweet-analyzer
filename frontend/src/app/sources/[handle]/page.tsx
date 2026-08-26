@@ -12,7 +12,6 @@ import {
   fetchBloggerIngestionStatus,
   fetchBloggerPredictions,
   fetchTweets,
-  listMyBloggers,
   toggleBloggerFetch,
   unfollowBlogger,
   type BloggerIngestionStatus,
@@ -119,18 +118,17 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
     setLoading(true);
     setError("");
     try {
-      const [detailData, tweetData, ingestionData, followedData] = await Promise.all([
+      const [detailData, tweetData, ingestionData] = await Promise.all([
         fetchBloggerDetail(decodedHandle),
         fetchTweets({ blogger: decodedHandle, include_analysis: true, limit: 20 }),
         fetchBloggerIngestionStatus(decodedHandle).catch(() => null),
-        listMyBloggers().catch(() => ({ items: [], total: 0 })),
       ]);
       const bloggerDetail = detailData as BloggerDetail;
       setDetail(bloggerDetail);
       setTweets((tweetData.items ?? []) as BloggerTweet[]);
       setTweetTotal(tweetData.total ?? 0);
       setIngestion(ingestionData);
-      setIsFollowed(followedData.items.some((item) => item.id === bloggerDetail.id));
+      setIsFollowed(Boolean(ingestionData));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "信息源加载失败");
     } finally {
