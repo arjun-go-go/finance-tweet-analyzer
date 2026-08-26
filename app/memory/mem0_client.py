@@ -5,8 +5,8 @@ mem0 长期记忆客户端单例（自托管 OSS 模式）
   - 使用 mem0 OSS `Memory` 类，全部基础设施自托管
   - LLM：OpenRouter（OpenAI 兼容接口）
   - Embedder：DashScope text-embedding（OpenAI 兼容接口）
-  - 向量存储：独立 ChromaDB 目录（与 RAG 的 chroma_db 隔离）
-  - 历史记录：本地 SQLite（mem0_history.db）
+  - 向量存储：独立 Milvus collection（或本地 Chroma 兼容模式）
+  - 历史记录与最近消息：本地 SQLite（mem0_history.db）
   - 单例保证整个进程只初始化一次
   - mem0_enabled=False 时返回 None，调用方需判断
 
@@ -25,6 +25,9 @@ import threading
 from loguru import logger
 
 from app.core.config import settings
+
+# mem0 在模块导入时读取此变量；必须先设置，避免创建遥测专用 collection。
+os.environ.setdefault("MEM0_TELEMETRY", "false")
 
 try:
     from mem0 import Memory
@@ -105,7 +108,6 @@ def get_mem0_client():
             return None
 
         try:
-            os.environ["MEM0_TELEMETRY_ENABLED"] = "0"
             cfg = _build_config()
             _mem0_client_singleton = Memory.from_config(cfg)
             logger.info(
