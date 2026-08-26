@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 import AppIcon from "@/components/AppIcon";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import PredictionCard, { PredictionItem } from "@/components/PredictionCard";
 import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
 import { MetricStrip, SegmentedControl } from "@/components/WorkspacePage";
@@ -11,12 +12,15 @@ import {
   fetchBloggerIngestionStatus,
   fetchBloggerPredictions,
   fetchTweets,
+  listMyBloggers,
   toggleBloggerFetch,
+  unfollowBlogger,
   type BloggerIngestionStatus,
 } from "@/lib/api";
 import { formatDate } from "@/lib/datetime";
 
 interface BloggerDetail {
+  id: string;
   handle: string;
   name: string;
   bio: string | null;
@@ -106,20 +110,27 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
   const [fetchToggling, setFetchToggling] = useState(false);
   const [fetchNotice, setFetchNotice] = useState("");
   const [ingestion, setIngestion] = useState<BloggerIngestionStatus | null>(null);
+  const [isFollowed, setIsFollowed] = useState(false);
+  const [showUnfollowConfirm, setShowUnfollowConfirm] = useState(false);
+  const [unfollowing, setUnfollowing] = useState(false);
+  const [unfollowNotice, setUnfollowNotice] = useState("");
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [detailData, tweetData, ingestionData] = await Promise.all([
+      const [detailData, tweetData, ingestionData, followedData] = await Promise.all([
         fetchBloggerDetail(decodedHandle),
         fetchTweets({ blogger: decodedHandle, include_analysis: true, limit: 20 }),
         fetchBloggerIngestionStatus(decodedHandle).catch(() => null),
+        listMyBloggers().catch(() => ({ items: [], total: 0 })),
       ]);
-      setDetail(detailData as BloggerDetail);
+      const bloggerDetail = detailData as BloggerDetail;
+      setDetail(bloggerDetail);
       setTweets((tweetData.items ?? []) as BloggerTweet[]);
       setTweetTotal(tweetData.total ?? 0);
       setIngestion(ingestionData);
+      setIsFollowed(followedData.items.some((item) => item.id === bloggerDetail.id));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "信息源加载失败");
     } finally {
@@ -181,6 +192,22 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
     }
   };
 
+  const handleUnfollow = async () => {
+    if (!detail) return;
+    setShowUnfollowConfirm(false);
+    setUnfollowing(true);
+    setUnfollowNotice("");
+    try {
+      await unfollowBlogger(detail.id);
+      setIsFollowed(false);
+      setUnfollowNotice("已取消关注；该信息源已移出你的研究范围，历史内容仍会保留。");
+    } catch (unfollowError) {
+      setUnfollowNotice(unfollowError instanceof Error ? unfollowError.message : "取消关注失败，请稍后重试。");
+    } finally {
+      setUnfollowing(false);
+    }
+  };
+
   if (loading) return <PageLoading label="正在整理信息源档案" />;
   if (error || !detail) return <PageError detail={error || "博主不存在或加载失败"} onRetry={loadOverview} />;
 
@@ -206,7 +233,11 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
           <i />{fetchToggling ? "更新中…" : detail.fetch_enabled ? "定时抓取中" : "定时抓取已暂停"}
         </button>
         <a className="button-secondary" href={detail.profile_url || `https://x.com/${cleanHandle}`} target="_blank" rel="noreferrer">查看 Twitter <AppIcon name="external" /></a>
+        {isFollowed && <button className="source-unfollow-button" type="button" onClick={() => setShowUnfollowConfirm(true)} disabled={unfollowing}>
+          {unfollowing ? "处理中…" : "取消关注"}
+        </button>}
         {fetchNotice && <span className="source-fetch-notice">{fetchNotice}</span>}
+        {unfollowNotice && <span className="source-fetch-notice">{unfollowNotice}</span>}
       </div>
     </section>
 
@@ -272,5 +303,14 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
           : <div className="grid gap-4">{predictions.map((prediction) => <PredictionCard key={prediction.id} prediction={prediction} onChanged={handleVerified} />)}</div>}
       {predictionTotal > 0 && <p className="source-result-count">共 {predictionTotal} 条</p>}
     </section>}
+    <ConfirmDialog
+      open={showUnfollowConfirm}
+      title="取消关注信息源"
+      message={`取消关注 @${cleanHandle} 后，它将不再进入你的今日情报和助手研究范围。历史推文会保留，定时抓取设置不会改变。`}
+      confirmText="取消关注"
+      variant="danger"
+      onConfirm={handleUnfollow}
+      onCancel={() => setShowUnfollowConfirm(false)}
+    />
   </div>;
 }

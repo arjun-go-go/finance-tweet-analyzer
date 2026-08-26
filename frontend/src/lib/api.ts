@@ -699,6 +699,16 @@ export async function listMyBloggers(): Promise<FollowedBloggerListResponse> {
   return res.json() as Promise<FollowedBloggerListResponse>;
 }
 
+export async function unfollowBlogger(bloggerId: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/api/me/bloggers/${bloggerId}/follow`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(data, "取消关注失败，请稍后重试"));
+  }
+}
+
 export interface Conversation {
   id: string;
   user_id: string;

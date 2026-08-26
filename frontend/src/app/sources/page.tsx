@@ -5,11 +5,13 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import AppIcon from "@/components/AppIcon";
 import BloggerCard, { type BloggerListItem } from "@/components/BloggerCard";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import {
   fetchBloggerIngestionStatus,
   fetchBloggers,
   listMyBloggers,
   onboardBlogger,
+  unfollowBlogger,
   type BloggerIngestionStage,
   type BloggerIngestionStatus,
   type BloggerOnboardResult,
@@ -43,6 +45,9 @@ export default function BloggersListPage() {
   const [onboarded, setOnboarded] = useState<BloggerOnboardResult | null>(null);
   const [ingestion, setIngestion] = useState<BloggerIngestionStatus | null>(null);
   const [filter, setFilter] = useState<SourceFilter>("all");
+  const [unfollowTarget, setUnfollowTarget] = useState<BloggerListItem | null>(null);
+  const [unfollowingId, setUnfollowingId] = useState<string | null>(null);
+  const [unfollowNotice, setUnfollowNotice] = useState<{ kind: "success" | "error"; message: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -140,6 +145,26 @@ export default function BloggersListPage() {
     }
   };
 
+  const confirmUnfollow = async () => {
+    if (!unfollowTarget) return;
+    const target = unfollowTarget;
+    setUnfollowTarget(null);
+    setUnfollowingId(target.id);
+    setUnfollowNotice(null);
+    try {
+      await unfollowBlogger(target.id);
+      setItems((current) => current.filter((item) => item.id !== target.id));
+      setUnfollowNotice({ kind: "success", message: `已取消关注 @${target.handle.replace(/^@/, "")}。` });
+    } catch (unfollowError) {
+      setUnfollowNotice({
+        kind: "error",
+        message: unfollowError instanceof Error ? unfollowError.message : "取消关注失败，请稍后重试。",
+      });
+    } finally {
+      setUnfollowingId(null);
+    }
+  };
+
   return <div className="product-page source-library-page">
     <WorkspacePageHeader
       eyebrow="Source Intelligence"
@@ -164,11 +189,30 @@ export default function BloggersListPage() {
       </div>
       <span>{visibleItems.length} 位博主</span>
     </div>
+    {unfollowNotice && <div className={`source-library-notice is-${unfollowNotice.kind}`} role="status">
+      <span>{unfollowNotice.message}</span>
+      <button type="button" onClick={() => setUnfollowNotice(null)} aria-label="关闭提示"><AppIcon name="close" /></button>
+    </div>}
     {loading ? <PageLoading label="正在整理信息源" />
       : error ? <PageError detail={error} onRetry={load} />
         : items.length === 0 ? <PageEmpty title={scope === "followed" ? "还没有关注 Twitter 博主" : "尚无可评估的信息源"} detail="点击“新增信息源”，输入 Twitter Handle 后会自动关注、抓取并分析。" action={<button className="button-primary mt-3" onClick={() => setShowOnboard(true)}>新增信息源</button>} />
           : visibleItems.length === 0 ? <PageEmpty title="当前筛选下没有信息源" detail="切换其他状态，或新增一个 Twitter 信息源。" />
-            : <div className="source-library-list">{visibleItems.map((blogger) => <BloggerCard key={blogger.handle} blogger={blogger} />)}</div>}
+            : <div className="source-library-list">{visibleItems.map((blogger) => <BloggerCard
+              key={blogger.handle}
+              blogger={blogger}
+              onUnfollow={scope === "followed" ? () => setUnfollowTarget(blogger) : undefined}
+              unfollowing={unfollowingId === blogger.id}
+            />)}</div>}
+
+    <ConfirmDialog
+      open={Boolean(unfollowTarget)}
+      title="取消关注信息源"
+      message={unfollowTarget ? `取消关注 @${unfollowTarget.handle.replace(/^@/, "")} 后，它将不再进入你的今日情报和助手研究范围。历史推文会保留，定时抓取设置不会改变。` : ""}
+      confirmText="取消关注"
+      variant="danger"
+      onConfirm={confirmUnfollow}
+      onCancel={() => setUnfollowTarget(null)}
+    />
 
     {showOnboard && <div className="source-onboard-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeOnboard(); }}>
       <section className="source-onboard-dialog" role="dialog" aria-modal="true" aria-labelledby="source-onboard-title">
