@@ -258,6 +258,22 @@ export interface BloggerOnboardResult {
   initial_fetch_queued: boolean;
 }
 
+export type BloggerIngestionStage = "syncing" | "analyzing" | "ready" | "attention" | "paused";
+
+export interface BloggerIngestionStatus {
+  handle: string;
+  stage: BloggerIngestionStage;
+  message: string;
+  progress: number;
+  fetch_enabled: boolean;
+  last_fetched_at: string | null;
+  last_activity_at: string | null;
+  collected_tweets: number;
+  analyzed_tweets: number;
+  processing_tweets: number;
+  failed_tweets: number;
+}
+
 export async function onboardBlogger(handle: string): Promise<BloggerOnboardResult> {
   const res = await authFetch(`${API_BASE}/api/bloggers/onboard`, {
     method: "POST",
@@ -269,6 +285,15 @@ export async function onboardBlogger(handle: string): Promise<BloggerOnboardResu
     throw new Error(payload?.detail || "新增信息源失败，请稍后重试");
   }
   return res.json() as Promise<BloggerOnboardResult>;
+}
+
+export async function fetchBloggerIngestionStatus(handle: string): Promise<BloggerIngestionStatus> {
+  const res = await authFetch(
+    `${API_BASE}/api/bloggers/${encodeURIComponent(handle)}/ingestion-status`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error("信息源处理状态加载失败");
+  return res.json() as Promise<BloggerIngestionStatus>;
 }
 
 export async function fetchBloggerDetail(handle: string) {
@@ -576,6 +601,14 @@ export interface FollowedBloggerListResponse {
     verified_count: number;
     pending_count: number;
     hit_rate: number | null;
+    fetch_enabled: boolean;
+    last_fetched_at: string | null;
+    last_activity_at: string | null;
+    collected_tweets: number;
+    analyzed_tweets: number;
+    processing_tweets: number;
+    failed_tweets: number;
+    ingestion_stage: BloggerIngestionStage;
   }>;
   total: number;
 }

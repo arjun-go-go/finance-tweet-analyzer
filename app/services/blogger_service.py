@@ -6,11 +6,141 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.blogger import Blogger
+from app.models.outbox_event import OutboxEvent
 from app.models.prediction import Prediction
 from app.models.prediction_market_verification import PredictionMarketVerification
 from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
 from app.services.credibility import SCORED_VERDICTS, score_profile
+
+
+def get_blogger_processing_counts(
+    db: Session, handles: list[str]
+) -> dict[str, dict]:
+    """Return one compact processing snapshot per Twitter handle."""
+    normalized = sorted({handle.lower() for handle in handles if handle})
+    if not normalized:
+        return {}
+    rows = db.execute(
+        select(
+            func.lower(Tweet.author_handle).label("handle"),
+            func.count(Tweet.id).label("collected"),
+            func.count(Tweet.id)
+            .filter(Tweet.status == "analyzed")
+            .label("analyzed"),
+            func.count(Tweet.id)
+            .filter(Tweet.status == "failed")
+            .label("failed"),
+            func.max(
+                func.coalesce(Tweet.processing_updated_at, Tweet.created_at)
+            ).label("last_activity_at"),
+        )
+        .where(func.lower(Tweet.author_handle).in_(normalized))
+        .group_by(func.lower(Tweet.author_handle))
+    ).all()
+    result: dict[str, dict] = {}
+    for handle, collected, analyzed, failed, last_activity_at in rows:
+        total = int(collected or 0)
+        complete = int(analyzed or 0)
+        terminal_failed = int(failed or 0)
+        result[str(handle)] = {
+            "collected_tweets": total,
+            "analyzed_tweets": complete,
+            "processing_tweets": max(total - complete - terminal_failed, 0),
+            "failed_tweets": terminal_failed,
+            "last_activity_at": last_activity_at,
+        }
+    return result
+
+
+def blogger_ingestion_summary(blogger: Blogger, counts: dict | None = None) -> dict:
+    snapshot = counts or {}
+    collected = int(snapshot.get("collected_tweets", 0))
+    analyzed = int(snapshot.get("analyzed_tweets", 0))
+    processing = int(snapshot.get("processing_tweets", 0))
+    failed = int(snapshot.get("failed_tweets", 0))
+
+    if not blogger.fetch_enabled:
+        stage = "paused"
+    elif blogger.last_fetched_at is None and collected == 0:
+        stage = "syncing"
+    elif processing > 0:
+        stage = "analyzing"
+    elif failed > 0:
+        stage = "attention"
+    else:
+        stage = "ready"
+
+    activity_candidates = [
+        value
+        for value in (blogger.last_fetched_at, snapshot.get("last_activity_at"))
+        if value is not None
+    ]
+    return {
+        "fetch_enabled": bool(blogger.fetch_enabled),
+        "last_fetched_at": blogger.last_fetched_at,
+        "last_activity_at": max(activity_candidates) if activity_candidates else None,
+        "collected_tweets": collected,
+        "analyzed_tweets": analyzed,
+        "processing_tweets": processing,
+        "failed_tweets": failed,
+        "ingestion_stage": stage,
+    }
+
+
+def get_blogger_ingestion_status(db: Session, blogger: Blogger) -> dict:
+    counts = get_blogger_processing_counts(db, [blogger.handle]).get(
+        blogger.handle.lower(), {}
+    )
+    summary = blogger_ingestion_summary(blogger, counts)
+    stage = summary["ingestion_stage"]
+
+    if stage == "syncing":
+        event = db.execute(
+            select(OutboxEvent)
+            .where(
+                OutboxEvent.event_type == "blogger.fetch_requested",
+                OutboxEvent.payload["blogger_handle"].as_string() == blogger.handle,
+            )
+            .order_by(OutboxEvent.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        dispatched = event is not None and event.status == "dispatched"
+        message = (
+            "采集任务已启动，正在获取公开推文与关联图片。"
+            if dispatched
+            else "资料已保存，正在等待采集任务执行。"
+        )
+        progress = 35 if dispatched else 15
+    elif stage == "analyzing":
+        message = (
+            f"已采集 {summary['collected_tweets']} 条推文，"
+            f"还有 {summary['processing_tweets']} 条正在分析。"
+        )
+        total = max(summary["collected_tweets"], 1)
+        progress = min(95, 40 + round(summary["analyzed_tweets"] / total * 55))
+    elif stage == "attention":
+        message = f"有 {summary['failed_tweets']} 条推文处理失败，已有内容仍可查看。"
+        progress = 100
+    elif stage == "paused":
+        message = "定时采集已暂停，已经保存的推文和分析结果仍会保留。"
+        progress = 100
+    elif summary["collected_tweets"] == 0:
+        message = "首次同步已完成，暂未发现可采集的公开推文。"
+        progress = 100
+    else:
+        message = (
+            f"采集与分析已完成，共提取 {summary['analyzed_tweets']} 条推文。"
+        )
+        progress = 100
+
+    return {
+        "handle": blogger.handle,
+        "stage": stage,
+        "message": message,
+        "progress": progress,
+        **{key: value for key, value in summary.items() if key != "ingestion_stage"},
+    }
 
 
 def upsert_blogger(db: Session, profile: BloggerProfile) -> Blogger:
@@ -102,6 +232,9 @@ def list_bloggers_with_stats(db: Session, sort: str = "credibility") -> list[dic
     )
     rows = db.execute(query).all()
 
+    processing_counts = get_blogger_processing_counts(
+        db, [blogger.handle for blogger, *_ in rows]
+    )
     items = []
     for blogger, verified, correct_sum, pending in rows:
         score = score_profile(float(correct_sum), int(verified))
@@ -120,6 +253,9 @@ def list_bloggers_with_stats(db: Session, sort: str = "credibility") -> list[dic
             "hit_rate": round(hit_rate, 4) if hit_rate is not None else None,
             "verified": bool(blogger.verified),
             "location": blogger.location,
+            **blogger_ingestion_summary(
+                blogger, processing_counts.get(blogger.handle.lower())
+            ),
         })
 
     if sort == "verified_count":

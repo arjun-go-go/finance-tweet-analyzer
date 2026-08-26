@@ -2,15 +2,17 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.core.auth import get_current_admin, get_current_user
 from app.models.blogger import Blogger
+from app.models.user_blogger_follow import UserBloggerFollow
 from app.models.user import User
 from app.schemas.blogger import (
     BloggerDetail,
+    BloggerIngestionStatus,
     BloggerListItem,
     BloggerOnboardRequest,
     BloggerOnboardResponse,
@@ -19,6 +21,7 @@ from app.schemas.blogger import (
 )
 from app.services.blogger_service import (
     get_blogger_detail,
+    get_blogger_ingestion_status,
     list_bloggers_with_stats,
     list_predictions_by_blogger,
     upsert_blogger,
@@ -136,6 +139,26 @@ def toggle_fetch(
     blogger.fetch_enabled = body.fetch_enabled
     db.commit()
     return {"handle": handle, "fetch_enabled": blogger.fetch_enabled}
+
+
+@router.get("/{handle:path}/ingestion-status", response_model=BloggerIngestionStatus)
+def get_ingestion_status(
+    handle: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    clean_handle = handle.strip().lstrip("@")
+    blogger = db.execute(
+        select(Blogger)
+        .join(UserBloggerFollow, UserBloggerFollow.blogger_id == Blogger.id)
+        .where(
+            UserBloggerFollow.user_id == current_user.id,
+            func.lower(Blogger.handle) == clean_handle.lower(),
+        )
+    ).scalar_one_or_none()
+    if blogger is None:
+        raise HTTPException(status_code=404, detail="信息源未在当前关注列表中")
+    return get_blogger_ingestion_status(db, blogger)
 
 
 # Order matters: /{handle:path}/predictions must be declared BEFORE /{handle:path}

@@ -46,6 +46,10 @@ from app.services.analysis_job_service import (
     mark_analysis_job_dispatched,
 )
 from app.services.credibility import score_profile
+from app.services.blogger_service import (
+    blogger_ingestion_summary,
+    get_blogger_processing_counts,
+)
 from app.services.outbox_service import enqueue_outbox_event
 
 
@@ -53,7 +57,7 @@ router = APIRouter(prefix="/api/me", tags=["me"])
 
 
 def _followed_blogger_item(
-    blogger: Blogger, *, pending_count: int
+    blogger: Blogger, *, pending_count: int, processing_counts: dict | None = None
 ) -> BloggerListItem:
     verified_count = int(blogger.total_predictions or 0)
     correct_sum = float(blogger.correct_predictions or 0.0)
@@ -72,6 +76,7 @@ def _followed_blogger_item(
         hit_rate=(correct_sum / verified_count if verified_count else None),
         verified=bool(blogger.verified),
         location=blogger.location,
+        **blogger_ingestion_summary(blogger, processing_counts),
     )
 
 
@@ -157,11 +162,15 @@ def get_followed_bloggers(
     pending_counts = count_pending_predictions_by_blogger(
         db, [blogger.handle for blogger in bloggers]
     )
+    processing_counts = get_blogger_processing_counts(
+        db, [blogger.handle for blogger in bloggers]
+    )
     return FollowedBloggerListResponse(
         items=[
             _followed_blogger_item(
                 blogger,
                 pending_count=pending_counts.get(blogger.handle, 0),
+                processing_counts=processing_counts.get(blogger.handle.lower()),
             )
             for blogger in bloggers
         ],

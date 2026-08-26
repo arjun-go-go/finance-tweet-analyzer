@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -55,6 +56,28 @@ class BloggerListItem(BaseModel):
     hit_rate: float | None = None
     verified: bool = False
     location: str | None = None
+    fetch_enabled: bool = False
+    last_fetched_at: datetime | None = None
+    last_activity_at: datetime | None = None
+    collected_tweets: int = 0
+    analyzed_tweets: int = 0
+    processing_tweets: int = 0
+    failed_tweets: int = 0
+    ingestion_stage: Literal["syncing", "analyzing", "ready", "attention", "paused"] = "syncing"
+
+
+class BloggerIngestionStatus(BaseModel):
+    handle: str
+    stage: Literal["syncing", "analyzing", "ready", "attention", "paused"]
+    message: str
+    progress: int
+    fetch_enabled: bool
+    last_fetched_at: datetime | None = None
+    last_activity_at: datetime | None = None
+    collected_tweets: int = 0
+    analyzed_tweets: int = 0
+    processing_tweets: int = 0
+    failed_tweets: int = 0
 
 
 class TopTickerItem(BaseModel):

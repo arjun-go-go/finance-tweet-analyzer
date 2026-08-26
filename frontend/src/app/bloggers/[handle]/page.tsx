@@ -6,7 +6,14 @@ import AppIcon from "@/components/AppIcon";
 import PredictionCard, { PredictionItem } from "@/components/PredictionCard";
 import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
 import { MetricStrip, SegmentedControl } from "@/components/WorkspacePage";
-import { fetchBloggerDetail, fetchBloggerPredictions, fetchTweets, toggleBloggerFetch } from "@/lib/api";
+import {
+  fetchBloggerDetail,
+  fetchBloggerIngestionStatus,
+  fetchBloggerPredictions,
+  fetchTweets,
+  toggleBloggerFetch,
+  type BloggerIngestionStatus,
+} from "@/lib/api";
 import { formatDate } from "@/lib/datetime";
 
 interface BloggerDetail {
@@ -98,18 +105,21 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
   const [predictionsLoading, setPredictionsLoading] = useState(false);
   const [fetchToggling, setFetchToggling] = useState(false);
   const [fetchNotice, setFetchNotice] = useState("");
+  const [ingestion, setIngestion] = useState<BloggerIngestionStatus | null>(null);
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [detailData, tweetData] = await Promise.all([
+      const [detailData, tweetData, ingestionData] = await Promise.all([
         fetchBloggerDetail(decodedHandle),
         fetchTweets({ blogger: decodedHandle, include_analysis: true, limit: 20 }),
+        fetchBloggerIngestionStatus(decodedHandle).catch(() => null),
       ]);
       setDetail(detailData as BloggerDetail);
       setTweets((tweetData.items ?? []) as BloggerTweet[]);
       setTweetTotal(tweetData.total ?? 0);
+      setIngestion(ingestionData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "信息源加载失败");
     } finally {
@@ -129,6 +139,17 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
   }, [decodedHandle]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
+  useEffect(() => {
+    if (!ingestion || !["syncing", "analyzing"].includes(ingestion.stage)) return;
+    const timer = window.setTimeout(async () => {
+      const next = await fetchBloggerIngestionStatus(decodedHandle).catch(() => null);
+      if (next) {
+        setIngestion(next);
+        if (next.stage === "ready" || next.stage === "attention") loadOverview();
+      }
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [decodedHandle, ingestion, loadOverview]);
   useEffect(() => {
     if (pageTab === "predictions") loadPredictions(predictionTab);
   }, [loadPredictions, pageTab, predictionTab]);
@@ -151,6 +172,7 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
       const nextEnabled = !detail.fetch_enabled;
       await toggleBloggerFetch(decodedHandle, nextEnabled);
       setDetail((current) => current ? { ...current, fetch_enabled: nextEnabled } : current);
+      setIngestion((current) => current ? { ...current, fetch_enabled: nextEnabled, stage: nextEnabled ? "syncing" : "paused", message: nextEnabled ? "定时采集已恢复，等待下一次同步。" : "定时采集已暂停，已经保存的内容仍会保留。" } : current);
       setFetchNotice(nextEnabled ? "已开启定时抓取" : "已暂停定时抓取");
     } catch (toggleError) {
       setFetchNotice(toggleError instanceof Error ? toggleError.message : "更新失败，请稍后重试");
@@ -193,6 +215,14 @@ export default function BloggerDetailPage({ params }: { params: Promise<{ handle
       <span>资料更新：{detail.profile_updated_at ? formatDate(detail.profile_updated_at) : "暂无记录"}</span>
       <span>{detail.followers_count.toLocaleString()} 位关注者</span>
     </div>
+
+    {ingestion && ingestion.stage !== "ready" && <section className={`source-ingestion-banner state-${ingestion.stage}`}>
+      <div>
+        <span className="source-ingestion-mark">{ingestion.stage === "attention" ? "!" : ingestion.stage === "paused" ? "Ⅱ" : <i />}</span>
+        <div><strong>{ingestion.stage === "syncing" ? "首次同步中" : ingestion.stage === "analyzing" ? "正在提取投资信息" : ingestion.stage === "attention" ? "部分内容处理失败" : "定时采集已暂停"}</strong><p>{ingestion.message}</p></div>
+      </div>
+      <span>{ingestion.analyzed_tweets} / {ingestion.collected_tweets} 条已提取</span>
+    </section>}
 
     <MetricStrip items={[
       { label: "预测评分", value: detail.verified_count ? Math.round(detail.credibility_score) : "—", note: detail.score_label },
