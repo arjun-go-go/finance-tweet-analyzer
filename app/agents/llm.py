@@ -35,6 +35,7 @@ def get_signal_llm() -> ChatOpenAI:
         max_completion_tokens=settings.signal_llm_max_completion_tokens,
         extra_body={"reasoning": {"effort": settings.signal_llm_reasoning_effort}},
         http_client=httpx.Client(proxy=settings.http_proxy),
+        http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )
 
 
@@ -52,6 +53,7 @@ def get_report_llm() -> ChatOpenAI:
         temperature=0.1,
         timeout=120,
         http_client=httpx.Client(proxy=settings.http_proxy),
+        http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )
 
 
@@ -68,6 +70,7 @@ def get_review_llm() -> ChatOpenAI:
         max_retries=settings.signal_llm_max_retries,
         max_completion_tokens=settings.signal_llm_max_completion_tokens,
         http_client=httpx.Client(proxy=settings.http_proxy),
+        http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )
 
 
