@@ -350,6 +350,10 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             author = str(analysis.pop("author_handle"))
             tid = uuid.UUID(tweet_id_str)
             analysis["analysis_schema_version"] = settings.user_analysis_pipeline_version
+            final_model = str(
+                (analysis.get("model_routing") or {}).get("final_model")
+                or settings.signal_model
+            )
 
             existing = db.execute(
                 select(AnalysisResult).where(
@@ -360,7 +364,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
 
             if existing:
                 existing.result = analysis
-                existing.model_used = settings.signal_model
+                existing.model_used = final_model
                 existing.confidence = analysis.get("confidence", 0.0)
                 existing.batch_id = batch_id
                 existing.prediction_status = "pending"
@@ -374,7 +378,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                     tweet_id=tid,
                     analysis_type="tweet_analysis",
                     result=analysis,
-                    model_used=settings.signal_model,
+                    model_used=final_model,
                     confidence=analysis.get("confidence", 0.0),
                     batch_id=batch_id,
                     prediction_status="pending",

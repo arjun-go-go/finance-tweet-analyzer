@@ -16,8 +16,10 @@ class Settings(BaseSettings):
 
     # ----- Models -----
     signal_model: str = "qwen/qwen3.7-plus"
-    report_model: str = "qwen/qwen3.7-max"
-    vision_model: str = "qwen/qwen3.7-plus"
+    review_model: str = "openai/gpt-5.6-luna"
+    report_model: str = "qwen/qwen3.8-max"
+    vision_model: str = "openai/gpt-5.6-luna"
+    model_review_confidence_threshold: float = 0.8
     signal_llm_timeout_seconds: float = 75.0
     signal_llm_max_completion_tokens: int = 6000
     signal_llm_reasoning_effort: str = "none"

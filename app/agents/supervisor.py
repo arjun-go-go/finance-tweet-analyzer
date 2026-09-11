@@ -8,7 +8,8 @@ from langgraph.types import Send
 from loguru import logger
 
 from app.agents.analysis_agent import analysis_agent_node
-from app.agents.llm import get_report_llm
+from app.agents.llm import get_signal_llm
+from app.agents.model_review_agent import model_review_agent_node
 from app.prompts import get_chat_prompt
 from app.agents.risk_agent import risk_agent_node
 from app.schemas.routing import BatchClassificationResult
@@ -28,7 +29,7 @@ from app.services.trace_service import traced_node
 class SupervisorState(TypedDict):
     tweets: list[dict]                # 入口推文列表（原始数据）
     analyses: list[dict]              # 合并后的分析结果（merge 节点写入）
-    phase: str                        # 当前阶段标记: classify / done
+    phase: str                        # 当前阶段标记: classify / reviewed / done
     classification: dict              # supervisor_classify 节点的分类结果
     # 并行 fan-out 节点的部分结果，使用 operator.add 在 fan-in 时合并
     partial_analyses: Annotated[list[dict], operator.add]
@@ -104,7 +105,7 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
 
     try:
         # json_mode + 手动解析，兼容不严格遵循 schema 的模型
-        llm = get_report_llm()
+        llm = get_signal_llm()
         structured_llm = llm.with_structured_output(BatchClassificationResult)
         messages = _to_lc_messages(get_chat_prompt("supervisor/classify", tweets_text=tweets_text))
         result = structured_llm.invoke(messages)
@@ -114,7 +115,7 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
     except Exception as e:
         # 尝试降级：用普通 JSON 模式解析
         try:
-            from app.agents.llm import get_report_llm as _get_llm
+            from app.agents.llm import get_signal_llm as _get_llm
             _llm = _get_llm().bind(response_format={"type": "json_object"})
             _messages = _to_lc_messages(get_chat_prompt("supervisor/classify", tweets_text=tweets_text))
             raw_result = _llm.invoke(_messages)
@@ -257,7 +258,7 @@ def route_after_classification(state: SupervisorState) -> list[Send]:
 # Annotated[..., operator.add] 自动累积到 partial_analyses /
 # risk_assessments。本节点：
 #   1) 把风险因子按 tweet_id 和标的回填到对应 claim；
-#   2) 合并后直接结束（预测由 Celery 后台异步完成）。
+#   2) 合并后交给跨模型复核（预测由 Celery 后台异步完成）。
 # ============================================================
 @traced_node("supervisor_merge")
 def supervisor_merge_node(state: SupervisorState) -> dict:
@@ -365,6 +366,15 @@ def _enrich_claims_with_risks(analysis: dict) -> None:
             claim["risk_level"] = "low"
 
 
+@traced_node("model_review")
+def model_review_node(state: SupervisorState) -> dict:
+    """对高价值/高歧义结果做跨模型复核，冲突时再进入 Max 仲裁。"""
+    result = model_review_agent_node(state)
+    for analysis in result.get("analyses") or []:
+        _enrich_claims_with_risks(analysis)
+    return result
+
+
 # ============================================================
 # 节点 3：supervisor_finalize —— 收尾
 # ------------------------------------------------------------
@@ -387,7 +397,7 @@ def supervisor_finalize_node(state: SupervisorState) -> dict:
 #   START
 #     → supervisor_classify
 #     → (条件 fan-out) analysis_agent ‖ risk_agent ‖ supervisor_finalize
-#     → supervisor_merge
+#     → supervisor_merge → model_review
 #     → supervisor_finalize → END
 #
 # 子 Agent 节点统一包裹 traced_node，保证全链路可观测。
@@ -404,6 +414,7 @@ def build_supervisor_graph():
     graph.add_node("analysis_agent", traced_analysis)
     graph.add_node("risk_agent", traced_risk)
     graph.add_node("supervisor_merge", supervisor_merge_node)
+    graph.add_node("model_review", model_review_node)
     graph.add_node("supervisor_finalize", supervisor_finalize_node)
 
     # 入口 → 分类
@@ -420,8 +431,9 @@ def build_supervisor_graph():
     graph.add_edge("analysis_agent", "supervisor_merge")
     graph.add_edge("risk_agent", "supervisor_merge")
 
-    # merge 直接进入收尾（预测异步）
-    graph.add_edge("supervisor_merge", "supervisor_finalize")
+    # merge 后复核关键结果；只有语义冲突才会调用 Max 仲裁。
+    graph.add_edge("supervisor_merge", "model_review")
+    graph.add_edge("model_review", "supervisor_finalize")
     graph.add_edge("supervisor_finalize", END)
 
     return graph.compile()

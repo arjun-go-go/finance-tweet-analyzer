@@ -46,7 +46,13 @@ def _to_lc_messages(msg_dicts: list[dict]) -> list:
 # 调用 structured_output 模式确保返回 TweetAnalysis schema，
 # 记录延迟用于性能监控。失败返回 None，不阻塞批量处理。
 # ============================================================
-async def _analyze_one(structured_llm, tweet: dict, blogger_context: str) -> dict | None:
+async def analyze_tweet_with_llm(
+    structured_llm,
+    tweet: dict,
+    blogger_context: str,
+    *,
+    stage: str = "Analysis",
+) -> dict | None:
     """对单条推文执行 LLM 分析，返回结构化结果或 None（失败时）。"""
     start = time.perf_counter()
     try:
@@ -77,13 +83,13 @@ async def _analyze_one(structured_llm, tweet: dict, blogger_context: str) -> dic
         data["author_handle"] = tweet["author_handle"]
         data["_latency_ms"] = latency_ms
         logger.debug(
-            "[Analysis] tweet={} latency={}ms confidence={}",
-            tweet["id"][:8], latency_ms, data.get("confidence", 0),
+            "[{}] tweet={} latency={}ms confidence={}",
+            stage, tweet["id"][:8], latency_ms, data.get("confidence", 0),
         )
         return data
     except Exception as e:
         latency_ms = int((time.perf_counter() - start) * 1000)
-        logger.warning("Analysis agent failed for tweet {} ({}ms): {}", tweet["id"], latency_ms, e)
+        logger.warning("{} failed for tweet {} ({}ms): {}", stage, tweet["id"], latency_ms, e)
         return None
 
 
@@ -136,7 +142,7 @@ async def _run_analysis(state: dict) -> dict:
                 "author_handle": tweet["author_handle"],
             }
         else:
-            tasks.append(_analyze_one(structured_llm, tweet, context_block))
+            tasks.append(analyze_tweet_with_llm(structured_llm, tweet, context_block))
 
     # 并发执行所有 LLM 调用
     results = await asyncio.gather(*tasks)
