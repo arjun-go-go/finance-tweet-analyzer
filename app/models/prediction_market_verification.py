@@ -9,7 +9,7 @@ from app.models.base import Base
 
 
 class PredictionMarketVerification(Base):
-    """Immutable evidence from one market-price verification attempt."""
+    """Immutable evidence from one type-specific prediction verification attempt."""
 
     __tablename__ = "prediction_market_verifications"
 
@@ -21,6 +21,9 @@ class PredictionMarketVerification(Base):
         ForeignKey("predictions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
+    )
+    verification_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="market_price_direction", index=True
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     provider: Mapped[str | None] = mapped_column(String(128))
@@ -36,9 +39,10 @@ class PredictionMarketVerification(Base):
     proposed_verdict: Mapped[str | None] = mapped_column(String(16))
     proposed_score: Mapped[float | None] = mapped_column(Float)
     rule_version: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="market_auto_v1"
+        String(32), nullable=False, default="market_price_direction_v2"
     )
     evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    observation: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     error_message: Mapped[str | None] = mapped_column(Text)
     applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

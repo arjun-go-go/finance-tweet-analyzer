@@ -1,63 +1,25 @@
-# Personal SaaS Boundary
+# Personal Product Boundary
 
-This branch hardens the application for a single-user SaaS launch posture.
+The application is intentionally focused on personal Twitter investment
+research. Shared source material is collected once; each account keeps only its
+own research scope.
 
-## What is user-scoped
+## User-scoped data
 
 - Followed bloggers: `POST/DELETE/GET /api/me/bloggers`
-- Bookmarked tweets: `POST/DELETE/GET /api/me/tweets`
-- Durable analysis jobs: `POST/GET /api/me/analysis-jobs`
-- Chat-triggered tweet analysis confirmation: preview creates durable jobs with
-  `awaiting_confirmation`; confirm dispatches those jobs only for the same user.
+- Tracked instruments: `POST/DELETE/GET /api/tracking`
+- Alerts generated from those formal follow relationships
 
-Shared market data remains shared: bloggers, tweets, predictions, public
-signals, and aggregate analytics. User actions reference those shared rows
-through ownership tables instead of duplicating shared data.
+Bloggers, tweets, media, extracted claims, market views and prediction
+verification are shared market data. User relationships point to those shared
+rows instead of duplicating content.
 
-## Expensive analysis controls
+## Product surfaces
 
-User-triggered analysis is disabled by default:
+- `/`: chronological tweet activity with per-instrument claims and macro views
+- `/sources`: blogger discovery, following and collection control
+- `/watch`: verified instrument directory and the user's tracked instruments
+- `/settings`: account, research scope and alert entry points
 
-```env
-USER_ANALYSIS_REQUESTS_ENABLED=false
-USER_ANALYSIS_DAILY_LIMIT=10
-USER_ANALYSIS_PIPELINE_VERSION=v1
-```
-
-When enabled, requests go through Redis-backed fixed-window limits and fail
-closed if Redis is unavailable. Jobs are persisted before Celery dispatch, and
-dispatch failures are marked as safe `failed` jobs without exposing broker
-details.
-
-## Worker path
-
-`app.scheduler.tasks.user_analysis_job_task` runs durable user analysis jobs on
-the `analysis` queue. Tweet jobs reuse existing `analysis_results` for the same
-pipeline version when available. Blogger jobs reuse cached analyses when there
-are no pending tweets; otherwise they call the existing blogger analysis flow.
-
-## Frontend
-
-`/me` is the personal workspace for:
-
-- followed bloggers
-- bookmarked tweets
-- analysis job status
-- submitting blogger analysis jobs
-
-## Verification
-
-Focused backend regression:
-
-```powershell
-$env:TEST_DATABASE_URL='postgresql+psycopg://.../finance_tweets_test'
-python -m pytest tests\integration\test_personal_saas_boundaries.py tests\unit\services\test_user_resource_service.py tests\unit\api\test_me_resources.py tests\unit\api\test_shared_read_auth.py tests\unit\core\test_rate_limit.py tests\unit\api\test_me_analysis_jobs.py tests\unit\services\test_analysis_job_service.py tests\unit\scheduler\test_user_analysis_job_task.py tests\unit\agents\test_chat_analysis_confirmation.py tests\unit\agents\test_chat_private_tools.py tests\unit\agents\test_authenticated_memory_context.py tests\unit\agents\test_mem0_nodes.py -q
-```
-
-Frontend:
-
-```powershell
-cd frontend
-npm run lint
-npm run build
-```
+The retired conversational assistant, private documents and research-project
+workspaces are not part of this focused product.

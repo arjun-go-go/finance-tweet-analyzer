@@ -136,7 +136,13 @@ def _all_attempted_providers_unavailable(providers: list[str]) -> bool:
 def verified_ticker_symbols(result: dict) -> list[str]:
     """Return unique, verified and tradable symbols from an analysis result."""
     symbols: list[str] = []
-    for item in result.get("tickers") or []:
+    claim_instruments = [
+        claim.get("instrument")
+        for claim in (result.get("claims") or [])
+        if isinstance(claim, dict) and isinstance(claim.get("instrument"), dict)
+    ]
+    candidates = claim_instruments or (result.get("tickers") or [])
+    for item in candidates:
         if not is_downstream_verified_ticker(item):
             continue
         symbol = str(item["symbol"]).upper().strip()
@@ -761,6 +767,44 @@ def resolve_analysis_tickers(analyses: list[dict], db: Any = None) -> list[dict]
                 tradable=tradable,
                 listing_status=str(item.get("listing_status") or "unlisted_or_unknown"),
             )
+    return analyses
+
+
+def resolve_analysis_claims(analyses: list[dict], db: Any = None) -> list[dict]:
+    """Validate each claim instrument while keeping the claim as the atomic object."""
+    shims: list[dict] = []
+    claim_groups: list[list[dict]] = []
+    for analysis in analyses:
+        claims = [
+            claim
+            for claim in (analysis.get("claims") or [])
+            if isinstance(claim, dict)
+            and isinstance(claim.get("instrument"), dict)
+        ]
+        claim_groups.append(claims)
+        shims.append(
+            {
+                "tickers": [claim["instrument"] for claim in claims],
+                "claim_context": [
+                    {
+                        "thesis": claim.get("thesis"),
+                        "evidence": claim.get("evidence") or [],
+                    }
+                    for claim in claims
+                ],
+            }
+        )
+
+    resolved_shims = resolve_analysis_tickers(shims, db=db)
+    for analysis, claims, shim in zip(
+        analyses, claim_groups, resolved_shims, strict=False
+    ):
+        resolved_instruments = shim.get("tickers") or []
+        for claim, instrument in zip(claims, resolved_instruments, strict=False):
+            claim["instrument"] = instrument
+            claim["downstream_eligible"] = is_downstream_verified_ticker(instrument)
+        if shim.get("rejected_tickers"):
+            analysis["rejected_claim_instruments"] = shim["rejected_tickers"]
     return analyses
 
 

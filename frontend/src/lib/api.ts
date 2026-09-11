@@ -42,6 +42,7 @@ export interface IntelligenceFeedItem {
   title: string;
   summary: string;
   direction: string;
+  horizon: string;
   tickers: string[];
   author: string;
   confidence: number;
@@ -64,7 +65,7 @@ export interface IntelligenceFeedItem {
     first_seen_at: string;
     last_seen_at: string;
     time_bucket: string;
-    lifecycle: "new" | "developing" | "confirmed" | "reversed" | "expired";
+    lifecycle: "new" | "developing" | "confirmed" | "reversed" | "disputed" | "expired";
     event_count: number;
     match_reasons: string[];
   feed_bucket: "personalized" | "market_risk" | "discovery";
@@ -149,6 +150,8 @@ export interface IntelligenceDetailResponse {
   thread: IntelligenceTweetDetail[];
   media: IntelligenceMediaDetail[];
   analysis: Record<string, unknown>;
+  claim: Record<string, unknown> | null;
+  claims: Array<Record<string, unknown>>;
   instruments: Array<Record<string, unknown>>;
   predictions: Array<Record<string, unknown>>;
   audit: Array<Record<string, unknown>>;
@@ -169,7 +172,7 @@ export async function fetchIntelligenceFeed(
 ): Promise<IntelligenceFeedResponse> {
   const params = new URLSearchParams({ limit: String(limit), window, kind });
   const res = await authFetch(`${API_BASE}/api/intelligence/feed?${params.toString()}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("无法加载今日情报，请检查后端服务或稍后重试。");
+  if (!res.ok) throw new Error("无法加载动态，请检查后端服务或稍后重试。");
   return res.json() as Promise<IntelligenceFeedResponse>;
 }
 
@@ -216,6 +219,7 @@ export async function fetchDashboard() {
 export async function fetchTweets(params?: {
   status?: string;
   blogger?: string;
+  ticker?: string;
   include_analysis?: boolean;
   limit?: number;
   offset?: number;
@@ -223,6 +227,7 @@ export async function fetchTweets(params?: {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.blogger) sp.set("blogger", params.blogger);
+  if (params?.ticker) sp.set("ticker", params.ticker);
   if (params?.include_analysis) sp.set("include_analysis", "true");
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.offset) sp.set("offset", String(params.offset));
@@ -251,7 +256,35 @@ export async function fetchAnalyses(params?: {
   return res.json();
 }
 
-export async function fetchTickerSummaries(params?: { limit?: number; offset?: number }) {
+export interface TickerSummary {
+  ticker: string;
+  mention_count: number;
+  bloggers: string[];
+  related_bloggers: string[];
+  related_claim_count: number;
+  reference_only_count: number;
+  has_effective_views: boolean;
+  exclusion_reasons: Record<string, number>;
+  consensus: "strong_buy" | "buy" | "mixed" | "neutral" | "sell" | "strong_sell" | "none";
+  bullish_count: number;
+  bearish_count: number;
+  neutral_count?: number;
+  recommendation_score: number | null;
+  summary: string;
+}
+
+export interface TickerSummaryItem {
+  id: string;
+  result: TickerSummary;
+  created_at: string;
+}
+
+export interface TickerSummariesResponse {
+  items: TickerSummaryItem[];
+  total: number;
+}
+
+export async function fetchTickerSummaries(params?: { limit?: number; offset?: number }): Promise<TickerSummariesResponse> {
   const sp = new URLSearchParams();
   sp.set("limit", String(params?.limit ?? 100));
   if (params?.offset) sp.set("offset", String(params.offset));
@@ -259,7 +292,7 @@ export async function fetchTickerSummaries(params?: { limit?: number; offset?: n
     cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch ticker summaries");
-  return res.json();
+  return res.json() as Promise<TickerSummariesResponse>;
 }
 
 export async function fetchBloggers(params?: {
@@ -360,7 +393,7 @@ export async function onboardBlogger(handle: string): Promise<BloggerOnboardResu
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => null) as { detail?: string } | null;
-    throw new Error(payload?.detail || "新增信息源失败，请稍后重试");
+    throw new Error(payload?.detail || "添加博主失败，请稍后重试");
   }
   return res.json() as Promise<BloggerOnboardResult>;
 }
@@ -370,7 +403,7 @@ export async function fetchBloggerIngestionStatus(handle: string): Promise<Blogg
     `${API_BASE}/api/bloggers/${encodeURIComponent(handle)}/ingestion-status`,
     { cache: "no-store" },
   );
-  if (!res.ok) throw new Error("信息源处理状态加载失败");
+  if (!res.ok) throw new Error("博主处理状态加载失败");
   return res.json() as Promise<BloggerIngestionStatus>;
 }
 
@@ -555,7 +588,8 @@ export async function correctPredictionInstrument(
 
 export type MarketVerificationEvidence = {
   id: string;
-  status: "ready" | "tracking" | "manual_review" | "market_data_unavailable" | "excluded_non_directional" | "excluded_duplicate";
+  verification_type?: string;
+  status: "ready" | "tracking" | "manual_review" | "market_data_unavailable" | "unsupported" | "target_date_unresolved" | "excluded_non_directional" | "excluded_duplicate";
   provider: string | null;
   provider_symbol: string | null;
   market: string | null;
@@ -569,8 +603,9 @@ export type MarketVerificationEvidence = {
   proposed_verdict: string | null;
   proposed_score: number | null;
   rule_version: string;
+  observation?: Record<string, unknown>;
   reason: string | null;
-  review_type?: "instrument_identity" | "non_directional" | "market_data" | "duplicate_prediction" | null;
+  review_type?: "instrument_identity" | "non_directional" | "market_data" | "duplicate_prediction" | "target_contract" | "fundamental_data" | "unit_mismatch" | "event_time" | "unsupported_event" | "event_date_evidence" | null;
   identity?: {
     symbol?: string | null;
     original_name?: string | null;
@@ -620,13 +655,14 @@ export async function fetchPredictionReviewQueue(params?: {
   return res.json();
 }
 
-export type PredictionLifecycleStatus = "tracking" | "due" | "review" | "verified" | "excluded";
+export type PredictionLifecycleStatus = "tracking" | "due" | "review" | "unscored" | "verified" | "excluded";
 
 export type PredictionOperationStats = {
   total: number;
   tracking: number;
   due: number;
   review: number;
+  unscored: number;
   verified: number;
   excluded: number;
   auto_verified: number;
@@ -661,10 +697,6 @@ export async function retryPredictionMarketVerification(id: string) {
   }
   return res.json();
 }
-
-// ============================================================
-// Chat Conversations API
-// ============================================================
 
 export interface FollowedBloggerListResponse {
   items: Array<{
@@ -709,110 +741,6 @@ export async function unfollowBlogger(bloggerId: string): Promise<void> {
   }
 }
 
-export interface Conversation {
-  id: string;
-  user_id: string;
-  title: string | null;
-  status: string;
-  message_count: number;
-  last_message_at: string | null;
-  created_at: string;
-}
-
-export interface ConversationListItem {
-  id: string;
-  title: string | null;
-  status: string;
-  message_count: number;
-  last_message_at: string | null;
-  last_message_preview: string | null;
-  created_at: string;
-}
-
-export interface ChatMessage {
-  id: string;
-  role: string;
-  content: string;
-  tool_calls: Record<string, unknown> | null;
-  sequence: number;
-  created_at: string;
-}
-
-export async function createConversation(title?: string) {
-  const res = await authFetch(`${API_BASE}/api/chat/conversations`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: title || null }),
-  });
-  if (!res.ok) throw new Error("Failed to create conversation");
-  return res.json() as Promise<Conversation>;
-}
-
-export async function listConversations(params?: {
-  status?: string;
-  limit?: number;
-  cursor?: string;
-}) {
-  const sp = new URLSearchParams();
-  if (params?.status) sp.set("status", params.status);
-  if (params?.limit) sp.set("limit", String(params.limit));
-  if (params?.cursor) sp.set("cursor", params.cursor);
-  const res = await authFetch(
-    `${API_BASE}/api/chat/conversations?${sp.toString()}`,
-    { cache: "no-store" },
-  );
-  if (!res.ok) throw new Error("Failed to list conversations");
-  return res.json() as Promise<{
-    items: ConversationListItem[];
-    next_cursor: string | null;
-    has_more: boolean;
-  }>;
-}
-
-export async function deleteConversation(conversationId: string) {
-  const res = await authFetch(
-    `${API_BASE}/api/chat/conversations/${conversationId}`,
-    { method: "DELETE" },
-  );
-  if (!res.ok) throw new Error("Failed to delete conversation");
-}
-
-export async function updateConversationTitle(
-  conversationId: string,
-  title: string,
-) {
-  const res = await authFetch(
-    `${API_BASE}/api/chat/conversations/${conversationId}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    },
-  );
-  if (!res.ok) throw new Error("Failed to update conversation");
-  return res.json() as Promise<Conversation>;
-}
-
-export async function listMessages(
-  conversationId: string,
-  params?: { limit?: number; cursor?: string; direction?: string },
-) {
-  const sp = new URLSearchParams();
-  if (params?.limit) sp.set("limit", String(params.limit));
-  if (params?.cursor) sp.set("cursor", params.cursor);
-  if (params?.direction) sp.set("direction", params.direction);
-  const res = await authFetch(
-    `${API_BASE}/api/chat/conversations/${conversationId}/messages?${sp.toString()}`,
-    { cache: "no-store" },
-  );
-  if (!res.ok) throw new Error("Failed to list messages");
-  return res.json() as Promise<{
-    items: ChatMessage[];
-    next_cursor: string | null;
-    has_more: boolean;
-  }>;
-}
-
 // ============================================================
 // Tracking API
 // ============================================================
@@ -842,6 +770,9 @@ export interface TrackingItem {
     direction_trend?: "up" | "down" | "flat";
     bullish_count?: number;
     bearish_count?: number;
+    directional_claim_count?: number;
+    direction_basis?: string;
+    has_disagreement?: boolean;
     active_predictions?: number;
     latest_prediction_sentiment?: string | null;
     risk_count?: number;

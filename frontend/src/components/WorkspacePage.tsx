@@ -1,7 +1,7 @@
 import AppIcon, { type IconName } from "@/components/AppIcon";
 
-export function WorkspacePageHeader({ eyebrow, title, subtitle, actions }: { eyebrow: string; title: string; subtitle: string; actions?: React.ReactNode }) {
-  return <header className="page-header"><div><p className="page-eyebrow">{eyebrow}</p><h1 className="page-title">{title}</h1><p className="page-subtitle">{subtitle}</p></div>{actions && <div className="page-actions">{actions}</div>}</header>;
+export function WorkspacePageHeader({ eyebrow, title, subtitle, actions }: { eyebrow?: string; title: string; subtitle: string; actions?: React.ReactNode }) {
+  return <header className="page-header"><div>{eyebrow && <p className="page-eyebrow">{eyebrow}</p>}<h1 className="page-title">{title}</h1><p className="page-subtitle">{subtitle}</p></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
 export function MetricStrip({ items }: { items: Array<{ label: string; value: React.ReactNode; note?: string }> }) {

@@ -3,12 +3,18 @@
 所有模型通过 OpenRouter 统一网关接入，经本地 HTTP 代理转发。
 双模型设计实现成本与质量平衡：
     - signal_model (Qwen3.7-Max): 低成本高速度，用于分类/分析/评分等判别型任务
-    - report_model (Claude Opus): 高质量生成，用于报告/聊天/复杂推理
+    - report_model (Claude Opus): 高质量生成，用于报告和复杂推理
 """
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import httpx
-from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from langchain_openai import ChatOpenAI
 
 
 def get_signal_llm() -> ChatOpenAI:
@@ -16,6 +22,8 @@ def get_signal_llm() -> ChatOpenAI:
 
     temperature=0.1 保证输出确定性，timeout=30s 适配短文本快速响应。
     """
+    from langchain_openai import ChatOpenAI
+
     return ChatOpenAI(
         model=settings.signal_model,
         api_key=settings.openrouter_api_key,
@@ -30,10 +38,12 @@ def get_signal_llm() -> ChatOpenAI:
 
 
 def get_report_llm() -> ChatOpenAI:
-    """报告模型 —— 高质量生成型任务（聊天、报告撰写、SQL 重试）。
+    """报告模型 —— 高质量生成型任务（报告撰写、复杂推理）。
 
     temperature=0.3 允许适度创造性，timeout=120s 容忍长文本生成延迟。
     """
+    from langchain_openai import ChatOpenAI
+
     return ChatOpenAI(
         model=settings.report_model,
         api_key=settings.openrouter_api_key,
@@ -43,23 +53,10 @@ def get_report_llm() -> ChatOpenAI:
         http_client=httpx.Client(proxy=settings.http_proxy),
     )
 
-
-def get_sql_llm() -> ChatOpenAI:
-    """Low-latency Text-to-SQL model with a strict request budget."""
-    return ChatOpenAI(
-        model=settings.signal_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        temperature=0.0,
-        timeout=25,
-        max_retries=0,
-        max_completion_tokens=500,
-        http_client=httpx.Client(proxy=settings.http_proxy),
-    )
-
-
 def get_vision_llm() -> ChatOpenAI:
     """Multimodal model used to extract evidence from tweet text and images."""
+    from langchain_openai import ChatOpenAI
+
     return ChatOpenAI(
         model=settings.vision_model,
         api_key=settings.openrouter_api_key,
@@ -67,5 +64,6 @@ def get_vision_llm() -> ChatOpenAI:
         temperature=0.0,
         max_tokens=settings.vision_max_output_tokens,
         timeout=120,
+        extra_body={"reasoning": {"effort": settings.vision_llm_reasoning_effort}},
         http_client=httpx.Client(proxy=settings.http_proxy),
     )

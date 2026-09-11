@@ -17,7 +17,6 @@ from app.models.analysis import AnalysisResult
 from app.models.content_chunk import ContentChunk
 from app.models.index_job import IndexJob
 from app.models.tweet import Tweet
-from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
 from app.scheduler.locks import (
     try_acquire,
     release,
@@ -25,11 +24,6 @@ from app.scheduler.locks import (
     release_prediction_lock,
     try_acquire_fetch_lock,
     release_fetch_lock,
-)
-from app.services.analysis_service import (
-    analysis_eligible_clause,
-    analyze_by_blogger,
-    analyze_single_tweet,
 )
 from app.services.tweet_state_service import (
     ANALYSIS_READY_STATES,
@@ -47,6 +41,8 @@ logger = get_task_logger(__name__)
 )
 def analyze_tweet_task(self, tweet_id: str) -> dict:
     """Run the text and media-fused analysis for one ready tweet."""
+    from app.services.analysis_service import analyze_single_tweet
+
     db = SessionLocal()
     try:
         tweet = db.get(Tweet, UUID(tweet_id))
@@ -218,6 +214,8 @@ def _record_index_jobs(
 
 def _best_effort_upsert_es_chunks(chunks, db=None) -> dict:
     """Best-effort Elasticsearch upsert for ContentChunk-like rows."""
+    from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
+
     chunk_list = list(chunks or [])
     stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
     if not chunk_list:
@@ -253,6 +251,8 @@ def _best_effort_upsert_es_chunks(chunks, db=None) -> dict:
 
 
 def _upsert_es_chunks_to_index(chunks, *, index_name: str) -> dict:
+    from app.rag.keyword_store import chunk_to_es_document, get_keyword_store
+
     chunk_list = list(chunks or [])
     stats = {"attempted": len(chunk_list), "indexed": 0, "errors": 0}
     if not chunk_list:
@@ -273,6 +273,8 @@ def _upsert_es_chunks_to_index(chunks, *, index_name: str) -> dict:
 
 def _delete_existing_source_chunks(db, source_type: str, source_id: str) -> dict:
     """Delete old PG/ES chunks for a source before rewriting it."""
+    from app.rag.keyword_store import get_keyword_store
+
     stats = {"pg_deleted": 0, "es_deleted": 0}
     existing_chunks = db.execute(
         select(ContentChunk).where(
@@ -311,6 +313,8 @@ def auto_analysis_task(self) -> dict:
 
     Redis 分布式锁确保同一博主不会被多个 Worker 重复分析。
     """
+    from app.services.analysis_service import analysis_eligible_clause, analyze_by_blogger
+
     logger.info("[Celery] Auto-analysis task started")
 
     db = SessionLocal()
@@ -384,17 +388,19 @@ def auto_analysis_task(self) -> dict:
     max_retries=2,
 )
 def auto_verify_predictions_task(self, batch_size: int | None = None) -> dict:
-    """Verify due predictions from completed public market bars."""
+    """Verify due predictions with their dedicated public-data verifier."""
     from app.services.market_verification_service import (
         record_auto_verification_runtime,
-        run_due_market_verifications,
+    )
+    from app.services.prediction_verification_service import (
+        run_due_prediction_verifications,
     )
 
     task_id = str(self.request.id or "")
     record_auto_verification_runtime("running", task_id=task_id)
     db = SessionLocal()
     try:
-        result = run_due_market_verifications(db, batch_size=batch_size)
+        result = run_due_prediction_verifications(db, batch_size=batch_size)
         record_auto_verification_runtime("success", task_id=task_id, result=result)
         return result
     except Exception as error:
@@ -451,16 +457,33 @@ def prediction_batch_task(self) -> dict:
             evaluate_prediction_eligibility,
             prediction_agent_node,
         )
+        from app.models.instrument_claim import InstrumentClaim
         from app.models.tweet import Tweet as TweetModel
+        from app.services.instrument_claim_service import serialize_instrument_claim
 
         tweet_ids = [ar.tweet_id for ar in pending_analyses]
         tweet_rows = db.execute(
             select(TweetModel).where(TweetModel.id.in_(tweet_ids))
         ).scalars().all()
         tweet_map = {t.id: t for t in tweet_rows}
+        claim_rows = db.execute(
+            select(InstrumentClaim)
+            .where(
+                InstrumentClaim.analysis_result_id.in_(
+                    [analysis.id for analysis in pending_analyses]
+                )
+            )
+            .order_by(
+                InstrumentClaim.analysis_result_id,
+                InstrumentClaim.claim_index,
+            )
+        ).scalars().all()
+        claims_by_analysis: dict = {}
+        for claim in claim_rows:
+            claims_by_analysis.setdefault(claim.analysis_result_id, []).append(claim)
 
-        analyses_for_prediction = []
-        tweets_for_prediction = []
+        claims_for_prediction = []
+        processed_ids = []
         for ar in pending_analyses:
             result_data = dict(ar.result or {})
             tweet = tweet_map.get(ar.tweet_id)
@@ -472,75 +495,68 @@ def prediction_batch_task(self) -> dict:
                     "reason_codes": ["tweet_not_found"],
                 }
                 continue
-            result_data["tweet_id"] = str(ar.tweet_id)
-            result_data["author_handle"] = tweet.author_handle
             tweet_payload = {
                 "id": str(tweet.id),
                 "published_at": tweet.published_at,
                 "author_handle": tweet.author_handle,
                 "tweet_type": tweet.tweet_type or "original",
             }
-            decision = evaluate_prediction_eligibility(result_data, tweet_payload)
+            serialized_claims = [
+                serialize_instrument_claim(claim)
+                for claim in claims_by_analysis.get(ar.id, [])
+            ]
+            decision = evaluate_prediction_eligibility(
+                result_data,
+                tweet_payload,
+                serialized_claims,
+            )
             ar.prediction_decision = decision
             if not decision["eligible"]:
                 ar.prediction_status = "skipped"
                 continue
-            analyses_for_prediction.append(result_data)
-            tweets_for_prediction.append(tweet_payload)
+            processed_ids.append(ar.id)
+            for claim in serialized_claims:
+                claims_for_prediction.append(
+                    {
+                        **claim,
+                        "tweet_id": str(tweet.id),
+                        "blogger_handle": tweet.author_handle,
+                        "published_at": tweet.published_at,
+                        "tweet_type": tweet.tweet_type or "original",
+                        "is_investment_relevant": result_data.get(
+                            "is_investment_relevant",
+                            result_data.get("is_investment_related", False),
+                        ),
+                        "is_investment_related": result_data.get(
+                            "is_investment_related", False
+                        ),
+                        "has_commercial_content": result_data.get(
+                            "is_sponsored", False
+                        ),
+                    }
+                )
 
-        if analyses_for_prediction:
+        if claims_for_prediction:
             try:
                 pred_result = prediction_agent_node({
-                    "analyses": analyses_for_prediction,
-                    "tweets": tweets_for_prediction,
-                    "predictions": [],
+                    "claims": claims_for_prediction,
                 })
                 predictions = pred_result.get("predictions", [])
-
-                ar_id_by_tweet = {str(ar.tweet_id): str(ar.id) for ar in pending_analyses}
-                for pred in predictions:
-                    pred["analysis_id"] = ar_id_by_tweet.get(pred.get("tweet_id"))
 
                 from app.services.prediction_service import save_predictions_batch
                 stats["predictions_created"] = save_predictions_batch(db, predictions)
 
                 candidate_counts: dict[str, int] = {}
                 for prediction in predictions:
-                    key = str(prediction.get("tweet_id") or "")
+                    key = str(prediction.get("analysis_id") or "")
                     candidate_counts[key] = candidate_counts.get(key, 0) + 1
                 for ar in pending_analyses:
                     if ar.prediction_status == "skipped" or not ar.prediction_decision:
                         continue
                     ar.prediction_decision = {
                         **ar.prediction_decision,
-                        "candidate_count": candidate_counts.get(str(ar.tweet_id), 0),
+                        "candidate_count": candidate_counts.get(str(ar.id), 0),
                     }
-
-                ticker_summaries = pred_result.get("ticker_summaries", [])
-                ref_tweet_id = pending_analyses[0].tweet_id
-                for summary in ticker_summaries:
-                    ticker_symbol = summary.get("ticker", "")
-                    existing_ts = db.execute(
-                        select(AnalysisResult).where(
-                            AnalysisResult.analysis_type == "ticker_summary",
-                            AnalysisResult.result["ticker"].astext == ticker_symbol,
-                        )
-                    ).scalar_one_or_none()
-                    if existing_ts:
-                        existing_ts.result = summary
-                        existing_ts.confidence = summary.get("recommendation_score", 0) / 100
-                    else:
-                        db.add(AnalysisResult(
-                            tweet_id=ref_tweet_id,
-                            analysis_type="ticker_summary",
-                            result=summary,
-                            model_used="aggregation",
-                            confidence=summary.get("recommendation_score", 0) / 100,
-                            prediction_status="skipped",
-                        ))
-                stats["ticker_summaries_saved"] = len(ticker_summaries)
-
-                processed_ids = [ar.id for ar in pending_analyses if ar.prediction_status != "skipped"]
                 if processed_ids:
                     db.execute(
                         update(AnalysisResult)
@@ -583,187 +599,262 @@ def prediction_batch_task(self) -> dict:
     max_retries=3,
 )
 def embed_signal_task(self, source_type: str, source_id: str) -> dict:
-    """Vectorize a tweet or analysis result into the public_signals collection."""
+    """Index raw tweets or canonical per-instrument claims into public signals."""
     from hashlib import sha256
     from uuid import UUID
 
     from app.core.config import settings
     from app.models.content_chunk import ContentChunk
+    from app.models.instrument_claim import InstrumentClaim
     from app.rag.chunking import chunk_analysis, chunk_tweet
     from app.rag.embeddings import get_embedder
     from app.rag.vector_store import get_vector_store
-    from app.services.instrument_resolver import is_downstream_verified_ticker
 
     db = SessionLocal()
     try:
+        specs: list[dict] = []
+        cleanup_targets: set[tuple[str, str]] = set()
+        old_vector_ids: list[str] = []
         if source_type == "tweet":
             tweet = db.get(Tweet, UUID(source_id))
             if not tweet or not tweet.content:
                 return {"skipped": True}
-            chunks = chunk_tweet(tweet.content)
-            tickers = []
-            analysis = db.execute(
-                select(AnalysisResult).where(
-                    AnalysisResult.tweet_id == tweet.id,
-                    AnalysisResult.analysis_type == "tweet_analysis",
-                )
-            ).scalar_one_or_none()
-            result_data = analysis.result if analysis else {}
-            tickers = result_data.get("tickers", [])
-            sentiment = result_data.get("overall_sentiment", "unknown")
-            # horizon 是 per-ticker 字段，取第一个有效值
-            horizon = "unknown"
-            for t in (tickers or []):
-                if is_downstream_verified_ticker(t) and t.get("horizon", "unknown") != "unknown":
-                    horizon = t["horizon"]
-                    break
-            metadata_base = {
-                "source_type": "tweet",
-                "source_id": str(tweet.id),
-                "blogger_handle": tweet.author_handle,
-                "sentiment": sentiment,
-                "horizon": horizon,
-                "published_at": tweet.published_at.isoformat() if tweet.published_at else "",
-                "credibility_score": 0.0,
-                "index_stage": "raw",
-            }
+            from app.services.commercial_attribution_service import (
+                detect_commercial_disclosure,
+            )
+
+            commercial_disclosure = detect_commercial_disclosure(tweet.content)
+            cleanup_targets.add(("tweet", str(tweet.id)))
+            specs.append(
+                {
+                    "source_type": "tweet",
+                    "source_id": str(tweet.id),
+                    "index_stage": "raw",
+                    "chunks": chunk_tweet(tweet.content),
+                    "metadata": {
+                        "blogger_handle": tweet.author_handle,
+                        "published_at": (
+                            tweet.published_at.isoformat()
+                            if tweet.published_at
+                            else ""
+                        ),
+                        "ticker": "",
+                        "direction": "none",
+                        "sentiment": "none",
+                        "horizon": "unknown",
+                        "has_commercial_content": bool(
+                            commercial_disclosure.get("has_commercial_content")
+                        ),
+                        "sponsor_name": str(
+                            commercial_disclosure.get("sponsor_name") or ""
+                        ),
+                        "sponsor_handle": str(
+                            commercial_disclosure.get("sponsor_handle") or ""
+                        ),
+                        "commercial_placement": str(
+                            commercial_disclosure.get("placement") or "none"
+                        ),
+                    },
+                }
+            )
         elif source_type == "analysis":
             analysis = db.get(AnalysisResult, UUID(source_id))
             if not analysis or not analysis.result:
                 return {"skipped": True}
             result_data = analysis.result
             tweet = db.get(Tweet, analysis.tweet_id)
-            tweet_text = tweet.content if tweet and tweet.content else ""
+            cleanup_targets.add(("analysis", str(analysis.id)))
+            old_claim_chunks = list(
+                db.execute(
+                    select(ContentChunk).where(
+                        ContentChunk.source_type == "claim",
+                        ContentChunk.metadata_["parent_analysis_id"].astext
+                        == str(analysis.id),
+                    )
+                ).scalars()
+            )
+            cleanup_targets.update(
+                ("claim", chunk.source_id) for chunk in old_claim_chunks
+            )
 
-            # 从结构化分析结果中提取有语义价值的字段，避免 str(dict) 噪声
-            parts: list[str] = []
-            if result_data.get("reasoning"):
-                parts.append(result_data["reasoning"])
-            if result_data.get("media_summary"):
-                parts.append("图片摘要：" + result_data["media_summary"])
-            if result_data.get("media_evidence"):
-                parts.append("图片证据：" + "；".join(result_data["media_evidence"]))
-            if result_data.get("text_image_consistency") not in (None, "no_media"):
-                parts.append("图文关系：" + result_data["text_image_consistency"])
-            if result_data.get("key_points"):
-                parts.append("核心观点：" + "；".join(result_data["key_points"]))
-            if result_data.get("statement_type"):
-                parts.append("内容类型：" + str(result_data["statement_type"]))
-            if result_data.get("thesis"):
-                parts.append("投资论点：" + str(result_data["thesis"]))
-            if result_data.get("catalysts"):
-                parts.append("催化剂：" + "；".join(result_data["catalysts"]))
-            if result_data.get("entry_conditions"):
-                parts.append("触发条件：" + "；".join(result_data["entry_conditions"]))
-            if result_data.get("invalidation_conditions"):
-                parts.append("失效条件：" + "；".join(result_data["invalidation_conditions"]))
-            if result_data.get("price_targets"):
-                target_text = [
-                    " ".join(
-                        str(item.get(key) or "")
-                        for key in ("symbol", "target_type", "value", "currency")
-                    ).strip()
-                    for item in result_data["price_targets"]
-                    if isinstance(item, dict)
+            claims = list(
+                db.execute(
+                    select(InstrumentClaim)
+                    .where(
+                        InstrumentClaim.analysis_result_id == analysis.id,
+                        InstrumentClaim.downstream_eligible.is_(True),
+                    )
+                    .order_by(InstrumentClaim.claim_index)
+                ).scalars()
+            )
+            for claim in claims:
+                parts = [
+                    f"标的：{claim.instrument_symbol}",
+                    f"观点方向：{claim.direction}",
+                    f"投资周期：{claim.horizon}",
+                    f"观点类型：{claim.claim_type}",
+                    f"观点归属：{claim.opinion_source}",
                 ]
-                if target_text:
-                    parts.append("关键价格：" + "；".join(target_text))
-            if result_data.get("is_sponsored"):
-                parts.append("内容属性：赞助或推广")
-            if result_data.get("tickers"):
-                ticker_descs = []
-                for t in result_data["tickers"]:
-                    if is_downstream_verified_ticker(t):
-                        ticker_descs.append(f"{t.get('symbol', '')}({t.get('sentiment', '')})")
-                if ticker_descs:
-                    parts.append("标的：" + "、".join(ticker_descs))
-            if result_data.get("risk_factors"):
-                parts.append("风险：" + "；".join(result_data["risk_factors"]))
-            summary_text = "\n".join(parts) if parts else result_data.get("overall_sentiment", "neutral")
-
-            content = f"{tweet_text}\n\n分析：{summary_text}" if tweet_text else summary_text
-            chunks = chunk_analysis(content, settings.chunk_size_analysis)
-            tickers = result_data.get("tickers", [])
-            sentiment = result_data.get("overall_sentiment", "neutral")
-            horizon = "unknown"
-            for t in (tickers or []):
-                if is_downstream_verified_ticker(t) and t.get("horizon", "unknown") != "unknown":
-                    horizon = t["horizon"]
-                    break
-            metadata_base = {
-                "source_type": "analysis",
-                "source_id": str(analysis.id),
-                "blogger_handle": tweet.author_handle if tweet else "",
-                "sentiment": sentiment,
-                "horizon": horizon,
-                "published_at": tweet.published_at.isoformat() if tweet and tweet.published_at else "",
-                "credibility_score": analysis.confidence or 0.0,
-                "parent_tweet_id": str(analysis.tweet_id),
-                "index_stage": "analysis",
-            }
+                if claim.thesis:
+                    parts.append("核心论点：" + claim.thesis)
+                if claim.evidence:
+                    parts.append("正文证据：" + "；".join(claim.evidence))
+                if claim.media_evidence:
+                    parts.append("图片证据：" + "；".join(claim.media_evidence))
+                if claim.catalysts:
+                    parts.append("催化因素：" + "；".join(claim.catalysts))
+                if claim.risk_factors:
+                    parts.append("风险：" + "；".join(claim.risk_factors))
+                if claim.entry_conditions:
+                    parts.append("触发条件：" + "；".join(claim.entry_conditions))
+                if claim.invalidation_conditions:
+                    parts.append(
+                        "失效条件：" + "；".join(claim.invalidation_conditions)
+                    )
+                if result_data.get("tweet_summary"):
+                    parts.append("推文背景：" + str(result_data["tweet_summary"]))
+                content = "\n".join(parts)
+                specs.append(
+                    {
+                        "source_type": "claim",
+                        "source_id": str(claim.id),
+                        "index_stage": "claim",
+                        "chunks": chunk_analysis(
+                            content,
+                            settings.chunk_size_analysis,
+                        ),
+                        "metadata": {
+                            "parent_analysis_id": str(analysis.id),
+                            "parent_tweet_id": str(analysis.tweet_id),
+                            "blogger_handle": tweet.author_handle if tweet else "",
+                            "published_at": (
+                                tweet.published_at.isoformat()
+                                if tweet and tweet.published_at
+                                else ""
+                            ),
+                            "ticker": claim.instrument_symbol,
+                            "direction": claim.direction,
+                            "sentiment": claim.direction,
+                            "horizon": claim.horizon,
+                            "claim_type": claim.claim_type,
+                            "opinion_source": claim.opinion_source,
+                            "claim_confidence": claim.confidence,
+                            "downstream_eligible": True,
+                            "has_commercial_content": bool(
+                                result_data.get("is_sponsored")
+                            ),
+                            "sponsor_name": str(
+                                (
+                                    result_data.get("commercial_disclosure")
+                                    or {}
+                                ).get("sponsor_name")
+                                or ""
+                            ),
+                            "sponsor_handle": str(
+                                (
+                                    result_data.get("commercial_disclosure")
+                                    or {}
+                                ).get("sponsor_handle")
+                                or ""
+                            ),
+                            "sponsor_relation": claim.sponsor_relation,
+                            "performance_eligible": claim.performance_eligible,
+                            "performance_exclusion_reason": (
+                                claim.performance_exclusion_reason or ""
+                            ),
+                        },
+                    }
+                )
         else:
             return {"error": f"Unknown source_type: {source_type}"}
 
-        if not chunks:
-            return {"skipped": True, "reason": "empty content"}
+        for cleanup_type, cleanup_id in cleanup_targets:
+            existing_chunks = db.execute(
+                select(ContentChunk).where(
+                    ContentChunk.source_type == cleanup_type,
+                    ContentChunk.source_id == cleanup_id,
+                )
+            ).scalars().all()
+            old_vector_ids.extend(
+                chunk.vector_id for chunk in existing_chunks if chunk.vector_id
+            )
+        cleanup_stats = {"pg_deleted": 0, "es_deleted": 0, "milvus_deleted": 0}
+        for cleanup_type, cleanup_id in cleanup_targets:
+            result = _delete_existing_source_chunks(
+                db,
+                cleanup_type,
+                cleanup_id,
+            )
+            cleanup_stats["pg_deleted"] += result["pg_deleted"]
+            cleanup_stats["es_deleted"] += result["es_deleted"]
 
-        # Normalize tickers: can be ["BTC"] or [{"symbol": "NOK", ...}]
-        ticker_symbols: list[str] = []
-        for t in (tickers or []):
-            if is_downstream_verified_ticker(t):
-                ticker_symbols.append(t["symbol"])
+        vs = None
+        if old_vector_ids:
+            try:
+                vs = get_vector_store()
+                vs.delete("public_signals", old_vector_ids)
+                cleanup_stats["milvus_deleted"] = len(old_vector_ids)
+            except Exception as exc:
+                logger.warning("[Celery] Milvus source cleanup skipped: %s", exc)
 
-        # Store tickers as a normalized string for vector metadata filtering.
-        tickers_str = ",".join(ticker_symbols) if ticker_symbols else ""
+        entries = [
+            {
+                **spec,
+                "chunk_index": index,
+                "content": chunk_text,
+            }
+            for spec in specs
+            for index, chunk_text in enumerate(spec["chunks"])
+            if chunk_text
+        ]
+        if not entries:
+            db.commit()
+            return {
+                "skipped": True,
+                "reason": "no eligible claim content",
+                "cleanup": cleanup_stats,
+            }
 
-        # 短文本 context 增强：对 ≤100 字的 chunk 拼接 [博主][日期][标的] 前缀用于 embedding
-        # 存储 content 保持原文不变，只影响向量计算输入
         SHORT_TEXT_THRESHOLD = 100
         embed_texts = []
-        for chunk_text in chunks:
-            if len(chunk_text) <= SHORT_TEXT_THRESHOLD and source_type == "tweet":
+        for entry in entries:
+            chunk_text = entry["content"]
+            metadata = entry["metadata"]
+            if len(chunk_text) <= SHORT_TEXT_THRESHOLD and entry["source_type"] == "tweet":
                 prefix_parts = []
-                if metadata_base.get("blogger_handle"):
-                    prefix_parts.append(f"@{metadata_base['blogger_handle']}")
-                if metadata_base.get("published_at"):
-                    prefix_parts.append(metadata_base["published_at"][:10])
-                if tickers_str:
-                    prefix_parts.append(tickers_str)
+                if metadata.get("blogger_handle"):
+                    prefix_parts.append(f"@{metadata['blogger_handle']}")
+                if metadata.get("published_at"):
+                    prefix_parts.append(metadata["published_at"][:10])
                 prefix = " ".join(prefix_parts)
                 embed_texts.append(f"[{prefix}] {chunk_text}" if prefix else chunk_text)
             else:
                 embed_texts.append(chunk_text)
 
-        vs = get_vector_store()
+        vs = vs or get_vector_store()
         embedder = get_embedder()
         vectors = embedder.embed_documents(embed_texts)
-        indexed = 0
         rows_to_index = []
-        cleanup_stats = _delete_existing_source_chunks(db, source_type, source_id)
-
-        for i, chunk_text in enumerate(chunks):
+        for entry in entries:
+            chunk_text = entry["content"]
             content_hash = sha256(chunk_text.encode("utf-8")).hexdigest()
-            vector_id = f"{source_type}:{source_id}:{i}"
-            index_stage = str(metadata_base["index_stage"])
-            meta = {
-                key: value
-                for key, value in {**metadata_base, "ticker": tickers_str}.items()
-                if key not in {"source_type", "source_id", "index_stage"}
-            }
+            row_source_type = str(entry["source_type"])
+            row_source_id = str(entry["source_id"])
+            chunk_index = int(entry["chunk_index"])
+            vector_id = f"{row_source_type}:{row_source_id}:{chunk_index}"
             row = ContentChunk(
-                source_type=source_type,
-                source_id=str(source_id),
-                index_stage=index_stage,
-                chunk_index=i,
+                source_type=row_source_type,
+                source_id=row_source_id,
+                index_stage=str(entry["index_stage"]),
+                chunk_index=chunk_index,
                 content=chunk_text,
                 content_hash=content_hash,
                 char_count=len(chunk_text),
-                metadata_=meta,
+                metadata_=entry["metadata"],
                 vector_id=vector_id,
             )
             db.add(row)
             rows_to_index.append(row)
-            indexed += 1
 
         db.flush()
         _record_index_jobs(db, rows_to_index, target="milvus", status="pending", attempts=0)
@@ -809,7 +900,14 @@ def embed_signal_task(self, source_type: str, source_id: str) -> dict:
         return {
             "source_type": source_type,
             "source_id": source_id,
-            "indexed": indexed,
+            "indexed": len(rows_to_index),
+            "indexed_claims": len(
+                {
+                    row.source_id
+                    for row in rows_to_index
+                    if row.source_type == "claim"
+                }
+            ),
             "cleanup": cleanup_stats,
             "milvus": {"errors": len(rows_to_index) if milvus_error else 0},
             "es": es_stats,
@@ -875,10 +973,9 @@ def backfill_signals_task(self, batch_size: int = 100) -> dict:
     acks_late=True,
 )
 def backfill_analysis_signals_task(self, batch_size: int = 100) -> dict:
-    """回填历史分析结果的向量化。
+    """回填历史逐标的观点的向量化。
 
-    扫描 analysis_type='tweet_analysis' 且尚未在 content_chunks 中有
-    source_type='analysis' 记录的分析结果，分批 dispatch embed_signal_task。
+    找出仍有已核验 claim 未进入 content_chunks 的分析结果，按分析批量重建。
 
     手动触发：
       backfill_analysis_signals_task.delay(batch_size=200)
@@ -888,18 +985,26 @@ def backfill_analysis_signals_task(self, batch_size: int = 100) -> dict:
     db = SessionLocal()
     stats = {"dispatched": 0}
     try:
+        from app.models.instrument_claim import InstrumentClaim
+
         indexed_subq = (
             select(ContentChunk.source_id)
-            .where(ContentChunk.source_type == "analysis")
+            .where(ContentChunk.source_type == "claim")
             .scalar_subquery()
         )
 
         pending = db.execute(
             select(AnalysisResult)
+            .join(
+                InstrumentClaim,
+                InstrumentClaim.analysis_result_id == AnalysisResult.id,
+            )
             .where(
                 AnalysisResult.analysis_type == "tweet_analysis",
-                AnalysisResult.id.cast(sa.String).not_in(indexed_subq),
+                InstrumentClaim.downstream_eligible.is_(True),
+                InstrumentClaim.id.cast(sa.String).not_in(indexed_subq),
             )
+            .distinct()
             .order_by(AnalysisResult.created_at.desc())
             .limit(batch_size)
         ).scalars().all()
@@ -1073,6 +1178,7 @@ def retry_failed_index_jobs_task(
 )
 def reconcile_index_jobs_task(self, batch_size: int = 1000) -> dict:
     """Create missing ES/Milvus projection jobs and report storage count drift."""
+    from app.rag.keyword_store import get_keyword_store
     from app.rag.vector_store import get_vector_store
 
     db = SessionLocal()
@@ -1133,8 +1239,11 @@ def rebuild_elasticsearch_alias_task(
     switch_alias: bool = True,
 ) -> dict:
     """Build a new versioned ES index from PG content_chunks and optionally switch alias."""
+    from app.rag.keyword_store import get_keyword_store
+
     db = SessionLocal()
     store = get_keyword_store()
+    store.create_index_if_missing()
     index_name = target_index or store.next_versioned_index_name()
     stats = {
         "target_index": index_name,
@@ -1174,47 +1283,76 @@ def rebuild_elasticsearch_alias_task(
 
 @shared_task(
     bind=True,
-    name="app.scheduler.tasks.rebuild_analysis_chunks_task",
+    name="app.scheduler.tasks.rebuild_claim_chunks_task",
     acks_late=True,
 )
-def rebuild_analysis_chunks_task(self, batch_size: int = 100) -> dict:
-    """删除旧 analysis chunks 并重建（修复 str(dict) 噪声内容）。
+def rebuild_claim_chunks_task(self) -> dict:
+    """删除旧逐标的观点索引并从规范化 claims 重建。
 
     流程：
-      1. 从 content_chunks 删除 source_type='analysis' 的所有记录
-      2. 从 Milvus public_signals 删除对应向量
-      3. 逐批 dispatch embed_signal_task 重新入库
+      1. 从 PG、ES、Milvus 删除 claim 和遗留 analysis 索引
+      2. 找出至少有一项已核验观点的分析结果
+      3. 逐条 dispatch embed_signal_task 重建 claim 索引
 
     手动触发：
-      rebuild_analysis_chunks_task.delay()
+      rebuild_claim_chunks_task.delay()
     """
     from app.models.content_chunk import ContentChunk
+    from app.models.instrument_claim import InstrumentClaim
+    from app.rag.keyword_store import get_keyword_store
     from app.rag.vector_store import get_vector_store
 
     db = SessionLocal()
-    stats = {"deleted_pg": 0, "deleted_vectors": 0, "dispatched": 0}
+    stats = {
+        "deleted_pg": 0,
+        "deleted_es": 0,
+        "deleted_vectors": 0,
+        "dispatched": 0,
+    }
     try:
-        old_chunks = db.execute(
-            select(ContentChunk).where(ContentChunk.source_type == "analysis")
-        ).scalars().all()
+        old_chunks = list(
+            db.execute(
+                select(ContentChunk).where(
+                    ContentChunk.source_type.in_(("claim", "analysis"))
+                )
+            ).scalars()
+        )
 
         vector_ids = [c.vector_id for c in old_chunks if c.vector_id]
         stats["deleted_pg"] = len(old_chunks)
-
-        for c in old_chunks:
-            db.delete(c)
+        for chunk in old_chunks:
+            db.delete(chunk)
+        try:
+            store = get_keyword_store()
+            for indexed_source_type in ("claim", "analysis"):
+                deleted = store.delete_by_source_type(indexed_source_type)
+                stats["deleted_es"] += int(deleted.get("deleted") or 0)
+        except Exception as exc:
+            logger.warning("[Celery] Elasticsearch claim cleanup skipped: %s", exc)
         db.commit()
 
-        if vector_ids:
-            vs = get_vector_store()
-            vs.delete("public_signals", vector_ids)
-            stats["deleted_vectors"] = len(vector_ids)
-
-        all_analyses = db.execute(
-            select(AnalysisResult).where(
-                AnalysisResult.analysis_type == "tweet_analysis",
+        vs = get_vector_store()
+        for indexed_source_type in ("claim", "analysis"):
+            vs.delete_where(
+                "public_signals",
+                {"source_type": indexed_source_type},
             )
-        ).scalars().all()
+        stats["deleted_vectors"] = len(vector_ids)
+
+        all_analyses = list(
+            db.execute(
+                select(AnalysisResult)
+                .join(
+                    InstrumentClaim,
+                    InstrumentClaim.analysis_result_id == AnalysisResult.id,
+                )
+                .where(
+                    AnalysisResult.analysis_type == "tweet_analysis",
+                    InstrumentClaim.downstream_eligible.is_(True),
+                )
+                .distinct()
+            ).scalars()
+        )
 
         for ar in all_analyses:
             embed_signal_task.delay("analysis", str(ar.id))
@@ -1226,7 +1364,7 @@ def rebuild_analysis_chunks_task(self, batch_size: int = 100) -> dict:
     finally:
         db.close()
 
-    logger.info("[Celery] rebuild_analysis_chunks: %s", stats)
+    logger.info("[Celery] rebuild_claim_chunks: %s", stats)
     return stats
 
 
@@ -1270,11 +1408,8 @@ def rebuild_tweet_chunks_task(self) -> dict:
 
         all_tweets = db.execute(
             select(Tweet.id)
-            .join(AnalysisResult, AnalysisResult.tweet_id == Tweet.id)
             .where(
                 Tweet.content.is_not(None),
-                AnalysisResult.analysis_type == "tweet_analysis",
-                AnalysisResult.result["is_investment_related"].astext == "true",
             )
         ).scalars().all()
 

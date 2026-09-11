@@ -20,11 +20,22 @@ def _context_tweet(tweet: Tweet) -> dict:
     }
 
 
-def _bounded_references(references: list[dict] | None) -> list[dict]:
+def _bounded_references(
+    references: list[dict] | None,
+    *,
+    author_handle: str,
+) -> list[dict]:
     bounded = []
     for reference in (references or [])[:5]:
         item = dict(reference)
         item["content"] = str(item.get("content") or "")[:CONTEXT_CONTENT_LIMIT]
+        reference_author = str(item.get("author_handle") or "").lstrip("@").lower()
+        current_author = author_handle.lstrip("@").lower()
+        item["source_relation"] = (
+            "author_self"
+            if reference_author and reference_author == current_author
+            else "third_party"
+        )
         bounded.append(item)
     return bounded
 
@@ -67,10 +78,14 @@ def build_tweet_contexts(db: Session, tweets: list[Tweet]) -> dict:
             "quoted_tweet_id": tweet.quoted_tweet_id,
             "reposted_tweet_id": tweet.reposted_tweet_id,
             "author_thread": [_context_tweet(row) for row in selected],
-            "references": _bounded_references(tweet.referenced_tweets),
+            "references": _bounded_references(
+                tweet.referenced_tweets,
+                author_handle=tweet.author_handle,
+            ),
             "attribution_rule": (
-                "author_thread is the followed blogger's own context; references are "
-                "third-party content and must not be attributed to the blogger."
+                "author_thread and references marked author_self are the followed "
+                "blogger's own context; only references marked third_party must not "
+                "be attributed to the blogger."
             ),
         }
     return contexts

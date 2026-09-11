@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class MediaImageObservation(BaseModel):
@@ -26,6 +26,13 @@ class TweetMediaAnalysisOutput(BaseModel):
         "consistent", "complementary", "conflict", "image_only", "unclear"
     ] = "unclear"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_single_result(cls, value):
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+            return value[0]
+        return value
 
     @field_validator("tickers", mode="before")
     @classmethod

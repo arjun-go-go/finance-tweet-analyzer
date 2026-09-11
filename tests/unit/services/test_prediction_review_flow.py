@@ -3,8 +3,9 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.agents.prediction_agent import (
+    PREDICTION_RULE_VERSION,
     _generate_predictions,
-    evaluate_prediction_eligibility,
+    evaluate_claim_prediction_eligibility,
 )
 from app.models.analysis import AnalysisResult
 from app.models.prediction import Prediction
@@ -39,78 +40,125 @@ def _ticker(sentiment: str) -> dict:
     }
 
 
+def _claim(
+    direction: str,
+    *,
+    symbol: str = "NET",
+    tweet_id: str | None = None,
+    **overrides,
+) -> dict:
+    data = {
+        "id": str(uuid.uuid4()),
+        "analysis_result_id": str(uuid.uuid4()),
+        "tweet_id": tweet_id or str(uuid.uuid4()),
+        "blogger_handle": "researcher",
+        "published_at": NOW,
+        "tweet_type": "original",
+        "is_investment_relevant": True,
+        "is_sponsored": False,
+        "instrument": {**_ticker(direction), "symbol": symbol},
+        "direction": direction,
+        "horizon": "medium",
+        "forecast": {
+            "prediction_type": "price_direction",
+            "target_metric": "price_direction",
+            "target_operator": "up" if direction == "bullish" else "down",
+            "target_value": direction,
+            "target_unit": "direction",
+            "target_condition": "",
+            "temporal_expression": "未来三个月",
+            "forecast_source": "author",
+            "author_adopted": True,
+        },
+        "claim_type": "prediction",
+        "opinion_source": "author",
+        "thesis": "未来三个月可能继续上涨",
+        "evidence": ["未来三个月可能继续上涨"],
+        "media_evidence": [],
+        "confidence": 0.9,
+        "downstream_eligible": True,
+    }
+    data.update(overrides)
+    return data
+
+
 def test_prediction_generation_keeps_only_directional_views():
     tweet_id = str(uuid.uuid4())
-    tweets = [{"id": tweet_id, "published_at": NOW, "tweet_type": "original"}]
-    analyses = [
-        {
-            "tweet_id": tweet_id,
-            "author_handle": "researcher",
-            "is_investment_related": True,
-            "is_investment_relevant": True,
-            "is_prediction": True,
-            "statement_type": "prediction",
-            "opinion_source": "author",
-            "is_sponsored": False,
-            "text_evidence": ["未来三个月可能继续上涨"],
-            "confidence": 0.9,
-            "tickers": [_ticker("neutral"), {**_ticker("bullish"), "symbol": "AAPL"}],
-        }
+    claims = [
+        _claim("neutral", tweet_id=tweet_id),
+        _claim("bullish", symbol="AAPL", tweet_id=tweet_id),
     ]
 
-    predictions = _generate_predictions(analyses, tweets)
+    predictions = _generate_predictions(claims)
 
     assert [(item["ticker"], item["sentiment"]) for item in predictions] == [
         ("AAPL", "bullish")
     ]
-    assert predictions[0]["creation_rule_version"] == "prediction_eligibility_v2"
+    assert predictions[0]["creation_rule_version"] == PREDICTION_RULE_VERSION
     assert predictions[0]["eligibility_passed"] is True
     assert predictions[0]["instrument_snapshot"]["symbol"] == "AAPL"
+    assert predictions[0]["claim_id"] == claims[1]["id"]
 
 
 def test_prediction_eligibility_rejects_quote_sponsor_and_retweet():
-    base = {
-        "is_investment_related": True,
-        "is_prediction": True,
-        "statement_type": "prediction",
-        "opinion_source": "quoted",
-        "is_sponsored": True,
-        "text_evidence": ["BTC 下月上涨"],
-        "confidence": 0.9,
-        "tickers": [{**_ticker("bullish"), "symbol": "BTC"}],
-    }
+    claim = _claim(
+        "bullish",
+        opinion_source="quoted",
+    )
 
-    decision = evaluate_prediction_eligibility(base, {"tweet_type": "retweet"})
+    decision = evaluate_claim_prediction_eligibility(
+        claim,
+        analysis={"is_investment_relevant": True, "is_sponsored": True},
+        tweet={"tweet_type": "retweet"},
+    )
 
     assert decision["eligible"] is False
     assert decision["reason_codes"] == [
-        "opinion_not_author",
-        "sponsored_content",
+        "sponsor_relation_unclear",
         "pure_retweet",
+        "opinion_not_author",
     ]
 
 
-def test_prediction_eligibility_requires_ticker_horizon_and_evidence():
-    analysis = {
-        "is_investment_related": True,
-        "is_prediction": True,
-        "statement_type": "prediction",
-        "opinion_source": "author",
-        "text_evidence": ["看涨"],
-        "confidence": 0.9,
-        "tickers": [{
-            **_ticker("bullish"),
-            "horizon": "unknown",
-            "evidence": [],
-        }],
-    }
+def test_unrelated_platform_ad_does_not_exclude_author_prediction():
+    decision = evaluate_claim_prediction_eligibility(
+        _claim("bullish", sponsor_relation="unrelated"),
+        analysis={"is_investment_relevant": True, "is_sponsored": True},
+        tweet={"tweet_type": "original"},
+    )
 
-    decision = evaluate_prediction_eligibility(analysis, {"tweet_type": "original"})
+    assert decision["eligible"] is True
+    assert decision["reason_codes"] == []
+
+
+def test_prediction_eligibility_requires_time_basis_and_evidence():
+    claim = _claim(
+        "bullish",
+        horizon="unknown",
+        evidence=[],
+        forecast={
+            "prediction_type": "price_direction",
+            "target_metric": "price_direction",
+            "target_operator": "up",
+            "target_value": "bullish",
+            "target_unit": "direction",
+            "target_condition": "",
+            "temporal_expression": "",
+            "forecast_source": "author",
+            "author_adopted": True,
+        },
+    )
+
+    decision = evaluate_claim_prediction_eligibility(
+        claim,
+        analysis={"is_investment_relevant": True},
+        tweet={"tweet_type": "original"},
+    )
 
     assert decision["eligible"] is False
-    assert decision["reason_codes"] == ["no_eligible_instrument"]
-    assert decision["rejected_tickers"] == [
-        {"symbol": "NET", "reason_code": "horizon_missing"}
+    assert decision["reason_codes"] == [
+        "grounding_evidence_missing",
+        "time_basis_missing",
     ]
 
 
@@ -144,9 +192,10 @@ def test_persistence_keeps_creation_audit_and_instrument_snapshot():
             self.added.append(value)
 
     db = CaptureSession()
-    evidence = {"eligible": True, "rule_version": "prediction_eligibility_v2"}
+    evidence = {"eligible": True, "rule_version": PREDICTION_RULE_VERSION}
     candidate = {
         "analysis_id": str(uuid.uuid4()),
+        "claim_id": str(uuid.uuid4()),
         "tweet_id": str(uuid.uuid4()),
         "blogger_handle": "researcher",
         "ticker": "NET",
@@ -156,13 +205,13 @@ def test_persistence_keeps_creation_audit_and_instrument_snapshot():
         "verifiable_at": NOW + timedelta(days=30),
         "instrument_snapshot": _ticker("bullish"),
         "eligibility_passed": True,
-        "creation_rule_version": "prediction_eligibility_v2",
+        "creation_rule_version": PREDICTION_RULE_VERSION,
         "creation_evidence": evidence,
     }
 
     assert save_predictions_batch(db, [candidate]) == 1
     stored = db.added[0]
-    assert stored.creation_rule_version == "prediction_eligibility_v2"
+    assert stored.creation_rule_version == PREDICTION_RULE_VERSION
     assert stored.creation_evidence == evidence
     assert stored.instrument_snapshot["symbol"] == "NET"
 
@@ -204,7 +253,9 @@ def test_neutral_legacy_prediction_is_classified_for_automatic_exclusion():
 
 
 def test_manual_review_audit_preserves_recognized_identity():
-    prediction = SimpleNamespace(id=uuid.uuid4(), ticker="NET")
+    prediction = SimpleNamespace(
+        id=uuid.uuid4(), ticker="NET", verifier_type="market_price_direction"
+    )
     result = {
         "status": "manual_review",
         "review_type": "instrument_identity",
@@ -233,6 +284,7 @@ def test_successful_identity_check_creates_tracking_evidence():
         investment_horizon="medium",
         published_at=NOW,
         verifiable_at=NOW + timedelta(days=30),
+        verifier_type="market_price_direction",
     )
 
     result = _identity_tracking_result(prediction, _ticker("bullish"))

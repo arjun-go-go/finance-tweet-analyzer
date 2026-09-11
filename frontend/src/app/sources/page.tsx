@@ -24,11 +24,11 @@ type SourceScope = "followed" | "all";
 type SourceFilter = "all" | "active" | "paused";
 
 const STAGE_LABELS: Record<BloggerIngestionStage, string> = {
-  syncing: "首次同步中",
-  analyzing: "正在提取投资信息",
-  ready: "采集与分析已完成",
-  attention: "部分内容正在重试",
-  paused: "定时采集已暂停",
+  syncing: "正在同步",
+  analyzing: "正在分析",
+  ready: "采集中",
+  attention: "采集需重试",
+  paused: "已暂停",
 };
 
 export default function BloggersListPage() {
@@ -66,7 +66,7 @@ export default function BloggersListPage() {
         setItems(await fetchBloggers({ sort }));
       }
     } catch {
-      setError("信息源数据加载失败，请稍后重试。");
+      setError("博主数据加载失败，请稍后重试。");
     } finally {
       setLoading(false);
     }
@@ -137,7 +137,7 @@ export default function BloggersListPage() {
       setOnboarded(result);
       await load();
     } catch (err) {
-      setOnboardError(err instanceof Error ? err.message : "新增信息源失败，请稍后重试");
+      setOnboardError(err instanceof Error ? err.message : "添加博主失败，请稍后重试");
     } finally {
       setOnboarding(false);
     }
@@ -165,21 +165,20 @@ export default function BloggersListPage() {
 
   return <div className="product-page source-library-page">
     <WorkspacePageHeader
-      eyebrow="Source Intelligence"
-      title="信息源"
-      subtitle="只保留值得长期观察的人；系统持续采集公开推文、Thread 与图片，并提取可追溯的投资信息。"
-      actions={<button className="button-primary" onClick={() => setShowOnboard(true)}><AppIcon name="plus" />新增信息源</button>}
+      title="博主"
+      subtitle="管理你关注的 Twitter 博主，并查看他们的最新推文与观点。"
+      actions={<button className="button-primary" onClick={() => setShowOnboard(true)}><AppIcon name="plus" />添加博主</button>}
     />
     <div className="source-library-summary">
-      <span><i className="source-live-dot" /><strong>{sourceStats.active} 个来源持续采集</strong>{sourceStats.syncing ? `，${sourceStats.syncing} 个正在首次同步` : ""}</span>
-      <small>{sourceStats.attention ? `${sourceStats.attention} 个存在部分失败，系统将自动重试` : sourceStats.paused ? `${sourceStats.paused} 个已暂停` : "所有信息源运行正常"}</small>
+      <span><i className="source-live-dot" /><strong>{sourceStats.active} 位博主正在采集</strong>{sourceStats.syncing ? `，${sourceStats.syncing} 位正在同步` : ""}</span>
+      <small>{sourceStats.attention ? `${sourceStats.attention} 位采集需重试` : sourceStats.paused ? `${sourceStats.paused} 位已暂停` : "采集状态正常"}</small>
     </div>
     <div className="source-library-toolbar">
-      <SegmentedControl value={scope} options={[{ value: "followed", label: "我的关注" }, { value: "all", label: "全部来源" }]} onChange={(next) => { setScope(next); setFilter("all"); }} />
+      <SegmentedControl value={scope} options={[{ value: "followed", label: "我关注的" }, { value: "all", label: "全部博主" }]} onChange={(next) => { setScope(next); setFilter("all"); }} />
       <div className="source-library-filters">
         {([
           ["all", "全部"],
-          ["active", "持续采集"],
+          ["active", "采集中"],
           ["paused", "已暂停"],
         ] as Array<[SourceFilter, string]>).map(([value, label]) => <button key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{label}</button>)}
       </div>
@@ -189,10 +188,10 @@ export default function BloggersListPage() {
       <span>{unfollowNotice.message}</span>
       <button type="button" onClick={() => setUnfollowNotice(null)} aria-label="关闭提示"><AppIcon name="close" /></button>
     </div>}
-    {loading ? <PageLoading label="正在整理信息源" />
+    {loading ? <PageLoading label="正在加载博主" />
       : error ? <PageError detail={error} onRetry={load} />
-        : items.length === 0 ? <PageEmpty title={scope === "followed" ? "还没有关注 Twitter 博主" : "尚无可评估的信息源"} detail="点击“新增信息源”，输入 Twitter Handle 后会自动关注、抓取并分析。" action={<button className="button-primary mt-3" onClick={() => setShowOnboard(true)}>新增信息源</button>} />
-          : visibleItems.length === 0 ? <PageEmpty title="当前筛选下没有信息源" detail="切换其他状态，或新增一个 Twitter 信息源。" />
+        : items.length === 0 ? <PageEmpty title={scope === "followed" ? "还没有关注 Twitter 博主" : "还没有博主"} detail="输入 Twitter Handle 后，系统会自动关注、采集并分析公开推文。" action={<button className="button-primary mt-3" onClick={() => setShowOnboard(true)}>添加博主</button>} />
+          : visibleItems.length === 0 ? <PageEmpty title="当前筛选下没有博主" detail="切换其他状态，或添加一个 Twitter 博主。" />
             : <div className="source-library-list">{visibleItems.map((blogger) => <BloggerCard
               key={blogger.handle}
               blogger={blogger}
@@ -202,8 +201,8 @@ export default function BloggersListPage() {
 
     <ConfirmDialog
       open={Boolean(unfollowTarget)}
-      title="取消关注信息源"
-      message={unfollowTarget ? `取消关注 @${unfollowTarget.handle.replace(/^@/, "")} 后，它将不再进入你的今日情报和助手研究范围。历史推文会保留，定时抓取设置不会改变。` : ""}
+      title="取消关注博主"
+      message={unfollowTarget ? `取消关注 @${unfollowTarget.handle.replace(/^@/, "")} 后，它将不再进入你的动态和标的观点聚合。历史推文会保留，定时抓取设置不会改变。` : ""}
       confirmText="取消关注"
       variant="danger"
       onConfirm={confirmUnfollow}
@@ -216,7 +215,7 @@ export default function BloggersListPage() {
         {!onboarded ? <>
           <div className="source-onboard-heading">
             <span className="source-onboard-mark"><AppIcon name="sources" /></span>
-            <div><p>One-step source setup</p><h2 id="source-onboard-title">新增信息源</h2><span>输入 Twitter Handle，系统核对公开身份后自动开始采集。</span></div>
+            <div><h2 id="source-onboard-title">添加博主</h2><span>输入 Twitter Handle，系统核对公开身份后自动开始采集。</span></div>
           </div>
           <form onSubmit={submitOnboard} className="source-onboard-form">
             <label htmlFor="twitter-handle">Twitter Handle</label>
@@ -227,7 +226,6 @@ export default function BloggersListPage() {
             <button className="button-primary source-onboard-submit" type="submit" disabled={onboarding}>{onboarding ? "正在核对…" : "检查并开始采集"}<AppIcon name="arrow" /></button>
           </form>
         </> : <div className="source-onboard-success source-onboard-progress">
-          <p>Source connected</p>
           <h2>@{onboarded.handle} 已加入关注</h2>
           <div className="source-onboard-profile">
             {onboarded.avatar_url ? <img src={onboarded.avatar_url} alt="" /> : <span>{onboarded.handle.slice(0, 2).toUpperCase()}</span>}
@@ -242,9 +240,9 @@ export default function BloggersListPage() {
             <li className="is-done"><b>✓</b><span>身份核对<small>公开账号资料已保存</small></span></li>
             <li className="is-done"><b>✓</b><span>加入关注<small>已进入你的研究范围</small></span></li>
             <li className={ingestion && ingestion.stage !== "syncing" ? "is-done" : "is-active"}><b>{ingestion && ingestion.stage !== "syncing" ? "✓" : "3"}</b><span>采集推文与图片<small>{ingestion?.collected_tweets ? `已采集 ${ingestion.collected_tweets} 条` : "后台异步执行"}</small></span></li>
-            <li className={ingestion?.stage === "ready" ? "is-done" : ingestion?.stage === "analyzing" ? "is-active" : ""}><b>{ingestion?.stage === "ready" ? "✓" : "4"}</b><span>提取投资信息<small>{ingestion?.analyzed_tweets ? `已完成 ${ingestion.analyzed_tweets} 条` : "文本与图片联合分析"}</small></span></li>
+            <li className={ingestion?.stage === "ready" ? "is-done" : ingestion?.stage === "analyzing" ? "is-active" : ""}><b>{ingestion?.stage === "ready" ? "✓" : "4"}</b><span>提取标的与市场判断<small>{ingestion?.analyzed_tweets ? `已完成 ${ingestion.analyzed_tweets} 条` : "文本与图片联合分析"}</small></span></li>
           </ol>
-          <div><Link className="button-primary" href={`/sources/${encodeURIComponent(onboarded.handle)}`}>查看信息源<AppIcon name="arrow" /></Link><button className="button-secondary" onClick={closeOnboard}>在后台继续</button></div>
+          <div><Link className="button-primary" href={`/sources/${encodeURIComponent(onboarded.handle)}`}>查看博主<AppIcon name="arrow" /></Link><button className="button-secondary" onClick={closeOnboard}>在后台继续</button></div>
         </div>}
       </section>
     </div>}

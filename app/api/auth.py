@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.core.rate_limit import enforce_auth_rate_limit
 from app.models.user import User
 from app.services.auth_service import (
@@ -63,6 +64,7 @@ class UserResponse(BaseModel):
     email: str
     username: str
     status: str
+    is_admin: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -72,6 +74,16 @@ class LoginResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+def _user_response(user: User) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        username=user.username,
+        status=user.status,
+        is_admin=str(user.id) in settings.admin_user_ids,
+    )
 
 
 @router.post(
@@ -94,7 +106,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
     return LoginResponse(
         access_token=create_access_token(user_id),
         refresh_token=create_refresh_token(user_id),
-        user=UserResponse.model_validate(user),
+        user=_user_response(user),
     )
 
 
@@ -112,7 +124,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     return LoginResponse(
         access_token=create_access_token(user_id),
         refresh_token=create_refresh_token(user_id),
-        user=UserResponse.model_validate(user),
+        user=_user_response(user),
     )
 
 
@@ -152,4 +164,4 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+    return _user_response(current_user)

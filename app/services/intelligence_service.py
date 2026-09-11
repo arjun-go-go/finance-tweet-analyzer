@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.analysis import AnalysisResult
 from app.models.blogger import Blogger
+from app.models.instrument_claim import InstrumentClaim
 from app.models.intelligence_correction import IntelligenceCorrection
 from app.models.intelligence_event import IntelligenceEvent, IntelligenceTopic
 from app.models.prediction import Prediction
@@ -18,6 +19,7 @@ from app.models.tweet import Tweet
 from app.models.tweet_media_analysis import TweetMediaAnalysis
 from app.models.tweet_media_asset import TweetMediaAsset
 from app.models.user_blogger_follow import UserBloggerFollow
+from app.services.instrument_claim_service import serialize_instrument_claim
 
 
 WINDOW_HOURS = {"24h": 24, "3d": 72, "7d": 168}
@@ -79,6 +81,13 @@ def _topic_to_item(
     if not evidence_rows:
         return None
     evidence_rows.sort(key=lambda row: row["published_at"], reverse=True)
+    evidence_rows = list(
+        {
+            str(row["source_id"]): row
+            for row in reversed(evidence_rows)
+        }.values()
+    )
+    evidence_rows.sort(key=lambda row: row["published_at"], reverse=True)
     authors = {str(row["author"]).lower() for row in evidence_rows}
     author_followed = bool(authors & followed_handles)
     matched_tickers = sorted(set(topic.tickers or []) & tracked_tickers)
@@ -126,6 +135,7 @@ def _topic_to_item(
         "title": topic.title,
         "summary": topic.summary,
         "direction": topic.direction,
+        "horizon": topic.horizon,
         "tickers": topic.tickers or [],
         "author": evidence_rows[0]["author"],
         "confidence": topic.confidence,
@@ -195,19 +205,10 @@ def _tweet_detail(tweet: Tweet, *, relationship: str) -> dict:
 def _analysis_detail(analysis: AnalysisResult) -> dict:
     result = analysis.result or {}
     keys = (
-        "thesis",
+        "tweet_summary",
         "reasoning",
-        "key_points",
-        "catalysts",
-        "risk_factors",
-        "entry_conditions",
-        "invalidation_conditions",
-        "overall_sentiment",
-        "statement_type",
-        "opinion_source",
         "is_sponsored",
-        "text_evidence",
-        "media_evidence",
+        "commercial_disclosure",
         "media_summary",
         "media_confidence",
         "text_image_consistency",
@@ -226,6 +227,7 @@ def _verification_detail(
     evidence = verification.evidence or {}
     return {
         "id": str(verification.id),
+        "verification_type": verification.verification_type,
         "status": verification.status,
         "provider": verification.provider,
         "provider_symbol": verification.provider_symbol,
@@ -241,6 +243,7 @@ def _verification_detail(
         "identity": evidence.get("identity"),
         "identity_reason": evidence.get("identity_reason"),
         "rule_version": verification.rule_version,
+        "observation": verification.observation or {},
         "applied": verification.applied,
         "created_at": verification.created_at,
     }
@@ -252,11 +255,20 @@ def _prediction_detail(
 ) -> dict:
     return {
         "id": str(prediction.id),
+        "claim_id": str(prediction.claim_id) if prediction.claim_id else None,
         "ticker": prediction.ticker,
         "sentiment": prediction.sentiment,
+        "prediction_type": prediction.prediction_type,
+        "target_spec": prediction.target_spec or {},
+        "temporal_expression": prediction.temporal_expression,
         "investment_horizon": prediction.investment_horizon,
+        "horizon_source": prediction.horizon_source,
+        "time_confidence": prediction.time_confidence,
         "published_at": prediction.published_at,
         "verifiable_at": prediction.verifiable_at,
+        "verifier_type": prediction.verifier_type,
+        "scoring_eligible": prediction.scoring_eligible,
+        "verification_policy_version": prediction.verification_policy_version,
         "verdict": prediction.verdict,
         "score": prediction.score,
         "verified_at": prediction.verified_at,
@@ -320,6 +332,20 @@ def build_user_intelligence_detail(
     item.pop("_primary_ticker", None)
 
     primary_event, primary_analysis, primary_tweet = event_rows[0]
+    event_claim_ids = {
+        event.claim_id
+        for event, _analysis, _tweet in event_rows
+        if event.claim_id is not None
+    }
+    claim_rows = list(
+        db.execute(
+            select(InstrumentClaim).where(
+                InstrumentClaim.id.in_(event_claim_ids)
+            ).order_by(InstrumentClaim.claim_index)
+        ).scalars()
+    ) if event_claim_ids else []
+    claim_map = {claim.id: claim for claim in claim_rows}
+    primary_claim = claim_map.get(primary_event.claim_id)
     event_tweet_ids = {tweet.id for _event, _analysis, tweet in event_rows}
     conversation_keys = {
         value
@@ -397,10 +423,10 @@ def build_user_intelligence_detail(
     predictions = list(
         db.execute(
             select(Prediction)
-            .where(Prediction.tweet_id.in_(event_tweet_ids))
+            .where(Prediction.claim_id.in_(event_claim_ids))
             .order_by(Prediction.published_at.desc())
         ).scalars()
-    )
+    ) if event_claim_ids else []
     prediction_ids = [prediction.id for prediction in predictions]
     latest_verifications: dict[UUID, PredictionMarketVerification] = {}
     if prediction_ids:
@@ -415,7 +441,6 @@ def build_user_intelligence_detail(
         for verification in verification_rows:
             latest_verifications.setdefault(verification.prediction_id, verification)
 
-    primary_result = primary_analysis.result or {}
     return {
         "item": item,
         "tweet": _tweet_detail(primary_tweet, relationship="primary"),
@@ -430,11 +455,20 @@ def build_user_intelligence_detail(
         ],
         "media": media,
         "analysis": _analysis_detail(primary_analysis),
-        "instruments": [
-            instrument
-            for instrument in (primary_result.get("tickers") or [])
-            if isinstance(instrument, dict)
+        "claim": (
+            serialize_instrument_claim(primary_claim)
+            if primary_claim is not None
+            else None
+        ),
+        "claims": [
+            serialize_instrument_claim(claim)
+            for claim in claim_rows
         ],
+        "instruments": (
+            [primary_claim.instrument_snapshot]
+            if primary_claim is not None
+            else []
+        ),
         "predictions": [
             _prediction_detail(
                 prediction, latest_verifications.get(prediction.id)
@@ -445,6 +479,7 @@ def build_user_intelligence_detail(
             {
                 "event_id": str(event.id),
                 "analysis_id": str(analysis.id),
+                "claim_id": str(event.claim_id) if event.claim_id else None,
                 "tweet_id": str(tweet.id),
                 "model_used": analysis.model_used,
                 "pipeline_version": analysis.pipeline_version,

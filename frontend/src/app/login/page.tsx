@@ -31,7 +31,7 @@ export default function LoginPage() {
       {error && <div className="auth-error">{error}</div>}
       <form onSubmit={handleSubmit} className="auth-form">
         <label>邮箱<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="your@email.com" /></label>
-        <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} placeholder="至少 6 位" /></label>
+        <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required placeholder="输入密码" /></label>
         <button type="submit" disabled={loading}>{loading ? "正在验证…" : "进入工作台"}</button>
       </form>
     </AuthFrame>

@@ -50,13 +50,16 @@ def paths_for_scope(source_scope: list[str] | None) -> tuple[list[str], set[str]
         source = raw_source.lower()
         if source == "public_signals":
             requested = ("tweets", "analyses", "structured", "bm25")
-            allowed_types.update({"tweet", "analysis", "structured"})
+            allowed_types.update({"tweet", "claim", "structured"})
         elif source in {"tweet", "tweets"}:
             requested = ("tweets", "bm25")
             allowed_types.add("tweet")
         elif source in {"analysis", "analyses"}:
             requested = ("analyses", "structured", "bm25")
-            allowed_types.update({"analysis", "structured"})
+            allowed_types.update({"claim", "structured"})
+        elif source in {"claim", "claims"}:
+            requested = ("analyses", "structured", "bm25")
+            allowed_types.update({"claim", "structured"})
         elif source == "structured":
             requested = ("structured",)
             allowed_types.add("structured")
@@ -95,12 +98,11 @@ def _canonical_item(item: dict) -> dict:
     normalized["source_type"] = source_type
 
     source_id = str(metadata.get("source_id") or "")
-    chunk_index = metadata.get("chunk_index")
     old_id = str(normalized.get("unique_id") or "")
     if source_type == "tweet" and source_id:
         normalized["unique_id"] = f"tweet:{source_id}"
-    elif source_type == "analysis" and source_id:
-        normalized["unique_id"] = f"analysis:{source_id}"
+    elif source_type == "claim" and source_id:
+        normalized["unique_id"] = f"claim:{source_id}"
     elif not old_id:
         normalized["unique_id"] = hashlib.sha1(
             f"{source_type}:{normalized.get('content', '')}".encode("utf-8")
@@ -287,7 +289,7 @@ def hybrid_retrieve(
 
 def evidence_from_items(items: list[dict], *, content_limit: int = 1000) -> list[dict]:
     evidence: list[dict] = []
-    prefixes = {"analysis": "EA", "tweet": "ET", "structured": "EP"}
+    prefixes = {"claim": "EC", "tweet": "ET", "structured": "EP"}
     for item in items:
         metadata = item.get("metadata") or {}
         identity = str(item.get("unique_id") or metadata.get("source_id") or item.get("content", ""))
@@ -303,6 +305,20 @@ def evidence_from_items(items: list[dict], *, content_limit: int = 1000) -> list
                     or identity
                 ),
                 "ticker": metadata.get("ticker") or metadata.get("tickers") or "",
+                "direction": metadata.get("direction") or metadata.get("sentiment") or "",
+                "horizon": metadata.get("horizon") or "",
+                "claim_type": metadata.get("claim_type") or "",
+                "opinion_source": metadata.get("opinion_source") or "",
+                "has_commercial_content": bool(
+                    metadata.get("has_commercial_content", False)
+                ),
+                "sponsor_name": metadata.get("sponsor_name") or "",
+                "sponsor_handle": metadata.get("sponsor_handle") or "",
+                "sponsor_relation": metadata.get("sponsor_relation") or "",
+                "performance_eligible": metadata.get("performance_eligible"),
+                "performance_exclusion_reason": metadata.get(
+                    "performance_exclusion_reason"
+                ) or "",
                 "author": metadata.get("blogger_handle") or metadata.get("author") or "",
                 "published_at": metadata.get("published_at") or metadata.get("created_at"),
                 "content": str(item.get("content") or "")[:content_limit],

@@ -28,7 +28,6 @@ from app.services.trace_service import traced_node
 class SupervisorState(TypedDict):
     tweets: list[dict]                # 入口推文列表（原始数据）
     analyses: list[dict]              # 合并后的分析结果（merge 节点写入）
-    ticker_summaries: list[dict]      # 标的维度的聚合摘要
     phase: str                        # 当前阶段标记: classify / done
     classification: dict              # supervisor_classify 节点的分类结果
     # 并行 fan-out 节点的部分结果，使用 operator.add 在 fan-in 时合并
@@ -257,7 +256,7 @@ def route_after_classification(state: SupervisorState) -> list[Send]:
 # analysis_agent 与 risk_agent 是并行 fan-out，二者输出通过
 # Annotated[..., operator.add] 自动累积到 partial_analyses /
 # risk_assessments。本节点：
-#   1) 把风险因子按 tweet_id 回填到对应分析对象；
+#   1) 把风险因子按 tweet_id 和标的回填到对应 claim；
 #   2) 合并后直接结束（预测由 Celery 后台异步完成）。
 # ============================================================
 @traced_node("supervisor_merge")
@@ -274,7 +273,23 @@ def supervisor_merge_node(state: SupervisorState) -> dict:
     risk_map = {r["tweet_id"]: r for r in risk_assessments}
 
     merged = []
-    for analysis in partial_analyses:
+    for raw_analysis in partial_analyses:
+        analysis = {
+            **raw_analysis,
+            "claims": [
+                {
+                    **claim,
+                    "instrument": dict(claim.get("instrument") or {}),
+                }
+                for claim in (raw_analysis.get("claims") or [])
+                if isinstance(claim, dict)
+            ],
+            "market_views": [
+                dict(view)
+                for view in (raw_analysis.get("market_views") or [])
+                if isinstance(view, dict)
+            ],
+        }
         if state.get("classification", {}).get("degraded"):
             analysis["routing_degraded"] = True
             analysis["routing_degraded_reason"] = state["classification"].get(
@@ -283,38 +298,22 @@ def supervisor_merge_node(state: SupervisorState) -> dict:
         tweet_id = analysis.get("tweet_id")
         media_context = media_context_map.get(tweet_id)
         if media_context:
-            evidence: list[str] = []
-            for image in media_context.get("images", []):
-                evidence.extend(image.get("visual_evidence", []))
-                evidence.extend(image.get("numeric_facts", []))
             analysis["media_summary"] = media_context.get("combined_summary", "")
-            analysis["media_evidence"] = evidence[:12]
             analysis["text_image_consistency"] = media_context.get(
                 "text_image_consistency", "unclear"
             )
             analysis["media_confidence"] = media_context.get("confidence", 0.0)
         else:
             analysis["media_summary"] = ""
-            analysis["media_evidence"] = []
             analysis["text_image_consistency"] = "no_media"
             analysis["media_confidence"] = 0.0
         if tweet_id in risk_map:
             assessment = risk_map[tweet_id]
             raw_factors = assessment.get("risk_factors", [])
-            # 结构化风险因子 → 提取 description 作为 list[str] 保持向后兼容
-            if raw_factors and isinstance(raw_factors[0], dict):
-                analysis["risk_factors"] = [f.get("description", "") for f in raw_factors if f.get("description")]
-                analysis["risk_details"] = raw_factors
-            else:
-                analysis["risk_factors"] = raw_factors
-                analysis["risk_details"] = []
-            analysis["risk_level"] = assessment.get("risk_level", "low")
-            analysis["risk_summary"] = assessment.get("risk_summary", "")
-
-            # per-ticker 风险分配：将 risk_details 按 related_tickers 匹配到各标的
-            _enrich_tickers_with_risks(analysis)
-        elif "risk_factors" not in analysis:
-            analysis["risk_factors"] = []
+            analysis["risk_context"] = raw_factors
+            analysis["risk_context_level"] = assessment.get("risk_level", "low")
+            analysis["risk_context_summary"] = assessment.get("risk_summary", "")
+            _enrich_claims_with_risks(analysis)
         merged.append(analysis)
 
     return {
@@ -327,23 +326,24 @@ def supervisor_merge_node(state: SupervisorState) -> dict:
 _RISK_SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
-def _enrich_tickers_with_risks(analysis: dict) -> None:
-    """将 risk_details 按 related_tickers 分配到各 ticker 对象，计算 per-ticker risk level。"""
-    tickers = analysis.get("tickers", [])
-    risk_details = analysis.get("risk_details", [])
+def _enrich_claims_with_risks(analysis: dict) -> None:
+    """按 related_tickers 将结构化风险分配到独立标的观点。"""
+    claims = analysis.get("claims", [])
+    risk_details = analysis.get("risk_context", [])
 
-    if not tickers or not risk_details:
+    if not claims or not risk_details:
         return
 
-    ticker_symbols = {t.get("symbol", "").upper() for t in tickers}
-
-    for ticker in tickers:
-        symbol = ticker.get("symbol", "").upper()
+    for claim in claims:
+        instrument = claim.get("instrument") or {}
+        symbol = str(instrument.get("symbol") or "").upper()
         matched_risks = []
         for risk in risk_details:
+            if not isinstance(risk, dict):
+                continue
             related = [r.upper() for r in risk.get("related_tickers", [])]
-            # 匹配条件：明确关联该标的，或未指定关联标的（视为全局风险）
-            if symbol in related or (not related and len(ticker_symbols) == 1):
+            # 未指定标的的宏观/事件风险会影响推文中的全部 claim。
+            if symbol in related or not related:
                 matched_risks.append({
                     "category": risk.get("category", "market"),
                     "description": risk.get("description", ""),
@@ -351,14 +351,18 @@ def _enrich_tickers_with_risks(analysis: dict) -> None:
                     "urgency": risk.get("urgency", "near_term"),
                 })
 
-        ticker["risks"] = matched_risks
-        # per-ticker risk level = 最高 severity
+        claim["risks"] = matched_risks
+        descriptions = [
+            *list(claim.get("risk_factors") or []),
+            *[risk["description"] for risk in matched_risks if risk["description"]],
+        ]
+        claim["risk_factors"] = list(dict.fromkeys(descriptions))
         if matched_risks:
             max_sev = max(_RISK_SEVERITY_ORDER.get(r["severity"], 1) for r in matched_risks)
             level_map = {4: "critical", 3: "high", 2: "medium", 1: "low"}
-            ticker["ticker_risk_level"] = level_map.get(max_sev, "low")
+            claim["risk_level"] = level_map.get(max_sev, "low")
         else:
-            ticker["ticker_risk_level"] = "low"
+            claim["risk_level"] = "low"
 
 
 # ============================================================
@@ -372,7 +376,6 @@ def _enrich_tickers_with_risks(analysis: dict) -> None:
 def supervisor_finalize_node(state: SupervisorState) -> dict:
     return {
         "analyses": state.get("analyses", []),
-        "ticker_summaries": state.get("ticker_summaries", []),
         "phase": "done",
     }
 

@@ -8,6 +8,8 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.analysis import AnalysisResult
+from app.models.instrument_claim import InstrumentClaim
+from app.services.instrument_claim_service import evaluate_claim_performance_eligibility
 from app.models.instrument_correction_rule import InstrumentCorrectionRule
 from app.models.prediction import Prediction
 from app.models.prediction_market_verification import PredictionMarketVerification
@@ -25,6 +27,15 @@ from app.services.instrument_resolver import (
     validate_instrument_candidate,
 )
 from app.services.outbox_service import enqueue_outbox_event
+
+
+AUTO_VERIFICATION_RULES = (
+    "market_auto_v1",
+    "market_price_direction_v2",
+    "market_price_target_v1",
+    "fundamental_metric_v1",
+    "event_outcome_v1",
+)
 
 
 def validate_prediction_instrument(body) -> dict:
@@ -74,6 +85,27 @@ def _replace_analysis_instrument(
     return replaced
 
 
+def _replace_claim_instrument(
+    claim: InstrumentClaim | None,
+    snapshot: dict,
+) -> bool:
+    if claim is None:
+        return False
+    claim.instrument_symbol = str(snapshot.get("symbol") or "").upper()
+    claim.instrument_snapshot = snapshot
+    claim.downstream_eligible = is_downstream_verified_ticker(snapshot)
+    claim.performance_eligible, claim.performance_exclusion_reason = (
+        evaluate_claim_performance_eligibility(
+            downstream_eligible=claim.downstream_eligible,
+            opinion_source=claim.opinion_source,
+            claim_type=claim.claim_type,
+            direction=claim.direction,
+            sponsor_relation=claim.sponsor_relation,
+        )
+    )
+    return True
+
+
 def verify_prediction(
     db: Session, prediction_id: str, body: VerifyRequest
 ) -> dict:
@@ -87,7 +119,10 @@ def verify_prediction(
     ).scalar_one_or_none()
     if prediction is None:
         raise HTTPException(status_code=404, detail="Prediction not found")
-    if prediction.sentiment not in {"bullish", "bearish"}:
+    if (
+        prediction.prediction_type == "price_direction"
+        and prediction.sentiment not in {"bullish", "bearish"}
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -97,6 +132,15 @@ def verify_prediction(
         )
     if prediction.verdict == "excluded":
         raise HTTPException(status_code=409, detail="Excluded prediction cannot be scored")
+    if not prediction.scoring_eligible:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "dedicated_verifier_required",
+                "message": "该预测尚无已启用的确定性验证器，不能人工写入计分结果",
+                "verifier_type": prediction.verifier_type,
+            },
+        )
 
     now = datetime.now(timezone.utc)
     if prediction.verifiable_at and prediction.verifiable_at > now:
@@ -204,7 +248,10 @@ def correct_prediction_instrument(
             Prediction.id != prediction.id,
             Prediction.blogger_handle == prediction.blogger_handle,
             Prediction.ticker == symbol,
+            Prediction.prediction_type == prediction.prediction_type,
             Prediction.sentiment == prediction.sentiment,
+            Prediction.investment_horizon == prediction.investment_horizon,
+            Prediction.target_spec == prediction.target_spec,
             Prediction.published_at >= prediction.published_at - timedelta(hours=24),
             Prediction.published_at <= prediction.published_at + timedelta(hours=24),
         ).limit(1)
@@ -213,7 +260,8 @@ def correct_prediction_instrument(
     supported = is_downstream_verified_ticker(snapshot)
 
     analysis = db.get(AnalysisResult, prediction.analysis_id)
-    old_item = next(
+    claim = db.get(InstrumentClaim, prediction.claim_id) if prediction.claim_id else None
+    old_item = claim.instrument_snapshot if claim else next(
         (
             item for item in ((analysis.result or {}).get("tickers") or [])
             if isinstance(item, dict)
@@ -225,7 +273,10 @@ def correct_prediction_instrument(
     prediction.instrument_snapshot = snapshot
     prediction.note = reason
 
-    analysis_updated = _replace_analysis_instrument(analysis, old_symbol, snapshot)
+    claim_updated = _replace_claim_instrument(claim, snapshot)
+    analysis_updated = claim_updated or _replace_analysis_instrument(
+        analysis, old_symbol, snapshot
+    )
     if analysis_updated:
         enqueue_outbox_event(
             db,
@@ -288,6 +339,7 @@ def correct_prediction_instrument(
             "reason": reason,
             "validation": validation,
             "analysis_updated": analysis_updated,
+            "claim_updated": claim_updated,
             "context_terms": context_terms,
             "duplicate_prediction_id": duplicate_id,
         },
@@ -303,6 +355,7 @@ def correct_prediction_instrument(
         prediction.note = evidence_reason
     verification = PredictionMarketVerification(
         prediction_id=prediction.id,
+        verification_type=prediction.verifier_type,
         status=status,
         provider="manual correction",
         provider_symbol=symbol,
@@ -311,6 +364,7 @@ def correct_prediction_instrument(
             "manual_instrument_dedup_v1" if duplicate else "manual_instrument_v1"
         ),
         evidence=evidence,
+        observation={"correction": evidence.get("correction") or {}},
         error_message=None if supported else evidence["reason"],
         applied=bool(duplicate),
         applied_at=applied_at,
@@ -359,6 +413,7 @@ def list_prediction_review_queue(
     unresolved_statuses = ("manual_review", "market_data_unavailable")
     filters = [
         Prediction.verdict.is_(None),
+        Prediction.scoring_eligible.is_(True),
         latest.c.status.in_(unresolved_statuses),
     ]
     if status != "all":
@@ -391,6 +446,7 @@ def list_prediction_review_queue(
             .join(Prediction, Prediction.id == latest.c.prediction_id)
             .where(
                 Prediction.verdict.is_(None),
+                Prediction.scoring_eligible.is_(True),
                 latest.c.status.in_(unresolved_statuses),
             )
             .group_by(latest.c.status)
@@ -408,6 +464,7 @@ def list_prediction_review_queue(
                 .outerjoin(latest, latest.c.prediction_id == Prediction.id)
                 .where(
                     Prediction.verdict.is_(None),
+                    Prediction.scoring_eligible.is_(True),
                     Prediction.verifiable_at <= now,
                     or_(
                         latest.c.status.is_(None),
@@ -423,7 +480,11 @@ def list_prediction_review_queue(
                 .outerjoin(latest, latest.c.prediction_id == Prediction.id)
                 .where(
                     Prediction.verdict.is_(None),
-                    Prediction.verifiable_at > now,
+                    Prediction.scoring_eligible.is_(True),
+                    or_(
+                        Prediction.verifiable_at.is_(None),
+                        Prediction.verifiable_at > now,
+                    ),
                     or_(
                         latest.c.status.is_(None),
                         ~latest.c.status.in_(unresolved_statuses),
@@ -435,7 +496,7 @@ def list_prediction_review_queue(
         "auto_verified": int(
             db.scalar(
                 select(func.count()).select_from(Prediction).where(
-                    Prediction.verified_by == "market_auto_v1"
+                    Prediction.verified_by.in_(AUTO_VERIFICATION_RULES)
                 )
             )
             or 0
@@ -486,10 +547,13 @@ def list_prediction_operations(
     unresolved_statuses = ("manual_review", "market_data_unavailable")
     review_filter = (
         Prediction.verdict.is_(None)
+        & Prediction.scoring_eligible.is_(True)
         & latest.c.status.in_(unresolved_statuses)
     )
     due_filter = (
         Prediction.verdict.is_(None)
+        & Prediction.scoring_eligible.is_(True)
+        & Prediction.verifiable_at.is_not(None)
         & (Prediction.verifiable_at <= now)
         & or_(
             latest.c.status.is_(None),
@@ -498,7 +562,11 @@ def list_prediction_operations(
     )
     tracking_filter = (
         Prediction.verdict.is_(None)
-        & (Prediction.verifiable_at > now)
+        & Prediction.scoring_eligible.is_(True)
+        & or_(
+            Prediction.verifiable_at.is_(None),
+            Prediction.verifiable_at > now,
+        )
         & or_(
             latest.c.status.is_(None),
             ~latest.c.status.in_(unresolved_statuses),
@@ -506,10 +574,12 @@ def list_prediction_operations(
     )
     verified_filter = Prediction.verdict.in_(("correct", "partial", "incorrect"))
     excluded_filter = Prediction.verdict == "excluded"
+    unscored_filter = Prediction.verdict.is_(None) & Prediction.scoring_eligible.is_(False)
     state_filters = {
         "tracking": tracking_filter,
         "due": due_filter,
         "review": review_filter,
+        "unscored": unscored_filter,
         "verified": verified_filter,
         "excluded": excluded_filter,
     }
@@ -537,8 +607,9 @@ def list_prediction_operations(
         (review_filter, 0),
         (due_filter, 1),
         (tracking_filter, 2),
-        (verified_filter, 3),
-        (excluded_filter, 4),
+        (unscored_filter, 3),
+        (verified_filter, 4),
+        (excluded_filter, 5),
         else_=5,
     )
     rows = db.execute(
@@ -556,6 +627,8 @@ def list_prediction_operations(
             return "excluded"
         if prediction.verdict in {"correct", "partial", "incorrect"}:
             return "verified"
+        if not prediction.scoring_eligible:
+            return "unscored"
         if verification and verification.status in unresolved_statuses:
             return "review"
         if prediction.verifiable_at and prediction.verifiable_at <= now:
@@ -584,7 +657,7 @@ def list_prediction_operations(
     stats["auto_verified"] = int(
         db.scalar(
             select(func.count()).select_from(Prediction).where(
-                Prediction.verified_by == "market_auto_v1"
+                Prediction.verified_by.in_(AUTO_VERIFICATION_RULES)
             )
         )
         or 0
@@ -605,8 +678,8 @@ def list_prediction_operations(
 
 
 def retry_prediction_market_verification(db: Session, prediction_id: str) -> dict:
-    """Retry one due prediction whose latest market-data attempt failed."""
-    from app.services.market_verification_service import verify_due_prediction
+    """Retry one prediction whose latest external-data attempt failed."""
+    from app.services.prediction_verification_service import verify_due_prediction
 
     try:
         pid = uuid.UUID(prediction_id)
@@ -624,7 +697,7 @@ def retry_prediction_market_verification(db: Session, prediction_id: str) -> dic
         .limit(1)
     ).scalar_one_or_none()
     if latest is None or latest.status != "market_data_unavailable":
-        raise HTTPException(status_code=409, detail="Prediction is not waiting for market-data retry")
+        raise HTTPException(status_code=409, detail="Prediction is not waiting for external-data retry")
     now = datetime.now(timezone.utc)
     if prediction.verifiable_at and prediction.verifiable_at > now:
         raise HTTPException(status_code=409, detail="Prediction is not due yet")
@@ -658,12 +731,17 @@ def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
     for cand in predictions:
         if (
             cand.get("eligibility_passed") is not True
-            or cand.get("creation_rule_version") != "prediction_eligibility_v2"
+            or cand.get("creation_rule_version") != "prediction_contract_v2"
             or not cand.get("analysis_id")
+            or not cand.get("claim_id")
             or not cand.get("tweet_id")
         ):
             continue
-        if cand.get("sentiment") not in {"bullish", "bearish"}:
+        prediction_type = str(cand.get("prediction_type") or "none")
+        if prediction_type == "price_direction" and cand.get("sentiment") not in {
+            "bullish",
+            "bearish",
+        }:
             continue
         pub = cand.get("published_at")
         if pub is None:
@@ -673,7 +751,10 @@ def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
                 and_(
                     Prediction.blogger_handle == cand["blogger_handle"],
                     Prediction.ticker == cand["ticker"],
+                    Prediction.prediction_type == prediction_type,
                     Prediction.sentiment == cand["sentiment"],
+                    Prediction.investment_horizon == cand["investment_horizon"],
+                    Prediction.target_spec == (cand.get("target_spec") or {}),
                     Prediction.published_at >= pub - timedelta(hours=24),
                     Prediction.published_at <= pub + timedelta(hours=24),
                 )
@@ -685,13 +766,24 @@ def save_predictions_batch(db: Session, predictions: list[dict]) -> int:
         prediction = Prediction(
             id=uuid.uuid4(),
             analysis_id=uuid.UUID(cand["analysis_id"]) if cand.get("analysis_id") else None,
+            claim_id=uuid.UUID(cand["claim_id"]),
             tweet_id=uuid.UUID(cand["tweet_id"]),
             blogger_handle=cand["blogger_handle"],
             ticker=cand["ticker"],
             sentiment=cand["sentiment"],
+            prediction_type=prediction_type,
+            target_spec=cand.get("target_spec") or {},
+            temporal_expression=cand.get("temporal_expression"),
             investment_horizon=cand.get("investment_horizon", "unknown"),
+            horizon_source=cand.get("horizon_source", "missing"),
+            time_confidence=float(cand.get("time_confidence") or 0.0),
             published_at=cand["published_at"],
             verifiable_at=cand["verifiable_at"],
+            verifier_type=cand.get("verifier_type", "unsupported"),
+            scoring_eligible=bool(cand.get("scoring_eligible", False)),
+            verification_policy_version=cand.get(
+                "verification_policy_version", "prediction_contract_v1"
+            ),
             instrument_snapshot=cand.get("instrument_snapshot"),
             creation_rule_version=cand.get("creation_rule_version"),
             creation_evidence=cand.get("creation_evidence"),

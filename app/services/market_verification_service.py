@@ -44,7 +44,7 @@ GOLD_HORIZON_THRESHOLDS = {
     "long": lambda: settings.gold_verification_long_return_threshold,
     "unknown": lambda: settings.gold_verification_medium_return_threshold,
 }
-AUTO_VERIFICATION_RULE_VERSION = "market_auto_v1"
+AUTO_VERIFICATION_RULE_VERSION = "market_price_direction_v2"
 PREDICTION_RUNTIME_TASK_KEY = "runtime:prediction_verification:task"
 PREDICTION_RUNTIME_SOURCE_PREFIX = "runtime:prediction_verification:source:"
 
@@ -147,6 +147,17 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _target_iso(prediction: Prediction) -> str | None:
+    return prediction.verifiable_at.isoformat() if prediction.verifiable_at else None
+
+
+def _prediction_is_due(prediction: Prediction, as_of: datetime) -> bool:
+    return bool(
+        prediction.verifiable_at
+        and _as_utc(prediction.verifiable_at) <= _as_utc(as_of)
+    )
 
 
 def _frame_records(frame: Any) -> list[dict]:
@@ -517,6 +528,49 @@ def _prediction_ticker(
     return _matching_ticker(analysis, prediction.ticker)
 
 
+def load_prediction_price_window(
+    db: Session,
+    prediction: Prediction,
+    end_at: datetime,
+) -> dict:
+    """Load the same auditable terminal-price window for any price verifier."""
+    analysis = db.get(AnalysisResult, prediction.analysis_id)
+    ticker = _prediction_ticker(analysis, prediction)
+    if not ticker:
+        raise ValueError("预测缺少已核验标的快照")
+    market = str(ticker.get("market") or "").upper()
+    price_proxy = None
+    if market == "CRYPTO" or str(ticker.get("asset_type") or "").startswith("crypto"):
+        window = _crypto_price_window(prediction.ticker, prediction.published_at, end_at)
+    elif market == "COMMODITY" or ticker.get("asset_type") == "commodity":
+        if prediction.ticker.upper() == "XAU":
+            window = _gold_price_window(prediction.published_at, end_at)
+            price_proxy = {
+                "business_symbol": "XAU",
+                "provider_symbol": "PAXGUSDT",
+                "disclosure": "黄金价格采用 PAXG/USDT 作为现货黄金代理，不代表 LBMA 官方定盘价",
+            }
+        else:
+            window = _commodity_price_window(
+                prediction.ticker,
+                prediction.published_at,
+                end_at,
+            )
+    else:
+        window = _stock_price_window(
+            prediction.ticker,
+            market,
+            prediction.published_at,
+            end_at,
+        )
+    return {
+        "ticker": ticker,
+        "market": market,
+        "window": window,
+        "price_proxy": price_proxy,
+    }
+
+
 def _identity_gate(ticker: dict, tweet_content: str) -> tuple[bool, str]:
     symbol = str(ticker.get("symbol") or "").upper()
     base_symbol = symbol.split(".")[0]
@@ -575,6 +629,8 @@ def _verdict(
 def preview_prediction_identity(
     db: Session,
     prediction: Prediction,
+    *,
+    require_direction: bool = True,
 ) -> dict | None:
     """Return a manual-review result when a prediction cannot map to one asset."""
     analysis = db.get(AnalysisResult, prediction.analysis_id)
@@ -586,8 +642,8 @@ def preview_prediction_identity(
         "sentiment": prediction.sentiment,
         "horizon": prediction.investment_horizon,
         "published_at": prediction.published_at.isoformat(),
-        "verifiable_at": prediction.verifiable_at.isoformat(),
-        "is_due": _as_utc(prediction.verifiable_at) <= datetime.now(timezone.utc),
+        "verifiable_at": _target_iso(prediction),
+        "is_due": _prediction_is_due(prediction, datetime.now(timezone.utc)),
         "write_back_allowed": False,
     }
     identity = {
@@ -598,7 +654,7 @@ def preview_prediction_identity(
         "validation_status": (ticker or {}).get("validation_status"),
         "validation_sources": (ticker or {}).get("validation_sources") or [],
     }
-    if prediction.sentiment not in {"bullish", "bearish"}:
+    if require_direction and prediction.sentiment not in {"bullish", "bearish"}:
         return {
             **base,
             "status": "excluded_non_directional",
@@ -642,8 +698,8 @@ def _identity_tracking_result(
         "sentiment": prediction.sentiment,
         "horizon": prediction.investment_horizon,
         "published_at": prediction.published_at.isoformat(),
-        "verifiable_at": prediction.verifiable_at.isoformat(),
-        "is_due": _as_utc(prediction.verifiable_at) <= datetime.now(timezone.utc),
+        "verifiable_at": _target_iso(prediction),
+        "is_due": _prediction_is_due(prediction, datetime.now(timezone.utc)),
         "write_back_allowed": False,
         "status": "tracking",
         "review_type": "instrument_identity",
@@ -667,6 +723,27 @@ def preview_prediction_verification(
 ) -> dict:
     """Build a read-only, auditable market verification result."""
     as_of = _as_utc(as_of or datetime.now(timezone.utc))
+    if (
+        prediction.verifier_type != "market_price_direction"
+        or not prediction.scoring_eligible
+    ):
+        return {
+            "prediction_id": str(prediction.id),
+            "prediction_type": prediction.prediction_type,
+            "verifier_type": prediction.verifier_type,
+            "status": "unsupported",
+            "reason": "该预测需要专用验证器，不能使用价格方向行情规则判定",
+            "write_back_allowed": False,
+        }
+    if prediction.verifiable_at is None:
+        return {
+            "prediction_id": str(prediction.id),
+            "prediction_type": prediction.prediction_type,
+            "verifier_type": prediction.verifier_type,
+            "status": "target_date_unresolved",
+            "reason": "预测目标日期尚未解析，不能执行行情验证",
+            "write_back_allowed": False,
+        }
     analysis = db.get(AnalysisResult, prediction.analysis_id)
     tweet = db.get(Tweet, prediction.tweet_id)
     ticker = _prediction_ticker(analysis, prediction)
@@ -676,9 +753,9 @@ def preview_prediction_verification(
         "sentiment": prediction.sentiment,
         "horizon": prediction.investment_horizon,
         "published_at": prediction.published_at.isoformat(),
-        "verifiable_at": prediction.verifiable_at.isoformat(),
+        "verifiable_at": _target_iso(prediction),
         "as_of": as_of.isoformat(),
-        "is_due": _as_utc(prediction.verifiable_at) <= as_of,
+        "is_due": _prediction_is_due(prediction, as_of),
         "write_back_allowed": False,
     }
     if prediction.verdict is not None:
@@ -770,6 +847,7 @@ def _audit_from_result(
     )
     return PredictionMarketVerification(
         prediction_id=prediction.id,
+        verification_type=prediction.verifier_type,
         status=status,
         provider=window.get("source") or (validation_sources[0] if validation_sources else None),
         provider_symbol=window.get("symbol") or identity.get("symbol") or prediction.ticker,
@@ -785,6 +863,12 @@ def _audit_from_result(
         proposed_score=result.get("preview_score"),
         rule_version=rule_version,
         evidence=result,
+        observation={
+            "price_window": window,
+            "raw_return": result.get("raw_return"),
+            "directional_return": result.get("directional_return"),
+            "threshold": result.get("threshold"),
+        },
         applied=bool(result.get("applied", False)),
         applied_at=result.get("applied_at"),
         error_message=(
@@ -805,6 +889,13 @@ def verify_due_prediction(
     now = _as_utc(as_of or datetime.now(timezone.utc))
     if prediction.verdict is not None:
         return {"prediction_id": str(prediction.id), "status": "already_verified"}
+    if (
+        prediction.verifier_type != "market_price_direction"
+        or not prediction.scoring_eligible
+    ):
+        return {"prediction_id": str(prediction.id), "status": "unsupported"}
+    if prediction.verifiable_at is None:
+        return {"prediction_id": str(prediction.id), "status": "target_date_unresolved"}
     if _as_utc(prediction.verifiable_at) > now:
         return {"prediction_id": str(prediction.id), "status": "not_due"}
 
@@ -850,6 +941,9 @@ def run_due_market_verifications(
         select(Prediction)
         .where(
             Prediction.verdict.is_(None),
+            Prediction.scoring_eligible.is_(True),
+            Prediction.verifier_type == "market_price_direction",
+            Prediction.verifiable_at.is_not(None),
             or_(
                 ~Prediction.sentiment.in_(("bullish", "bearish")),
                 ~exists().where(
@@ -868,7 +962,7 @@ def run_due_market_verifications(
         if identity_result is None:
             analysis = db.get(AnalysisResult, candidate.analysis_id)
             ticker = _prediction_ticker(analysis, candidate)
-            if ticker and _as_utc(candidate.verifiable_at) > now:
+            if ticker and candidate.verifiable_at and _as_utc(candidate.verifiable_at) > now:
                 db.add(_audit_from_result(candidate, _identity_tracking_result(candidate, ticker)))
             continue
 
@@ -896,9 +990,11 @@ def run_due_market_verifications(
         select(Prediction)
         .where(
             Prediction.verdict.is_(None),
+            Prediction.scoring_eligible.is_(True),
+            Prediction.verifier_type == "market_price_direction",
             Prediction.verifiable_at <= now,
             or_(
-                Prediction.instrument_snapshot.is_not(None),
+                Prediction.instrument_snapshot.has_key("manual_correction_reason"),
                 ~exists().where(
                     PredictionMarketVerification.prediction_id == Prediction.id,
                     PredictionMarketVerification.status == "manual_review",

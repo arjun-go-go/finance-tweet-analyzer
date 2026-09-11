@@ -40,9 +40,17 @@ class PredictionItem(BaseModel):
     blogger_handle: str | None = None
     ticker: str
     sentiment: str
+    prediction_type: str
+    target_spec: dict = Field(default_factory=dict)
+    temporal_expression: str | None = None
     investment_horizon: str
+    horizon_source: str
+    time_confidence: float
     published_at: datetime | None = None
     verifiable_at: datetime | None = None
+    verifier_type: str
+    scoring_eligible: bool
+    verification_policy_version: str
     verdict: str | None = None
     score: float | None = None
     verified_at: datetime | None = None

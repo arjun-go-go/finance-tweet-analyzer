@@ -10,6 +10,7 @@ from app.models.prediction import Prediction
 from app.models.tweet import Tweet
 from app.models.user import User
 from app.schemas.dashboard import DashboardOverview
+from app.services.instrument_claim_aggregation_service import aggregate_instrument_claims
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -43,19 +44,24 @@ def get_overview(
     ).scalar() or 0
     total_bloggers = db.execute(select(func.count(Blogger.id))).scalar() or 0
     pending_predictions = db.execute(
-        select(func.count(Prediction.id)).where(Prediction.verdict.is_(None))
+        select(func.count(Prediction.id)).where(
+            Prediction.verdict.is_(None),
+            Prediction.scoring_eligible.is_(True),
+        )
     ).scalar() or 0
 
-    recent_tickers_query = (
-        select(AnalysisResult)
-        .where(AnalysisResult.analysis_type == "ticker_summary")
-        .order_by(AnalysisResult.created_at.desc())
-        .limit(10)
-    )
-    recent = db.execute(recent_tickers_query).scalars().all()
+    recent = [
+        row
+        for row in aggregate_instrument_claims(db)
+        if row["has_effective_views"] and row["recommendation_score"] is not None
+    ][:10]
     top_tickers = [
-        {"id": str(r.id), "result": r.result, "confidence": r.confidence}
-        for r in recent
+        {
+            "id": row["ticker"],
+            "result": row,
+            "confidence": row["recommendation_score"] / 100,
+        }
+        for row in recent
     ]
 
     return DashboardOverview(

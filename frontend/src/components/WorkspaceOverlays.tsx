@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AppIcon from "@/components/AppIcon";
 import {
   fetchAlerts,
@@ -18,6 +18,10 @@ import { formatDateTime } from "@/lib/datetime";
 interface OverlayProps {
   open: boolean;
   onClose: () => void;
+}
+
+interface NotificationDrawerProps extends OverlayProps {
+  onUnreadChange?: (count: number) => void;
 }
 
 interface SourceResult {
@@ -77,11 +81,11 @@ export function GlobalSearchDialog({ open, onClose }: OverlayProps) {
         <div><b>关注博主</b><b>关注标的</b><b>已采集观点</b><b>原始证据</b></div>
         <p>结果只来自已经采集和核验的数据，不会访问公开网页补全。</p>
       </div> : loading ? <div className="global-search-state"><span className="signal-loader" /><strong>正在检索已采集内容</strong></div>
-        : resultCount === 0 ? <div className="global-search-state"><span className="search-state-mark">?</span><strong>没有找到“{query.trim()}”</strong><p>可检查关键词，或先新增一个 Twitter 信息源。</p><Link href="/sources?add=1" onClick={onClose}>新增信息源</Link></div>
+        : resultCount === 0 ? <div className="global-search-state"><span className="search-state-mark">?</span><strong>没有找到“{query.trim()}”</strong><p>可检查关键词，或先添加一个 Twitter 博主。</p><Link href="/sources?add=1" onClick={onClose}>添加博主</Link></div>
           : <div className="global-search-results">
             <p>找到 {resultCount} 条匹配结果</p>
-            {assetMatches.length > 0 && <section><header><strong>关注标的</strong><span>{assetMatches.length}</span></header>{assetMatches.map((item) => <Link key={item.id} href={`/watch/${encodeURIComponent(item.id)}`} onClick={onClose}><b className="search-symbol">{item.ticker}</b><span><strong>{item.instrument?.resolved_name || item.instrument?.name || item.ticker}</strong><small>{item.monitor.intelligence_24h || 0} 条 24h 情报</small></span><AppIcon name="arrow" /></Link>)}</section>}
-            {sourceMatches.length > 0 && <section><header><strong>信息源</strong><span>{sourceMatches.length}</span></header>{sourceMatches.map((item) => <Link key={item.id} href={`/sources/${encodeURIComponent(item.handle)}`} onClick={onClose}><b className="search-avatar">{item.name.slice(0, 2).toUpperCase()}</b><span><strong>{item.name} <i>@{item.handle.replace(/^@/, "")}</i></strong><small>{item.market_focus?.join(" · ") || "Twitter 信息源"}</small></span><AppIcon name="arrow" /></Link>)}</section>}
+            {assetMatches.length > 0 && <section><header><strong>关注标的</strong><span>{assetMatches.length}</span></header>{assetMatches.map((item) => <Link key={item.id} href={`/watch/${encodeURIComponent(item.ticker)}`} onClick={onClose}><b className="search-symbol">{item.ticker}</b><span><strong>{item.instrument?.resolved_name || item.instrument?.name || item.ticker}</strong><small>{item.monitor.intelligence_24h || 0} 条 24h 情报</small></span><AppIcon name="arrow" /></Link>)}</section>}
+            {sourceMatches.length > 0 && <section><header><strong>博主</strong><span>{sourceMatches.length}</span></header>{sourceMatches.map((item) => <Link key={item.id} href={`/sources/${encodeURIComponent(item.handle)}`} onClick={onClose}><b className="search-avatar">{item.name.slice(0, 2).toUpperCase()}</b><span><strong>{item.name} <i>@{item.handle.replace(/^@/, "")}</i></strong><small>{item.market_focus?.join(" · ") || "Twitter 博主"}</small></span><AppIcon name="arrow" /></Link>)}</section>}
             {insightMatches.length > 0 && <section><header><strong>观点与证据</strong><span>{insightMatches.length}</span></header>{insightMatches.map((item) => <Link key={item.id} href={`/insights/${encodeURIComponent(item.id)}`} onClick={onClose}><b className="search-symbol">{item.tickers[0] || "观点"}</b><span><strong>{item.title}</strong><small>@{item.author.replace(/^@/, "")} · {formatDateTime(item.published_at)}</small></span><AppIcon name="arrow" /></Link>)}</section>}
           </div>}
       <footer><span>只搜索已采集内容</span><Link href={clean ? `/tweets?q=${encodeURIComponent(query.trim())}` : "/tweets"} onClick={onClose}>查看全部推文</Link></footer>
@@ -89,20 +93,28 @@ export function GlobalSearchDialog({ open, onClose }: OverlayProps) {
   </div>;
 }
 
-export function NotificationDrawer({ open, onClose }: OverlayProps) {
+export function NotificationDrawer({ open, onClose, onUnreadChange }: NotificationDrawerProps) {
   const [items, setItems] = useState<UserAlertItem[]>([]);
   const [unread, setUnread] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     fetchAlerts("unread")
-      .then((result) => { setItems(result.items.slice(0, 12)); setUnread(result.unread); })
-      .catch(() => { setItems([]); setUnread(0); })
+      .then((result) => {
+        setItems(result.items.slice(0, 12));
+        setUnread(result.unread);
+        onUnreadChange?.(result.unread);
+      })
+      .catch(() => {
+        setItems([]);
+        setUnread(0);
+        onUnreadChange?.(0);
+      })
       .finally(() => setLoading(false));
-  };
+  }, [onUnreadChange]);
 
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [load, open]);
   if (!open) return null;
 
   return <div className="workspace-overlay workspace-overlay-right" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>

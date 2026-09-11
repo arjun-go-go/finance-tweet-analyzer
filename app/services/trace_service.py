@@ -240,8 +240,14 @@ def _extract_output_summary(result: dict | None) -> dict | None:
         summary["analyses_count"] = len(result["analyses"])
     if "predictions" in result:
         summary["predictions_count"] = len(result["predictions"])
-    if "ticker_summaries" in result:
-        summary["summaries_count"] = len(result["ticker_summaries"])
+    if "claims_created" in result:
+        summary["claims_count"] = int(result["claims_created"] or 0)
+    elif "analyses" in result:
+        summary["claims_count"] = sum(
+            len(item.get("claims") or [])
+            for item in result["analyses"]
+            if isinstance(item, dict)
+        )
     if "classification" in result:
         cls = result["classification"]
         summary["has_investment"] = cls.get("has_investment_content", False)

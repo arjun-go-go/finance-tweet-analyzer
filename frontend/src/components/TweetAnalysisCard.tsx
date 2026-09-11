@@ -2,49 +2,19 @@
 
 import { useState } from "react";
 import { formatDateTime } from "@/lib/datetime";
-import AnalysisInline from "./AnalysisInline";
+import AnalysisInline, {
+  groupInstrumentClaims,
+  isPerformanceEligibleClaim,
+  performanceExclusionLabel,
+  type AnalysisData,
+  type InstrumentClaimGroup,
+} from "./AnalysisInline";
 import TweetMediaGallery, { type TweetMediaItem } from "./TweetMediaGallery";
 
 interface TweetMetrics {
   likes?: number;
   retweets?: number;
   views?: number;
-}
-
-interface AnalysisData {
-  tickers: Array<{
-    symbol: string;
-    original_name: string;
-    sentiment: string;
-    horizon: string;
-    market?: string;
-    asset_type?: string;
-    tradable?: boolean;
-    validation_status?: string;
-    validation_sources?: string[];
-    verification?: {
-      downstream_eligible: boolean;
-    };
-    risks?: Array<{
-      category: string;
-      description: string;
-      severity: string;
-      urgency: string;
-    }>;
-    ticker_risk_level?: string;
-  }>;
-  overall_sentiment: string;
-  key_points: string[];
-  risk_factors: string[];
-  risk_level?: string;
-  risk_summary?: string;
-  confidence: number;
-  is_investment_related: boolean;
-  reasoning?: string;
-  media_summary?: string;
-  media_evidence?: string[];
-  text_image_consistency?: string;
-  media_confidence?: number;
 }
 
 interface TweetAnalysisCardProps {
@@ -71,8 +41,16 @@ const SENTIMENT_LABEL: Record<string, string> = {
   bullish: "看好",
   bearish: "看空",
   neutral: "中性",
-  mixed: "分化",
+  none: "无方向",
 };
+
+function groupStanceLabel(group: InstrumentClaimGroup) {
+  const effectiveClaims = group.claims.filter(isPerformanceEligibleClaim);
+  const labels = [...new Set(effectiveClaims.map((claim) => SENTIMENT_LABEL[claim.direction]))].filter(Boolean);
+  if (labels.length === 0) return performanceExclusionLabel(group.authorStances[0] || group.claims[0]);
+  if (labels.length === 1) return labels[0];
+  return "多周期";
+}
 
 export default function TweetAnalysisCard({
   id,
@@ -92,18 +70,19 @@ export default function TweetAnalysisCard({
 
   const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
   const isAnalyzed = status === "analyzed";
-  const verifiedTickers = (analysis?.tickers || []).filter(
-    (ticker) => ticker.verification
-      ? ticker.verification.downstream_eligible === true
-      : ticker.validation_status === "verified" && ticker.tradable === true,
+  const verifiedClaims = (analysis?.claims || []).filter(
+    (claim) => claim.downstream_eligible === true
+      || claim.instrument.verification?.downstream_eligible === true
+      || (claim.instrument.validation_status === "verified" && claim.instrument.tradable === true),
   );
+  const instrumentGroups = groupInstrumentClaims(verifiedClaims);
 
-  // Extract quick summary from analysis for card header
+  // A tweet is only the evidence container; header summaries are claim-level.
   const quickSummary = analysis?.is_investment_related
     ? {
-        sentiment: analysis.overall_sentiment,
-        tickers: verifiedTickers.slice(0, 3).map((t) => t.symbol),
-        remainingTickerCount: Math.max(0, verifiedTickers.length - 3),
+        groups: instrumentGroups.slice(0, 3),
+        remainingGroupCount: Math.max(0, instrumentGroups.length - 3),
+        totalInstrumentCount: groupInstrumentClaims(analysis.claims || []).length,
       }
     : null;
 
@@ -121,15 +100,16 @@ export default function TweetAnalysisCard({
           </span>
           {isAnalyzed && quickSummary && (
             <>
-              <span className={`direction direction-${quickSummary.sentiment}`}>
-                {SENTIMENT_LABEL[quickSummary.sentiment] || quickSummary.sentiment}
-              </span>
-              {quickSummary.tickers.length > 0 && (
-                <span className="tweet-tickers" aria-label="已核验标的">
-                  {quickSummary.tickers.map((ticker) => (
-                    <b key={ticker} title="已通过公开数据源核验">{ticker}<i>已核验</i></b>
+              <span className="status-pill">{quickSummary.totalInstrumentCount} 个标的</span>
+              {analysis?.is_sponsored && <span className="status-pill">含平台推广</span>}
+              {quickSummary.groups.length > 0 && (
+                <span className="tweet-tickers" aria-label="已核验逐标的观点">
+                  {quickSummary.groups.map((group) => (
+                    <b key={group.symbol} title="已通过公开数据源核验">
+                      {group.symbol}<i>{groupStanceLabel(group)}</i>
+                    </b>
                   ))}
-                  {quickSummary.remainingTickerCount > 0 && <em>+{quickSummary.remainingTickerCount}</em>}
+                  {quickSummary.remainingGroupCount > 0 && <em>+{quickSummary.remainingGroupCount}</em>}
                 </span>
               )}
             </>

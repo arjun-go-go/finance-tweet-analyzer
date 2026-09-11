@@ -6,10 +6,16 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_db
 from app.core.auth import get_current_user
 from app.models.analysis import AnalysisResult
+from app.models.instrument_claim import InstrumentClaim
 from app.models.tweet import Tweet
 from app.models.tweet_media_asset import TweetMediaAsset
 from app.models.user import User
 from app.schemas.tweet import TweetMediaItem
+from app.services.instrument_claim_service import (
+    analysis_payload_with_claims,
+    claims_by_analysis_ids,
+)
+from app.services.instrument_claim_aggregation_service import aggregate_instrument_claims
 
 router = APIRouter(prefix="/api", tags=["analysis-results"])
 
@@ -55,27 +61,39 @@ def list_tweet_analyses(
     db: Session = Depends(get_db),
 ):
     """逐条推文分析结果列表"""
+    filters = [AnalysisResult.analysis_type == "tweet_analysis"]
+    if blogger:
+        filters.append(Tweet.author_handle == blogger)
+    if sentiment:
+        author_stance_ids = select(InstrumentClaim.analysis_result_id).where(
+            InstrumentClaim.performance_eligible.is_(True),
+        )
+        if sentiment == "none":
+            filters.append(AnalysisResult.id.not_in(author_stance_ids))
+        else:
+            filters.append(
+                AnalysisResult.id.in_(
+                    author_stance_ids.where(InstrumentClaim.direction == sentiment)
+                )
+            )
+
     query = (
         select(AnalysisResult, Tweet)
         .join(Tweet, AnalysisResult.tweet_id == Tweet.id)
-        .where(AnalysisResult.analysis_type == "tweet_analysis")
+        .where(*filters)
         .order_by(Tweet.published_at.desc())
     )
 
-    if blogger:
-        query = query.where(Tweet.author_handle == blogger)
-    if sentiment:
-        query = query.where(AnalysisResult.result["overall_sentiment"].astext == sentiment)
-
-    count_query = select(func.count()).select_from(
-        select(AnalysisResult)
-        .where(AnalysisResult.analysis_type == "tweet_analysis")
-        .subquery()
+    count_query = (
+        select(func.count(AnalysisResult.id))
+        .join(Tweet, AnalysisResult.tweet_id == Tweet.id)
+        .where(*filters)
     )
     total = db.execute(count_query).scalar() or 0
 
     rows = db.execute(query.limit(limit).offset(offset)).all()
     media_map: dict[str, list[TweetMediaItem]] = {}
+    claim_map = claims_by_analysis_ids(db, [ar.id for ar, _tweet in rows])
     if rows:
         assets = db.execute(
             select(TweetMediaAsset)
@@ -103,7 +121,10 @@ def list_tweet_analyses(
             twitter_tweet_id=tw.tweet_id,
             author_handle=tw.author_handle,
             content=tw.content,
-            analysis=ar.result,
+            analysis=analysis_payload_with_claims(
+                ar.result,
+                claim_map.get(ar.id, []),
+            ),
             confidence=ar.confidence,
             created_at=ar.created_at.isoformat() if ar.created_at else "",
             published_at=tw.published_at.isoformat() if tw.published_at else "",
@@ -124,29 +145,15 @@ def list_ticker_summaries(
     _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """标的聚合推荐结果列表"""
-    query = (
-        select(AnalysisResult)
-        .where(AnalysisResult.analysis_type == "ticker_summary")
-        .order_by(AnalysisResult.created_at.desc())
-    )
-
-    count_query = select(func.count()).select_from(
-        select(AnalysisResult)
-        .where(AnalysisResult.analysis_type == "ticker_summary")
-        .subquery()
-    )
-    total = db.execute(count_query).scalar() or 0
-
-    rows = db.execute(query.limit(limit).offset(offset)).scalars().all()
-
+    """按规范化逐标的观点实时聚合，不再读取 ticker_summary 缓存行。"""
+    summaries = aggregate_instrument_claims(db)
+    page = summaries[offset:offset + limit]
     items = [
         TickerSummaryItem(
-            id=str(r.id),
-            result=r.result,
-            created_at=r.created_at.isoformat() if r.created_at else "",
+            id=summary["ticker"],
+            result=summary,
+            created_at="",
         )
-        for r in rows
+        for summary in page
     ]
-
-    return TickerSummariesResponse(items=items, total=total)
+    return TickerSummariesResponse(items=items, total=len(summaries))

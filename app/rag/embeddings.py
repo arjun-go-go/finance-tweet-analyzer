@@ -25,7 +25,6 @@ import functools
 import hashlib
 from typing import Protocol
 
-from langchain_community.embeddings import DashScopeEmbeddings
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -106,6 +105,8 @@ def get_embedder() -> Embedder:
 
     使用 lru_cache 保证整个进程只创建一个实例，避免重复初始化连接。
     """
+    from langchain_community.embeddings import DashScopeEmbeddings
+
     return DashScopeEmbeddings(
         model=settings.embedding_model,
         dashscope_api_key=settings.dashscope_api_key,

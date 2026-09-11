@@ -110,6 +110,7 @@ def count_pending_predictions_by_blogger(
         .where(
             Prediction.blogger_handle.in_(blogger_handles),
             Prediction.verdict.is_(None),
+            Prediction.scoring_eligible.is_(True),
         )
         .group_by(Prediction.blogger_handle)
     ).all()

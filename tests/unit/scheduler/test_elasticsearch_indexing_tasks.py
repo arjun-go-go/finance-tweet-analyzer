@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.models.index_job import IndexJob
+from app.rag import keyword_store
 from app.scheduler import tasks
 
 
@@ -24,7 +25,7 @@ def test_best_effort_upsert_indexes_canonical_content_chunk(monkeypatch):
             captured["docs"] = list(docs)
             return 1, []
 
-    monkeypatch.setattr(tasks, "get_keyword_store", lambda: Store())
+    monkeypatch.setattr(keyword_store, "get_keyword_store", lambda: Store())
     result = tasks._best_effort_upsert_es_chunks([Chunk()])
 
     assert result == {"attempted": 1, "indexed": 1, "errors": 0}
@@ -54,7 +55,7 @@ def test_best_effort_upsert_records_projection_job(monkeypatch):
         def flush(self):
             pass
 
-    monkeypatch.setattr(tasks, "get_keyword_store", lambda: Store())
+    monkeypatch.setattr(keyword_store, "get_keyword_store", lambda: Store())
     tasks._best_effort_upsert_es_chunks([Chunk()], db=Session())
 
     assert recorded[0].content_chunk_id == Chunk.id
@@ -84,7 +85,7 @@ def test_delete_existing_source_chunks_removes_pg_and_es(monkeypatch):
             assert (source_type, source_id) == ("tweet", Chunk.source_id)
             return {"deleted": 1}
 
-    monkeypatch.setattr(tasks, "get_keyword_store", lambda: Store())
+    monkeypatch.setattr(keyword_store, "get_keyword_store", lambda: Store())
     result = tasks._delete_existing_source_chunks(
         Session(), "tweet", Chunk.source_id
     )

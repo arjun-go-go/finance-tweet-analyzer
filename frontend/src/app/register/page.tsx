@@ -33,7 +33,7 @@ export default function RegisterPage() {
       <form onSubmit={handleSubmit} className="auth-form">
         <label>邮箱<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="your@email.com" /></label>
         <label>用户名<input type="text" value={username} onChange={(event) => setUsername(event.target.value)} required minLength={2} placeholder="至少 2 个字符" /></label>
-        <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} placeholder="至少 6 位" /></label>
+        <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={12} placeholder="至少 12 位，包含大小写字母和数字" /></label>
         <button type="submit" disabled={loading}>{loading ? "正在创建…" : "创建工作台"}</button>
       </form>
     </AuthFrame>

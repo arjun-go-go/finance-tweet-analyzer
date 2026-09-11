@@ -15,18 +15,19 @@ class Settings(BaseSettings):
     http_proxy: str = ""
 
     # ----- Models -----
-    signal_model: str = "qwen/qwen3.7-max"
+    signal_model: str = "qwen/qwen3.7-plus"
     report_model: str = "qwen/qwen3.7-max"
     vision_model: str = "qwen/qwen3.7-plus"
     signal_llm_timeout_seconds: float = 75.0
     signal_llm_max_completion_tokens: int = 6000
-    signal_llm_reasoning_effort: str = "minimal"
+    signal_llm_reasoning_effort: str = "none"
     signal_llm_max_retries: int = 1
     vision_prompt_version: str = "v1"
     vision_max_images_per_tweet: int = 4
     vision_max_image_dimension: int = 1600
     vision_jpeg_quality: int = 85
     vision_max_output_tokens: int = 5000
+    vision_llm_reasoning_effort: str = "none"
 
     # ----- LangSmith -----
     langsmith_api_key: str = ""
@@ -63,33 +64,10 @@ class Settings(BaseSettings):
     outbox_retry_max_seconds: int = 300
     celery_pipeline_heartbeat_ttl_seconds: int = 30
 
-    # ----- Memory compression -----
-    compression_threshold: int = 40
-    compression_keep_recent: int = 10
-
-    # ----- SQL Agent -----
-    sql_max_retries: int = 1
-    sql_query_timeout: int = 5000
-    sql_allowed_tables: list[str] = [
-        "bloggers", "tweets", "predictions", "analysis_results"
-    ]
-
-    # ----- Agent safety -----
-    agent_recursion_limit: int = 30
-    agent_max_tokens_per_turn: int = 100000
-    agent_tool_result_max_chars: int = 3000
-
     # ----- Rate limiting (per user) -----
     rate_limit_rpm: int = 30
-    rate_limit_tpd: int = 500000
     auth_rate_limit_attempts: int = 10
     auth_rate_limit_window_seconds: int = 60
-
-    # ----- Multi-session limits -----
-    max_sessions_per_user: int = 50
-    session_token_budget: int = 500000
-    user_daily_token_budget: int = 2000000
-    user_daily_token_hard_limit: int = 5000000
 
     # ----- Circuit breaker -----
     circuit_failure_threshold: int = 5
@@ -136,7 +114,7 @@ class Settings(BaseSettings):
     reranker_min_score: float = 0.3
     report_rerank_quota: dict[str, int] = {
         "tweet": 5,
-        "analysis": 4,
+        "claim": 4,
         "structured": 1,
     }
 
@@ -156,7 +134,7 @@ class Settings(BaseSettings):
     es_bulk_chunk_size: int = 500
     es_source_type_quota: dict[str, int] = {
         "tweet": 8,
-        "analysis": 7,
+        "claim": 7,
     }
 
     # ----- Tracking subscriptions -----
@@ -164,7 +142,7 @@ class Settings(BaseSettings):
     max_followed_bloggers_per_user: int = 20
 
     # ----- User analysis jobs -----
-    user_analysis_pipeline_version: str = "v2"
+    user_analysis_pipeline_version: str = "v4"
 
     # ----- Storage -----
     document_storage_root: str = "./uploads"
@@ -203,13 +181,6 @@ class Settings(BaseSettings):
     eia_api_key: str = ""
     eia_base_url: str = "https://api.eia.gov/v2"
     eia_wti_series_id: str = "PET.RWTC.D"
-
-    # ----- mem0 long-term memory (self-hosted OSS mode) -----
-    mem0_enabled: bool = True
-    mem0_top_k: int = 5
-    mem0_vector_backend: str = "milvus"
-    mem0_milvus_collection: str = "finance_tweet_mem0_memories"
-    mem0_milvus_metric_type: str = "COSINE"
 
     # ----- Debug -----
     debug_mode: bool = False

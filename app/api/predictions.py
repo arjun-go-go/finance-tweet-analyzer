@@ -49,7 +49,7 @@ def review_queue_endpoint(
 @router.get("/operations")
 def prediction_operations_endpoint(
     status: str = Query(
-        "all", pattern="^(all|tracking|due|review|verified|excluded)$"
+        "all", pattern="^(all|tracking|due|review|unscored|verified|excluded)$"
     ),
     limit: int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),

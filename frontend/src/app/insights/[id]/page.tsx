@@ -18,7 +18,22 @@ const DIRECTION_LABELS: Record<string, string> = {
   bullish: "看多",
   bearish: "看空",
   neutral: "中性",
+  none: "无方向",
   mixed: "分歧",
+};
+
+const HORIZON_LABELS: Record<string, string> = {
+  short: "短期",
+  medium: "中期",
+  long: "长期",
+  unknown: "周期未说明",
+};
+
+const OPINION_SOURCE_LABELS: Record<string, string> = {
+  author: "博主本人观点",
+  quoted: "引用内容",
+  third_party: "第三方信息",
+  unclear: "观点归属待确认",
 };
 
 const KIND_LABELS: Record<string, string> = {
@@ -143,13 +158,31 @@ export default function IntelligenceDetailPage({ params }: { params: Promise<{ i
   if (loading) return <PageLoading label="正在还原完整证据链" />;
   if (error || !detail) return <PageError detail={error || "没有找到这条情报。"} />;
 
-  const { item, tweet, analysis } = detail;
+  const { item, tweet } = detail;
+  const claim = record(detail.claim);
   const primaryMedia = detail.media
     .filter((media) => media.tweet_id === tweet.id && media.status === "downloaded")
     .map(({ id: mediaId, width, height, content_type }) => ({ id: mediaId, width, height, content_type }));
   const thread = detail.thread.filter((entry) => entry.id !== tweet.id);
-  const catalysts = [...strings(analysis.catalysts), ...strings(analysis.entry_conditions)];
-  const invalidations = [...strings(analysis.invalidation_conditions), ...strings(analysis.risk_factors)];
+  const catalysts = [...new Set([
+    ...strings(claim.catalysts),
+    ...strings(claim.entry_conditions),
+  ])];
+  const invalidations = [...new Set([
+    ...strings(claim.invalidation_conditions),
+    ...strings(claim.risk_factors),
+  ])];
+  const claimEvidence = [...new Set([
+    ...strings(claim.evidence),
+    ...strings(claim.media_evidence),
+  ])];
+  const showDirection = item.kind === "opinion"
+    && ["bullish", "bearish", "neutral"].includes(item.direction);
+  const thesisLabel = item.kind === "risk"
+    ? "风险线索"
+    : item.kind === "news"
+      ? "事实摘要"
+      : "核心观点";
 
   return (
     <div className="product-page insight-detail-page">
@@ -159,7 +192,7 @@ export default function IntelligenceDetailPage({ params }: { params: Promise<{ i
         <main className="insight-detail-main">
           <header className="insight-hero">
             <div className="insight-hero-meta">
-              <span className={`direction-${item.direction}`}>{DIRECTION_LABELS[item.direction] || "中性"}</span>
+              {showDirection && <span className={`direction-${item.direction}`}>{DIRECTION_LABELS[item.direction] || "未明确方向"}</span>}
               <span>{KIND_LABELS[item.kind] || "投资观点"}</span>
               <span>{formatDate(item.published_at)}</span>
             </div>
@@ -167,15 +200,23 @@ export default function IntelligenceDetailPage({ params }: { params: Promise<{ i
             <p>{item.summary}</p>
             <div className="insight-origin">
               <span>{tweet.author_handle.slice(0, 2).toUpperCase()}</span>
-              <div><strong>{tweet.author_name || `@${tweet.author_handle}`}</strong><small>@{tweet.author_handle} · {text(analysis.opinion_source, "博主本人观点")}</small></div>
+              <div><strong>{tweet.author_name || `@${tweet.author_handle}`}</strong><small>@{tweet.author_handle} · {OPINION_SOURCE_LABELS[text(claim.opinion_source, "unclear")] || "观点归属待确认"}</small></div>
               <a href={tweet.source_url} target="_blank" rel="noreferrer">查看 Twitter <AppIcon name="external" /></a>
             </div>
           </header>
 
           <section className="insight-thesis">
-            <span>核心判断</span>
-            <p>{text(analysis.thesis, item.summary)}</p>
+            <span>{thesisLabel}</span>
+            <p>{text(claim.thesis, item.summary)}</p>
+            <small>{showDirection ? `${DIRECTION_LABELS[text(claim.direction, item.direction)] || "未明确方向"} · ` : ""}{HORIZON_LABELS[text(claim.horizon, item.horizon)] || "周期未说明"}</small>
           </section>
+
+          {claimEvidence.length > 0 && (
+            <section className="insight-section">
+              <header><div><span>Claim evidence</span><h2>这项观点的直接证据</h2></div><small>{claimEvidence.length} 条</small></header>
+              <ul>{claimEvidence.map((value) => <li key={value}>{value}</li>)}</ul>
+            </section>
+          )}
 
           {(catalysts.length > 0 || invalidations.length > 0) && (
             <section className="insight-section">
@@ -252,10 +293,11 @@ export default function IntelligenceDetailPage({ params }: { params: Promise<{ i
               <div className="insight-predictions">
                 {detail.predictions.map((prediction) => {
                   const verification = record(prediction.market_verification);
+                  const target = record(prediction.target_spec);
                   return (
                     <article key={text(prediction.id)}>
                       <strong>{text(prediction.ticker)}</strong>
-                      <div><span>{DIRECTION_LABELS[text(prediction.sentiment)] || text(prediction.sentiment)}</span><small>{text(prediction.investment_horizon)} · {prediction.verifiable_at ? `验证时间 ${formatDate(String(prediction.verifiable_at))}` : "等待验证"}</small></div>
+                      <div><span>{text(prediction.prediction_type, "price_direction")} · {DIRECTION_LABELS[text(prediction.sentiment)] || text(prediction.sentiment)}</span><small>{text(target.target_value, text(target.target_metric, ""))}{target.target_unit ? ` ${text(target.target_unit)}` : ""} · 时间依据 {text(prediction.temporal_expression, text(prediction.horizon_source, "未说明"))} · {prediction.verifiable_at ? `验证时间 ${formatDate(String(prediction.verifiable_at))}` : "等待专用验证器"}</small></div>
                       <b className={`is-${text(prediction.verdict, "tracking")}`}>{verdictLabel(prediction.verdict)}</b>
                       {Object.keys(verification).length > 0 && <p>{text(verification.provider, "行情源")} · {text(verification.reason, "行情验证记录已保存")}</p>}
                     </article>
@@ -274,9 +316,9 @@ export default function IntelligenceDetailPage({ params }: { params: Promise<{ i
         </main>
 
         <aside className="insight-detail-aside">
-          <section><span>跟踪对象</span><h2>{item.tickers[0] || "市场"}</h2><p>{item.tickers.slice(1).join(" · ") || "宏观或跨市场观点"}</p><dl><div><dt>方向</dt><dd>{DIRECTION_LABELS[item.direction] || "中性"}</dd></div><div><dt>置信度</dt><dd>{Math.round(item.confidence * 100)}%</dd></div><div><dt>独立来源</dt><dd>{item.corroboration_count}</dd></div><div><dt>重要性</dt><dd>{item.importance_score}</dd></div></dl></section>
+          <section><span>跟踪对象</span><h2>{item.tickers[0] || "市场"}</h2><p>{HORIZON_LABELS[item.horizon] || "周期未说明"}</p><dl><div><dt>方向</dt><dd>{DIRECTION_LABELS[item.direction] || "无方向"}</dd></div><div><dt>置信度</dt><dd>{Math.round(item.confidence * 100)}%</dd></div><div><dt>独立来源</dt><dd>{item.corroboration_count}</dd></div><div><dt>重要性</dt><dd>{item.importance_score}</dd></div></dl></section>
           <section><span>使用说明</span><strong>这是观点证据，不是交易指令</strong><p>结论来自已采集推文与图片，并会随新证据和行情验证继续更新。</p></section>
-          <div><Link href="/assistant" className="button-primary">向助手追问</Link><button className="button-secondary" onClick={() => { setShowCorrection(true); setSubmitted(false); setCorrectionError(""); }}>哪里识别有误？</button></div>
+          <div><button className="button-secondary" onClick={() => { setShowCorrection(true); setSubmitted(false); setCorrectionError(""); }}>哪里识别有误？</button></div>
         </aside>
       </div>
 

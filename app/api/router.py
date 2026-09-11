@@ -9,10 +9,8 @@ from app.api.signals import router as signals_router
 from app.api.dashboard import router as dashboard_router
 from app.api.bloggers import router as bloggers_router
 from app.api.predictions import router as predictions_router
-from app.api.chat import router as chat_router
 from app.api.tracking import router as tracking_router
 from app.api.me import router as me_router
-from app.api.admin_traces import router as admin_traces_router
 from app.api.admin_es import router as admin_es_router
 from app.api.admin_runtime import router as admin_runtime_router
 from app.api.intelligence import router as intelligence_router
@@ -29,10 +27,8 @@ def build_api_router() -> APIRouter:
     router.include_router(dashboard_router)
     router.include_router(bloggers_router)
     router.include_router(predictions_router)
-    router.include_router(chat_router)
     router.include_router(tracking_router)
     router.include_router(me_router)
-    router.include_router(admin_traces_router)
     router.include_router(admin_es_router)
     router.include_router(admin_runtime_router)
     router.include_router(intelligence_router)

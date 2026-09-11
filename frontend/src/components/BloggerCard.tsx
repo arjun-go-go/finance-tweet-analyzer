@@ -29,10 +29,10 @@ export interface BloggerListItem {
 }
 
 const STAGE_COPY: Record<BloggerIngestionStage, { label: string; detail: string }> = {
-  syncing: { label: "首次同步中", detail: "正在获取公开内容" },
-  analyzing: { label: "正在分析", detail: "文本与图片处理中" },
-  ready: { label: "持续采集", detail: "内容会持续自动更新" },
-  attention: { label: "自动重试中", detail: "部分内容尚未完成" },
+  syncing: { label: "正在同步", detail: "首次获取公开推文" },
+  analyzing: { label: "正在分析", detail: "提取标的与市场判断" },
+  ready: { label: "采集中", detail: "公开推文持续更新" },
+  attention: { label: "采集需重试", detail: "部分推文暂未完成" },
   paused: { label: "已暂停", detail: "不会继续定时采集" },
 };
 
@@ -55,7 +55,7 @@ export default function BloggerCard({ blogger, onUnfollow, unfollowing = false }
         </div>
       </div>
       <div className="source-library-copy">
-        <p>{blogger.bio || "该信息源尚未补充简介。"}</p>
+        <p>{blogger.bio || "该博主尚未补充简介。"}</p>
         <div>{(blogger.market_focus ?? []).slice(0, 3).map((focus) => <span key={focus}>{focus}</span>)}</div>
       </div>
       <div className={`source-library-state state-${blogger.ingestion_stage}`}>
@@ -64,7 +64,7 @@ export default function BloggerCard({ blogger, onUnfollow, unfollowing = false }
       </div>
       <div className="source-library-output">
         <strong>{blogger.analyzed_tweets}</strong>
-        <span>条已提取</span>
+        <span>条已分析</span>
         <small>{activity ? formatDate(activity) : "等待首次同步"}</small>
       </div>
       <AppIcon name="arrow" className="source-library-arrow" />

@@ -45,7 +45,6 @@ def test_get_current_admin_accepts_configured_admin(monkeypatch):
         ("app.api.tweets", "import_tweets_endpoint"),
         ("app.api.bloggers", "upsert_blogger_endpoint"),
         ("app.api.predictions", "verify_endpoint"),
-        ("app.api.admin_traces", "list_tool_route_traces"),
     ],
 )
 def test_sensitive_endpoint_declares_admin_dependency(module_name, endpoint_name):

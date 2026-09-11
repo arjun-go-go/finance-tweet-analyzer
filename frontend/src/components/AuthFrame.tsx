@@ -21,7 +21,7 @@ export default function AuthFrame({ mode, children }: { mode: "login" | "registe
         <div className="auth-form-card">
           <p className="page-eyebrow">{login ? "Welcome back" : "Create workspace"}</p>
           <h2>{login ? "欢迎回来" : "创建个人情报工作台"}</h2>
-          <p>{login ? "继续查看你关注的博主和标的。" : "从关注一个 Twitter 信息源开始。"}</p>
+          <p>{login ? "继续查看你关注的博主和标的。" : "从关注一个 Twitter 博主开始。"}</p>
           {children}
           <div className="auth-switch">{login ? "还没有账号？" : "已经有账号？"}<Link href={login ? "/register" : "/login"}>{login ? "创建账户" : "直接登录"}</Link></div>
         </div>

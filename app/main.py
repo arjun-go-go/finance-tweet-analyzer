@@ -10,17 +10,14 @@ import app.celery_app  # noqa: F401 — bind shared_task to configured Redis bro
 from app.api.router import api_router
 from app.core.access_log import AccessLogMiddleware
 from app.core.config import settings
-from app.memory.checkpointer import setup_checkpointer, teardown_checkpointer
 from app.scheduler import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    setup_checkpointer()
     start_scheduler()
     yield
     stop_scheduler()
-    teardown_checkpointer()
 
 
 def create_app() -> FastAPI:

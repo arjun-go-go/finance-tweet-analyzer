@@ -200,7 +200,14 @@ def ensure_blogger(db: Session, handle: str, name: str) -> None:
 
 def _stats_subquery():
     """Per-blogger aggregate over predictions."""
-    verified_filter = Prediction.verdict.in_(SCORED_VERDICTS)
+    verified_filter = and_(
+        Prediction.scoring_eligible.is_(True),
+        Prediction.verdict.in_(SCORED_VERDICTS),
+    )
+    pending_filter = and_(
+        Prediction.scoring_eligible.is_(True),
+        Prediction.verdict.is_(None),
+    )
     return (
         select(
             Prediction.blogger_handle.label("handle"),
@@ -211,7 +218,7 @@ def _stats_subquery():
                 func.sum(Prediction.score).filter(verified_filter), 0.0
             ).label("correct_sum"),
             func.count()
-            .filter(Prediction.verdict.is_(None))
+            .filter(pending_filter)
             .label("pending_count"),
         )
         .group_by(Prediction.blogger_handle)
@@ -278,10 +285,12 @@ def get_blogger_detail(db: Session, handle: str) -> dict | None:
 
     verified_filter = and_(
         Prediction.blogger_handle == handle,
+        Prediction.scoring_eligible.is_(True),
         Prediction.verdict.in_(SCORED_VERDICTS),
     )
     pending_filter = and_(
         Prediction.blogger_handle == handle,
+        Prediction.scoring_eligible.is_(True),
         Prediction.verdict.is_(None),
     )
 
@@ -394,9 +403,15 @@ def list_predictions_by_blogger(
         Prediction.blogger_handle == handle
     )
     if status == "pending":
-        base = base.where(Prediction.verdict.is_(None))
+        base = base.where(
+            Prediction.verdict.is_(None),
+            Prediction.scoring_eligible.is_(True),
+        )
     elif status == "verified":
-        base = base.where(Prediction.verdict.in_(SCORED_VERDICTS))
+        base = base.where(
+            Prediction.verdict.in_(SCORED_VERDICTS),
+            Prediction.scoring_eligible.is_(True),
+        )
     if ticker:
         base = base.where(Prediction.ticker == ticker)
 
@@ -406,9 +421,15 @@ def list_predictions_by_blogger(
         .where(Prediction.blogger_handle == handle)
     )
     if status == "pending":
-        count_q = count_q.where(Prediction.verdict.is_(None))
+        count_q = count_q.where(
+            Prediction.verdict.is_(None),
+            Prediction.scoring_eligible.is_(True),
+        )
     elif status == "verified":
-        count_q = count_q.where(Prediction.verdict.in_(SCORED_VERDICTS))
+        count_q = count_q.where(
+            Prediction.verdict.in_(SCORED_VERDICTS),
+            Prediction.scoring_eligible.is_(True),
+        )
     if ticker:
         count_q = count_q.where(Prediction.ticker == ticker)
 
@@ -448,6 +469,7 @@ def _serialize_market_verification(
     evidence = verification.evidence or {}
     return {
         "id": str(verification.id),
+        "verification_type": verification.verification_type,
         "status": verification.status,
         "provider": verification.provider,
         "provider_symbol": verification.provider_symbol,
@@ -462,6 +484,7 @@ def _serialize_market_verification(
         "proposed_verdict": verification.proposed_verdict,
         "proposed_score": verification.proposed_score,
         "rule_version": verification.rule_version,
+        "observation": verification.observation or {},
         "reason": evidence.get("reason") or verification.error_message,
         "review_type": evidence.get("review_type"),
         "identity": evidence.get("identity"),
@@ -480,12 +503,21 @@ def _serialize_prediction(
 ) -> dict:
     return {
         "id": str(p.id),
+        "claim_id": str(p.claim_id) if p.claim_id else None,
         "blogger_handle": p.blogger_handle,
         "ticker": p.ticker,
         "sentiment": p.sentiment,
+        "prediction_type": p.prediction_type,
+        "target_spec": p.target_spec or {},
+        "temporal_expression": p.temporal_expression,
         "investment_horizon": p.investment_horizon,
+        "horizon_source": p.horizon_source,
+        "time_confidence": p.time_confidence,
         "published_at": p.published_at.isoformat() if p.published_at else None,
         "verifiable_at": p.verifiable_at.isoformat() if p.verifiable_at else None,
+        "verifier_type": p.verifier_type,
+        "scoring_eligible": p.scoring_eligible,
+        "verification_policy_version": p.verification_policy_version,
         "verdict": p.verdict,
         "score": p.score,
         "verified_at": p.verified_at.isoformat() if p.verified_at else None,

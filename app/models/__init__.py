@@ -4,11 +4,10 @@ from app.models.tweet_media_asset import TweetMediaAsset
 from app.models.tweet_media_analysis import TweetMediaAnalysis
 from app.models.blogger import Blogger
 from app.models.analysis import AnalysisResult
+from app.models.instrument_claim import InstrumentClaim
 from app.models.prediction import Prediction
 from app.models.prediction_market_verification import PredictionMarketVerification
 from app.models.instrument_correction_rule import InstrumentCorrectionRule
-from app.models.conversation import Conversation
-from app.models.message import Message
 from app.models.content_chunk import ContentChunk
 from app.models.tracked_ticker import TrackedTicker
 from app.models.user import User
@@ -27,11 +26,10 @@ __all__ = [
     "TweetMediaAnalysis",
     "Blogger",
     "AnalysisResult",
+    "InstrumentClaim",
     "Prediction",
     "PredictionMarketVerification",
     "InstrumentCorrectionRule",
-    "Conversation",
-    "Message",
     "ContentChunk",
     "TrackedTicker",
     "User",

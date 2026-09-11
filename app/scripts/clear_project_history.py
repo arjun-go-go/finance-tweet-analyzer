@@ -25,7 +25,6 @@ from app.core.deps import engine
 CONFIRMATION = "CLEAR_PROJECT_HISTORY"
 PRESERVED_PG_TABLES = {
     "alembic_version",
-    "checkpoint_migrations",
     "instrument_correction_rules",
     "users",
 }
@@ -119,8 +118,6 @@ def clear_milvus() -> dict[str, Any]:
         name
         for name in existing
         if name.startswith(prefix)
-        or name == settings.mem0_milvus_collection
-        or name == "mem0migrations"
     )
     for name in project_collections:
         client.drop_collection(name)

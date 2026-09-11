@@ -28,6 +28,15 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+async function retryOnce<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch {
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    return operation();
+  }
+}
+
 export default function EsAdminPage() {
   const [stats, setStats] = useState<EsAdminStats | null>(null);
   const [jobs, setJobs] = useState<IndexJobItem[]>([]);
@@ -40,8 +49,8 @@ export default function EsAdminPage() {
     setError(null);
     try {
       const [statsResult, failedJobs] = await Promise.all([
-        fetchEsAdminStats(),
-        fetchEsIndexJobs({ status: "failed", limit: 50 }),
+        retryOnce(fetchEsAdminStats),
+        retryOnce(() => fetchEsIndexJobs({ status: "failed", limit: 50 })),
       ]);
       setStats(statsResult);
       setJobs(failedJobs.items);

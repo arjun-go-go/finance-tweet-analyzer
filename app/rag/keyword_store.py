@@ -255,7 +255,7 @@ class ElasticsearchKeywordStore:
                     }
                 },
                 "functions": [
-                    {"filter": {"term": {"index_stage": "analysis"}}, "weight": 1.25},
+                    {"filter": {"term": {"index_stage": "claim"}}, "weight": 1.25},
                     {"filter": {"term": {"index_stage": "raw"}}, "weight": 1.05},
                     {
                         "gauss": {
@@ -403,6 +403,7 @@ class ElasticsearchKeywordStore:
         }
 
     def bulk_upsert_documents(self, documents: Iterable[dict[str, Any]]) -> tuple[int, list[Any]]:
+        self.create_index_if_missing()
         return self.bulk_upsert_documents_to_index(documents, index_name=self.index_name)
 
     def bulk_upsert_documents_to_index(
@@ -431,7 +432,7 @@ class ElasticsearchKeywordStore:
 
     def stats(self) -> dict[str, Any]:
         source_counts: dict[str, int] = {}
-        for source_type in ("tweet", "analysis"):
+        for source_type in ("tweet", "claim"):
             try:
                 resp = self._client.count(
                     index=self.index_name,
@@ -461,6 +462,14 @@ class ElasticsearchKeywordStore:
                     ]
                 }
             },
+            conflicts="proceed",
+            refresh=True,
+        )
+
+    def delete_by_source_type(self, source_type: str) -> dict[str, Any]:
+        return self._client.delete_by_query(
+            index=self.index_name,
+            query={"term": {"source_type": source_type}},
             conflicts="proceed",
             refresh=True,
         )

@@ -12,7 +12,13 @@ from app.models.analysis import AnalysisResult
 from app.models.prediction import Prediction
 from app.models.tweet import Tweet
 from app.models.tweet_media_analysis import TweetMediaAnalysis
-from app.services.instrument_resolver import resolve_analysis_tickers
+from app.services.instrument_claim_service import (
+    normalize_forecast_attribution,
+    replace_analysis_claims,
+    serialize_instrument_claim,
+)
+from app.services.instrument_resolver import resolve_analysis_claims
+from app.services.commercial_attribution_service import normalize_commercial_attribution
 from app.services.trace_service import write_trace_immediate
 from app.services.tweet_context_service import build_tweet_contexts
 from app.services.tweet_state_service import (
@@ -70,7 +76,7 @@ def analyze_single_tweet(db: Session, tweet_id: str) -> dict:
             "batch_id": str(batch_id),
             "analyzed": 0,
             "analyses": [],
-            "ticker_summaries": [],
+            "claims_created": 0,
             "error": f"Tweet {tweet_id} not found",
         }
 
@@ -143,7 +149,7 @@ def _empty_result(batch_id: uuid.UUID) -> dict:
         "retrying": 0,
         "failed": 0,
         "analyses": [],
-        "ticker_summaries": [],
+        "claims_created": 0,
     }
 
 
@@ -241,7 +247,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
     并标记 prediction_status='pending' 供后台任务消费。
     """
     all_analyses = []
-    all_summaries = []
+    total_claims = 0
     analyzed_tweets = []
     attempted_count = 0
     retrying_count = 0
@@ -285,10 +291,35 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             state = supervisor.invoke({
                 "tweets": tweet_dicts,
                 "analyses": [],
-                "ticker_summaries": [],
                 "_trace_conv_id": str(batch_id),
             })
-            state["analyses"] = resolve_analysis_tickers(
+            source_tweet_by_id = {
+                str(tweet.id): tweet for tweet in batch_tweets
+            }
+            state["analyses"] = [
+                normalize_commercial_attribution(
+                    normalize_forecast_attribution(
+                        analysis,
+                        (
+                            source_tweet_by_id[str(analysis.get("tweet_id"))].content
+                            if str(analysis.get("tweet_id")) in source_tweet_by_id
+                            else ""
+                        ),
+                        (
+                            source_tweet_by_id[str(analysis.get("tweet_id"))].published_at
+                            if str(analysis.get("tweet_id")) in source_tweet_by_id
+                            else None
+                        ),
+                    ),
+                    (
+                        source_tweet_by_id[str(analysis.get("tweet_id"))].content
+                        if str(analysis.get("tweet_id")) in source_tweet_by_id
+                        else ""
+                    ),
+                )
+                for analysis in state.get("analyses", [])
+            ]
+            state["analyses"] = resolve_analysis_claims(
                 state.get("analyses", []), db=db
             )
         except Exception as e:
@@ -311,9 +342,12 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
 
         # Upsert 分析结果：按 (tweet_id, analysis_type) 更新或插入
         analysis_result_ids: list[uuid.UUID] = []
-        for analysis in state["analyses"]:
-            tweet_id_str = analysis.pop("tweet_id")
-            author = analysis.pop("author_handle")
+        persisted_analyses: list[dict] = []
+        persisted_claim_count = 0
+        for analysis_output in state["analyses"]:
+            analysis = dict(analysis_output)
+            tweet_id_str = str(analysis.pop("tweet_id"))
+            author = str(analysis.pop("author_handle"))
             tid = uuid.UUID(tweet_id_str)
             analysis["analysis_schema_version"] = settings.user_analysis_pipeline_version
 
@@ -332,13 +366,10 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 existing.prediction_status = "pending"
                 existing.prediction_decision = None
                 existing.pipeline_version = settings.user_analysis_pipeline_version
-                analysis_result_ids.append(existing.id)
-                db.execute(
-                    delete(Prediction).where(Prediction.tweet_id == tid)
-                )
+                analysis_result = existing
             else:
                 analysis_result_id = uuid.uuid4()
-                db.add(AnalysisResult(
+                analysis_result = AnalysisResult(
                     id=analysis_result_id,
                     tweet_id=tid,
                     analysis_type="tweet_analysis",
@@ -348,39 +379,30 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                     batch_id=batch_id,
                     prediction_status="pending",
                     pipeline_version=settings.user_analysis_pipeline_version,
-                ))
-                analysis_result_ids.append(analysis_result_id)
-
-            analysis["tweet_id"] = tweet_id_str
-            analysis["author_handle"] = author
-
-        for summary in state["ticker_summaries"]:
-            ticker_symbol = summary.get("ticker", "")
-            ref_tweet_id = batch_tweets[0].id
-
-            existing_summary = db.execute(
-                select(AnalysisResult).where(
-                    AnalysisResult.tweet_id == ref_tweet_id,
-                    AnalysisResult.analysis_type == "ticker_summary",
-                    AnalysisResult.result["ticker"].astext == ticker_symbol,
                 )
-            ).scalar_one_or_none()
+                db.add(analysis_result)
 
-            if existing_summary:
-                existing_summary.result = summary
-                existing_summary.model_used = settings.signal_model
-                existing_summary.confidence = summary.get("recommendation_score", 0) / 100
-                existing_summary.batch_id = batch_id
-            else:
-                db.add(AnalysisResult(
-                    tweet_id=ref_tweet_id,
-                    analysis_type="ticker_summary",
-                    result=summary,
-                    model_used=settings.signal_model,
-                    confidence=summary.get("recommendation_score", 0) / 100,
-                    batch_id=batch_id,
-                    prediction_status="skipped",
-                ))
+            db.flush()
+            db.execute(delete(Prediction).where(Prediction.tweet_id == tid))
+            claim_records = replace_analysis_claims(
+                db,
+                analysis_result.id,
+                analysis,
+            )
+            analysis_result_ids.append(analysis_result.id)
+            persisted_claim_count += len(claim_records)
+            persisted_analyses.append(
+                {
+                    **analysis,
+                    "tweet_id": tweet_id_str,
+                    "author_handle": author,
+                    "claims": [
+                        serialize_instrument_claim(claim) for claim in claim_records
+                    ],
+                }
+            )
+
+        state["analyses"] = persisted_analyses
 
         successful_batch_tweets = _mark_successful_tweets(
             batch_tweets, state["analyses"]
@@ -400,8 +422,13 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
 
         try:
             db.commit()
-            logger.info("Batch {}-{} committed: {} analyses",
-                        i, i + len(batch_tweets), len(state["analyses"]))
+            logger.info(
+                "Batch {}-{} committed: {} analyses / {} claims",
+                i,
+                i + len(batch_tweets),
+                len(state["analyses"]),
+                persisted_claim_count,
+            )
         except Exception as e:
             db.rollback()
             logger.error("Batch {}-{} commit failed: {}", i, i + len(batch_tweets), e)
@@ -409,7 +436,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
 
         # 分析完成后异步触发向量化，将结构化分析结果入库到 public_signals collection
         all_analyses.extend(state["analyses"])
-        all_summaries.extend(state["ticker_summaries"])
+        total_claims += persisted_claim_count
         analyzed_tweets.extend(successful_batch_tweets)
 
     write_trace_immediate(
@@ -421,7 +448,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             "retrying": retrying_count,
             "failed": failed_count,
             "analyses_count": len(all_analyses),
-            "summaries_count": len(all_summaries),
+            "claims_count": total_claims,
         },
         status="success",
         latency_ms=int((time.perf_counter() - overall_start) * 1000),
@@ -434,5 +461,5 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
         "retrying": retrying_count,
         "failed": failed_count,
         "analyses": all_analyses,
-        "ticker_summaries": all_summaries,
+        "claims_created": total_claims,
     }

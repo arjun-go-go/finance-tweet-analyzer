@@ -12,7 +12,13 @@ class IntelligenceTopic(Base):
     __tablename__ = "intelligence_topics"
     __table_args__ = (
         Index("ix_intelligence_topics_feed", "status", "last_seen_at"),
-        Index("ix_intelligence_topics_match", "primary_ticker", "kind", "last_seen_at"),
+        Index(
+            "ix_intelligence_topics_match",
+            "primary_ticker",
+            "kind",
+            "horizon",
+            "last_seen_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -20,6 +26,7 @@ class IntelligenceTopic(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
     primary_ticker: Mapped[str] = mapped_column(String(32), nullable=False)
     tickers: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False, default=list)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -51,12 +58,19 @@ class IntelligenceEvent(Base):
         UUID(as_uuid=True), ForeignKey("intelligence_topics.id", ondelete="SET NULL"), nullable=True, index=True
     )
     analysis_result_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analysis_results.id", ondelete="CASCADE"), nullable=False, unique=True
+        UUID(as_uuid=True), ForeignKey("analysis_results.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    claim_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("instrument_claims.id", ondelete="CASCADE"),
+        nullable=True,
+        unique=True,
     )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
     primary_ticker: Mapped[str] = mapped_column(String(32), nullable=False)
     tickers: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False, default=list)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

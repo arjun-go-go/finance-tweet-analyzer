@@ -4,12 +4,14 @@ import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchTweets, fetchAnalyses, triggerAnalysis, analyzeBlogger, analyzeSingleTweet } from "@/lib/api";
 import TweetAnalysisCard from "@/components/TweetAnalysisCard";
+import type { AnalysisData } from "@/components/AnalysisInline";
 import FilterBar from "@/components/FilterBar";
 import SkeletonCard from "@/components/SkeletonCard";
 import AppIcon from "@/components/AppIcon";
 import { PageEmpty } from "@/components/PageState";
 import { MetricStrip, Pagination, SectionTitle, WorkspacePageHeader } from "@/components/WorkspacePage";
 import type { TweetMediaItem } from "@/components/TweetMediaGallery";
+import { fetchMe } from "@/lib/auth";
 
 // ============================================================
 // Types
@@ -19,43 +21,6 @@ interface TweetMetrics {
   likes?: number;
   retweets?: number;
   views?: number;
-}
-
-interface AnalysisData {
-  tickers: Array<{
-    symbol: string;
-    original_name: string;
-    sentiment: string;
-    horizon: string;
-    market?: string;
-    exchange?: string;
-    asset_type?: string;
-    listing_status?: string;
-    tradable?: boolean;
-    validation_status?: string;
-    validation_sources?: string[];
-    external_ids?: Record<string, string>;
-    validated_at?: string;
-    risks?: Array<{
-      category: string;
-      description: string;
-      severity: string;
-      urgency: string;
-    }>;
-    ticker_risk_level?: string;
-  }>;
-  overall_sentiment: string;
-  key_points: string[];
-  risk_factors: string[];
-  risk_level?: string;
-  risk_summary?: string;
-  confidence: number;
-  is_investment_related: boolean;
-  reasoning?: string;
-  media_summary?: string;
-  media_evidence?: string[];
-  text_image_consistency?: string;
-  media_confidence?: number;
 }
 
 interface TweetItem {
@@ -114,7 +79,7 @@ const SENTIMENT_TABS = [
   { label: "看好", value: "bullish", api: "analyses" as const },
   { label: "看空", value: "bearish", api: "analyses" as const },
   { label: "中性", value: "neutral", api: "analyses" as const },
-  { label: "分化", value: "mixed", api: "analyses" as const },
+  { label: "无方向", value: "none", api: "analyses" as const },
 ];
 
 const ALL_TABS = [...TWEET_TABS, ...SENTIMENT_TABS];
@@ -179,6 +144,7 @@ function TweetsPageInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
@@ -226,8 +192,8 @@ function TweetsPageInner() {
             (i) =>
               i.content.toLowerCase().includes(q) ||
               i.authorHandle.toLowerCase().includes(q) ||
-              i.analysis?.tickers.some((t) =>
-                t.symbol.toLowerCase().includes(q),
+              i.analysis?.claims.some((claim) =>
+                claim.instrument.symbol.toLowerCase().includes(q),
               ),
           );
         }
@@ -266,6 +232,10 @@ function TweetsPageInner() {
   useEffect(() => {
     loadData(activeTab, blogger, search, page);
   }, [activeTab, blogger, search, page]);
+
+  useEffect(() => {
+    fetchMe().then((user) => setIsAdmin(Boolean(user?.is_admin)));
+  }, []);
 
   const handleTabChange = (val: string) => {
     setActiveTab(val);
@@ -317,13 +287,13 @@ function TweetsPageInner() {
 
   return (
     <div className="product-page">
-      <WorkspacePageHeader eyebrow="Raw Intelligence" title="推文情报" subtitle="保留原始观点、分析状态和模型判断，让每条市场信号都可以回到来源。" actions={<button
+      <WorkspacePageHeader eyebrow="Raw Intelligence" title="推文情报" subtitle="推文保留原始证据，观点按标的、方向和周期独立拆分。" actions={isAdmin ? <button
             onClick={() => handleTriggerAnalysis("", "")}
             disabled={analyzing}
             className="button-primary"
           >
             <AppIcon name="research" className="h-4 w-4" />{analyzing ? "分析中..." : "分析待处理推文"}
-          </button>} />
+          </button> : undefined} />
       <MetricStrip items={[{ label: "当前结果", value: total, note: "符合当前筛选" }, { label: "视图", value: ALL_TABS.find((tab) => tab.value === activeTab)?.label ?? "全部", note: "分析状态与观点" }, { label: "每页展示", value: PAGE_SIZE, note: "按发布时间排序" }]} />
 
       {/* Filter bar */}
@@ -381,7 +351,7 @@ function TweetsPageInner() {
               twitterTweetId={item.twitterTweetId}
               media={item.media}
               onTriggerAnalysis={
-                item.status !== "analyzed"
+                isAdmin && item.status !== "analyzed"
                   ? handleTriggerAnalysis
                   : undefined
               }

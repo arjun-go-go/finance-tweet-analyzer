@@ -1,285 +1,296 @@
-"""预测 Agent —— 标的聚合 + 可验证预测生成。
+"""Convert canonical claims into auditable, type-aware prediction contracts."""
 
-职责：
-    1. 标的聚合 (_aggregate_tickers)：将多条推文分析结果按 ticker 维度汇聚，
-       统计多空比例，生成共识评级 (strong_buy / buy / neutral / sell / strong_sell)。
-    2. 预测生成 (_generate_predictions)：将满足条件的分析结果转化为可验证的预测记录，
-       设定验证时间窗口（short=7天 / medium=30天 / long=180天），用于后续标注与可信度计算。
-
-运行方式：
-    - 已从 Supervisor 实时管道中移除
-    - 由 Celery prediction_batch_task 定时调用（每5分钟）
-    - 输入：已完成分析 + 关联推文数据（从 DB 查询组装）
-
-去重策略：
-    同一博主 + 同一标的 + 同一方向 + 24小时内 → 只保留一条预测，
-    避免同一篇推文被重复处理时产生重复预测。
-"""
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from app.schemas.signal import TickerSummary
 from app.services.instrument_resolver import is_downstream_verified_ticker
+from app.services.event_verification_service import (
+    SUPPORTED_EVENT_METRICS,
+    canonical_event_metric,
+)
+from app.services.fundamental_verification_service import (
+    SUPPORTED_METRICS,
+    canonical_fundamental_metric,
+)
+from app.services.prediction_contract_math import parse_numeric_target
+from app.services.prediction_time_resolver import resolve_prediction_time
 
-# 投资周期 → 验证天数映射
-HORIZON_DAYS = {"short": 7, "medium": 30, "long": 180, "unknown": 30}
-PREDICTION_RULE_VERSION = "prediction_eligibility_v2"
+
+PREDICTION_RULE_VERSION = "prediction_contract_v2"
 PREDICTION_MIN_CONFIDENCE = 0.65
+VERIFIER_BY_TYPE = {
+    "price_direction": "market_price_direction",
+    "price_target": "market_price_target",
+    "fundamental_metric": "fundamental_metric",
+    "event_outcome": "event_outcome",
+}
+ACTIVE_AUTO_VERIFIERS = {
+    "market_price_direction",
+    "market_price_target",
+    "fundamental_metric",
+    "event_outcome",
+}
 
 
-def _ticker_prediction_rejection_reason(ticker: dict) -> str | None:
-    if not is_downstream_verified_ticker(ticker):
-        return "instrument_not_verified"
-    if ticker.get("sentiment") not in {"bullish", "bearish"}:
-        return "direction_missing"
-    if ticker.get("mention_type") not in {"prediction", "recommendation"}:
-        return "mention_not_predictive"
-    if ticker.get("horizon") not in {"short", "medium", "long"}:
-        return "horizon_missing"
-    if not ticker.get("evidence"):
-        return "ticker_evidence_missing"
-    return None
+def evaluate_claim_prediction_eligibility(
+    claim: dict,
+    *,
+    analysis: dict | None = None,
+    tweet: dict | None = None,
+) -> dict:
+    """Return the auditable eligibility decision for one atomic claim."""
+    analysis = analysis or {}
+    tweet = tweet or {}
+    instrument = claim.get("instrument") or {}
+    forecast = dict(claim.get("forecast") or {})
+    prediction_type = str(forecast.get("prediction_type") or "none")
+    forecast_source = str(forecast.get("forecast_source") or "unclear")
+    author_adopted = forecast.get("author_adopted") is True
+    verifier_type = VERIFIER_BY_TYPE.get(prediction_type, "unsupported")
+    reason_codes: list[str] = []
+
+    if not (
+        analysis.get("is_investment_relevant", True)
+        or analysis.get("is_investment_related", False)
+    ):
+        reason_codes.append("not_investment_relevant")
+    raw_sponsor_relation = claim.get("sponsor_relation")
+    sponsor_relation = str(
+        raw_sponsor_relation
+        or ("unclear" if analysis.get("is_sponsored") is True else "none")
+    )
+    if sponsor_relation == "direct":
+        reason_codes.append("sponsor_related")
+    elif sponsor_relation == "unclear":
+        reason_codes.append("sponsor_relation_unclear")
+    if tweet.get("tweet_type") == "retweet":
+        reason_codes.append("pure_retweet")
+    if claim.get("opinion_source") != "author":
+        reason_codes.append("opinion_not_author")
+    if forecast_source != "author" and not author_adopted:
+        reason_codes.append("forecast_not_author_committed")
+    if claim.get("claim_type") not in {"prediction", "recommendation"}:
+        reason_codes.append("claim_type_not_predictive")
+    if prediction_type not in VERIFIER_BY_TYPE:
+        reason_codes.append("forecast_target_missing")
+    if prediction_type == "price_direction" and claim.get("direction") not in {
+        "bullish",
+        "bearish",
+    }:
+        reason_codes.append("direction_missing")
+    if prediction_type == "price_target" and not forecast.get("target_value"):
+        reason_codes.append("price_target_missing")
+    if prediction_type == "price_target" and forecast.get("target_value"):
+        try:
+            parse_numeric_target(
+                str(forecast.get("target_value") or ""),
+                str(forecast.get("target_unit") or ""),
+            )
+        except ValueError:
+            reason_codes.append("price_target_unparseable")
+    if prediction_type == "fundamental_metric":
+        metric = canonical_fundamental_metric(str(forecast.get("target_metric") or ""))
+        if not metric or not forecast.get("target_value"):
+            reason_codes.append("fundamental_target_missing")
+        elif metric not in SUPPORTED_METRICS:
+            reason_codes.append("fundamental_metric_unsupported")
+        elif str(instrument.get("market") or instrument.get("market_hint") or "").upper() not in {"CN", "HK", "US"}:
+            reason_codes.append("fundamental_market_unsupported")
+        else:
+            try:
+                parse_numeric_target(
+                    str(forecast.get("target_value") or ""),
+                    str(forecast.get("target_unit") or ""),
+                )
+            except ValueError:
+                reason_codes.append("fundamental_target_unparseable")
+    if prediction_type == "event_outcome" and not any(
+        forecast.get(field)
+        for field in ("target_metric", "target_value", "target_condition")
+    ):
+        reason_codes.append("event_definition_missing")
+    if prediction_type == "event_outcome":
+        event_metric = canonical_event_metric(
+            str(forecast.get("target_metric") or forecast.get("target_condition") or "")
+        )
+        if event_metric not in SUPPORTED_EVENT_METRICS:
+            reason_codes.append("event_verifier_unsupported")
+    if float(claim.get("confidence") or 0) < PREDICTION_MIN_CONFIDENCE:
+        reason_codes.append("claim_confidence_below_threshold")
+    if not (claim.get("evidence") or claim.get("media_evidence")):
+        reason_codes.append("grounding_evidence_missing")
+    if not (
+        claim.get("downstream_eligible") is True
+        or is_downstream_verified_ticker(instrument)
+    ):
+        reason_codes.append("instrument_not_verified")
+
+    published_at = claim.get("published_at") or tweet.get("published_at")
+    time_resolution = None
+    if isinstance(published_at, datetime):
+        time_resolution = resolve_prediction_time(claim, published_at)
+        if time_resolution.status == "missing":
+            reason_codes.append("time_basis_missing")
+        elif time_resolution.status == "invalid_past_target":
+            reason_codes.append("time_target_not_future")
+    else:
+        reason_codes.append("published_at_missing")
+
+    scoring_reason_codes: list[str] = []
+    if verifier_type not in ACTIVE_AUTO_VERIFIERS:
+        scoring_reason_codes.append("verifier_not_active")
+    target_date_required = verifier_type in {
+        "market_price_direction",
+        "market_price_target",
+        "event_outcome",
+    }
+    if target_date_required and (
+        time_resolution is None or time_resolution.target_at is None
+    ):
+        scoring_reason_codes.append("target_date_unresolved")
+    scoring_eligible = not reason_codes and not scoring_reason_codes
+
+    return {
+        "rule_version": PREDICTION_RULE_VERSION,
+        "claim_id": str(claim.get("id") or ""),
+        "eligible": not reason_codes,
+        "reason_codes": reason_codes,
+        "prediction_type": prediction_type,
+        "forecast_source": forecast_source,
+        "author_adopted": author_adopted,
+        "verifier_type": verifier_type,
+        "scoring_eligible": scoring_eligible,
+        "scoring_reason_codes": scoring_reason_codes,
+        "time_resolution": time_resolution.evidence() if time_resolution else None,
+        "minimum_confidence": PREDICTION_MIN_CONFIDENCE,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def evaluate_prediction_eligibility(
     analysis: dict,
     tweet: dict | None = None,
+    claims: list[dict] | None = None,
 ) -> dict:
-    """Return the deterministic and auditable prediction creation decision."""
-    reason_codes: list[str] = []
-    if not (
-        analysis.get("is_investment_relevant")
-        or analysis.get("is_investment_related")
-    ):
-        reason_codes.append("not_investment_relevant")
-    if float(analysis.get("confidence") or 0) < PREDICTION_MIN_CONFIDENCE:
-        reason_codes.append("analysis_confidence_below_threshold")
-    if analysis.get("is_prediction") is not True:
-        reason_codes.append("not_future_prediction")
-    if analysis.get("statement_type") not in {"prediction", "recommendation"}:
-        reason_codes.append("statement_type_not_predictive")
-    if analysis.get("opinion_source") != "author":
-        reason_codes.append("opinion_not_author")
-    if analysis.get("is_sponsored") is True:
-        reason_codes.append("sponsored_content")
-    if (tweet or {}).get("tweet_type") == "retweet":
-        reason_codes.append("pure_retweet")
-    if not (analysis.get("text_evidence") or analysis.get("media_evidence")):
-        reason_codes.append("grounding_evidence_missing")
-
-    eligible_tickers: list[str] = []
-    rejected_tickers: list[dict] = []
-    for ticker in analysis.get("tickers") or []:
-        if not isinstance(ticker, dict):
-            rejected_tickers.append({"symbol": "", "reason_code": "invalid_ticker_object"})
+    """Aggregate claim decisions for the analysis processing status only."""
+    claim_items = claims if claims is not None else list(analysis.get("claims") or [])
+    decisions = []
+    for claim in claim_items:
+        if not isinstance(claim, dict):
             continue
-        reason = _ticker_prediction_rejection_reason(ticker)
-        symbol = str(ticker.get("symbol") or "").upper()
-        if reason:
-            rejected_tickers.append({"symbol": symbol, "reason_code": reason})
-        elif symbol and symbol not in eligible_tickers:
-            eligible_tickers.append(symbol)
-    if not eligible_tickers:
-        reason_codes.append("no_eligible_instrument")
-
+        decisions.append(
+            evaluate_claim_prediction_eligibility(
+            {
+                **claim,
+                "published_at": claim.get("published_at")
+                or (tweet or {}).get("published_at"),
+            },
+            analysis=analysis,
+            tweet=tweet,
+        )
+        )
+    eligible_claim_ids = [
+        decision["claim_id"]
+        for decision in decisions
+        if decision["eligible"] and decision["claim_id"]
+    ]
+    scoring_claim_ids = [
+        decision["claim_id"]
+        for decision in decisions
+        if decision["scoring_eligible"] and decision["claim_id"]
+    ]
     return {
         "rule_version": PREDICTION_RULE_VERSION,
-        "eligible": not reason_codes,
-        "reason_codes": reason_codes,
-        "eligible_tickers": eligible_tickers,
-        "rejected_tickers": rejected_tickers,
+        "eligible": bool(eligible_claim_ids),
+        "reason_codes": [] if eligible_claim_ids else ["no_eligible_claim"],
+        "eligible_claim_ids": eligible_claim_ids,
+        "scoring_claim_ids": scoring_claim_ids,
+        "claim_decisions": decisions,
         "minimum_confidence": PREDICTION_MIN_CONFIDENCE,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
 def prediction_agent_node(state: dict) -> dict:
-    """预测 Agent 主入口。
-
-    Args:
-        state: 包含 analyses（分析结果列表）和 tweets（原始推文列表）
-
-    Returns:
-        {"ticker_summaries": [...], "predictions": [...]}
-    """
-    analyses = state.get("analyses", [])
-    tweets = state.get("tweets", [])
-
-    ticker_summaries = _aggregate_tickers(analyses)
-    predictions = _generate_predictions(analyses, tweets)
-
-    return {
-        "ticker_summaries": ticker_summaries,
-        "predictions": predictions,
-    }
+    """Deterministically generate prediction candidates from canonical claims."""
+    return {"predictions": _generate_predictions(state.get("claims", []))}
 
 
-# ============================================================
-# 标的维度聚合 —— 多博主多推文 → 单标的综合评级
-# ------------------------------------------------------------
-# 算法：
-#   1. 按 ticker 聚合所有投资相关分析的 sentiment
-#   2. 计算 bullish 占比 → 映射到共识等级
-#   3. 合并 key_points + risks 去重
-#   4. 输出 TickerSummary 供前端标的排行展示
-# ============================================================
-def _aggregate_tickers(analyses: list[dict]) -> list[dict]:
-    """将分析结果按标的聚合，生成共识评级和推荐分数。"""
-    # 过滤出投资相关的分析
-    investment_analyses = [
-        a for a in analyses if a.get("is_investment_related")
-    ]
-
-    # 按 ticker 收集统计数据
-    ticker_data: dict[str, dict] = defaultdict(lambda: {
-        "bloggers": set(),
-        "bullish": 0,
-        "bearish": 0,
-        "neutral": 0,
-        "key_points": [],
-        "risks": [],
-    })
-
-    for analysis in investment_analyses:
-        raw_tickers = analysis.get("tickers", [])
-
-        for ticker_item in raw_tickers:
-            if not is_downstream_verified_ticker(ticker_item):
-                continue
-            symbol = ticker_item.get("symbol", "")
-            sentiment = ticker_item.get("sentiment", "neutral")
-
-            if not symbol:
-                continue
-
-            data = ticker_data[symbol]
-            data["bloggers"].add(analysis["author_handle"])
-            if sentiment == "bullish":
-                data["bullish"] += 1
-            elif sentiment == "bearish":
-                data["bearish"] += 1
-            else:
-                data["neutral"] += 1
-            data["key_points"].extend(analysis.get("key_points", []))
-            data["risks"].extend(analysis.get("risk_factors", []))
-
-    # 计算共识评级和推荐分数
-    summaries = []
-    for ticker, data in ticker_data.items():
-        total = data["bullish"] + data["bearish"] + data["neutral"]
-        if total == 0:
-            continue
-
-        # 多空比例 → 共识等级
-        bullish_ratio = data["bullish"] / total
-        if bullish_ratio >= 0.7:
-            consensus = "strong_buy"
-        elif bullish_ratio >= 0.5:
-            consensus = "buy"
-        elif data["bearish"] / total >= 0.7:
-            consensus = "strong_sell"
-        elif data["bearish"] / total >= 0.5:
-            consensus = "sell"
-        else:
-            consensus = "neutral"
-
-        # 推荐分数 = bullish 占比 * 100（前端排序用）
-        score = round(bullish_ratio * 100, 1)
-
-        # 观点去重（保留顺序，最多5条）
-        points = data["key_points"]
-        unique_points = list(dict.fromkeys(points))[:5]
-        risks = list(dict.fromkeys(data["risks"]))[:3]
-        summary_parts = unique_points
-        if risks:
-            summary_parts.append(f"风险提示: {'; '.join(risks)}")
-
-        summaries.append(TickerSummary(
-            ticker=ticker,
-            mention_count=total,
-            bloggers=sorted(data["bloggers"]),
-            consensus=consensus,
-            bullish_count=data["bullish"],
-            bearish_count=data["bearish"],
-            recommendation_score=score,
-            summary="；".join(summary_parts),
-        ).model_dump())
-
-    # 按推荐分数降序排列
-    summaries.sort(key=lambda x: x["recommendation_score"], reverse=True)
-    return summaries
-
-
-# ============================================================
-# 预测记录生成 —— 分析结果 → 可验证预测
-# ------------------------------------------------------------
-# 筛选条件：
-#   1. is_investment_related = True
-#   2. confidence >= 0.5（低置信度分析不产出预测）
-#   3. 有明确 ticker
-#
-# 去重规则（内存级）：
-#   同一 (博主, 标的, 方向) 在 24h 内只产出一条预测。
-#   DB 级去重由 prediction_service.save_predictions_batch 再做一层保障。
-#
-# 验证时间计算：
-#   published_at + HORIZON_DAYS[investment_horizon]
-# ============================================================
-def _generate_predictions(analyses: list[dict], tweets: list[dict]) -> list[dict]:
-    """将高置信度分析转化为可验证预测记录。"""
-    tweet_by_id = {t["id"]: t for t in tweets}
-    out: list[dict] = []
-    # 内存去重：(博主, 标的, 方向) → 最近一次发布时间
-    seen_by_key: dict[tuple, datetime] = {}
-
-    # 按发布时间排序，确保去重时保留最早的预测
-    sorted_analyses = sorted(
-        [a for a in analyses if a.get("tweet_id") in tweet_by_id],
-        key=lambda a: tweet_by_id[a["tweet_id"]]["published_at"],
+def _generate_predictions(claims: list[dict]) -> list[dict]:
+    output: list[dict] = []
+    seen_by_key: dict[tuple[str, str, str, str, str, str], datetime] = {}
+    sorted_claims = sorted(
+        [claim for claim in claims if claim.get("published_at")],
+        key=lambda claim: claim["published_at"],
     )
 
-    for analysis in sorted_analyses:
-        tweet = tweet_by_id[analysis["tweet_id"]]
-        decision = evaluate_prediction_eligibility(analysis, tweet)
+    for claim in sorted_claims:
+        decision = evaluate_claim_prediction_eligibility(
+            claim,
+            analysis={
+                "is_investment_relevant": claim.get("is_investment_relevant", True),
+                "is_investment_related": claim.get("is_investment_related", True),
+            },
+            tweet={
+                "tweet_type": claim.get("tweet_type", "original"),
+                "published_at": claim.get("published_at"),
+            },
+        )
         if not decision["eligible"]:
             continue
 
-        published_at: datetime = tweet["published_at"]
-
-        # 为每个 ticker 生成一条预测
-        raw_tickers = analysis.get("tickers", []) or []
-
-        for ticker_item in raw_tickers:
-            if _ticker_prediction_rejection_reason(ticker_item) is not None:
-                continue
-            ticker = ticker_item.get("symbol", "")
-            sentiment = ticker_item.get("sentiment", "neutral")
-            horizon = ticker_item.get("horizon", "unknown")
-
-            if not ticker:
-                continue
-
-            days = HORIZON_DAYS.get(horizon, 30)
-            verifiable_at = published_at + timedelta(days=days)
-
-            key = (analysis["author_handle"], ticker, sentiment)
-            prior = seen_by_key.get(key)
-            # 24h 内去重：同博主同标的同方向不重复
-            if prior is not None and abs(published_at - prior) < timedelta(hours=24):
-                continue
-            seen_by_key[key] = published_at
-            out.append({
-                "tweet_id": analysis["tweet_id"],
-                "blogger_handle": analysis["author_handle"],
-                "ticker": ticker,
-                "sentiment": sentiment,
+        instrument = claim.get("instrument") or {}
+        symbol = str(instrument.get("symbol") or "").upper()
+        direction = str(claim.get("direction") or "none")
+        forecast = dict(claim.get("forecast") or {})
+        prediction_type = str(forecast.get("prediction_type") or "none")
+        published_at: datetime = claim["published_at"]
+        time_resolution = resolve_prediction_time(claim, published_at)
+        horizon = time_resolution.horizon
+        key = (
+            str(claim.get("blogger_handle") or ""),
+            symbol,
+            prediction_type,
+            direction,
+            horizon,
+            str(forecast.get("target_value") or forecast.get("target_condition") or ""),
+        )
+        prior = seen_by_key.get(key)
+        if prior is not None and abs(published_at - prior) < timedelta(hours=24):
+            continue
+        seen_by_key[key] = published_at
+        output.append(
+            {
+                "claim_id": str(claim["id"]),
+                "analysis_id": str(claim["analysis_result_id"]),
+                "tweet_id": str(claim["tweet_id"]),
+                "blogger_handle": claim["blogger_handle"],
+                "ticker": symbol,
+                "sentiment": direction,
+                "prediction_type": prediction_type,
+                "target_spec": forecast,
+                "temporal_expression": time_resolution.temporal_expression or None,
                 "investment_horizon": horizon,
+                "horizon_source": time_resolution.source,
+                "time_confidence": time_resolution.confidence,
                 "published_at": published_at,
-                "verifiable_at": verifiable_at,
-                "instrument_snapshot": ticker_item,
+                "verifiable_at": time_resolution.target_at,
+                "verifier_type": decision["verifier_type"],
+                "scoring_eligible": decision["scoring_eligible"],
+                "verification_policy_version": (
+                    "market_price_direction_v2"
+                    if decision["verifier_type"] == "market_price_direction"
+                    else "market_price_target_v1"
+                    if decision["verifier_type"] == "market_price_target"
+                    else "fundamental_metric_v1"
+                    if decision["verifier_type"] == "fundamental_metric"
+                    else "event_outcome_v1"
+                    if decision["verifier_type"] == "event_outcome"
+                    else "pending_verifier_v1"
+                ),
+                "instrument_snapshot": instrument,
                 "eligibility_passed": True,
                 "creation_rule_version": PREDICTION_RULE_VERSION,
                 "creation_evidence": decision,
-            })
-
-    return out
+            }
+        )
+    return output

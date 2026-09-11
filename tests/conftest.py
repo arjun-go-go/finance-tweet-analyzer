@@ -70,7 +70,10 @@ def db_session(engine):
     connection = engine.connect()
     transaction = connection.begin()
     TestingSession = sessionmaker(
-        bind=connection, autoflush=False, expire_on_commit=False
+        bind=connection,
+        autoflush=False,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
     )
     session = TestingSession()
     try:
@@ -86,9 +89,18 @@ def client(db_session):
     def override_get_db():
         yield db_session
 
+    def override_current_user(request: Request) -> User:
+        test_user = _test_user(request)
+        persisted_user = db_session.get(User, test_user.id)
+        if persisted_user is None:
+            db_session.add(test_user)
+            db_session.flush()
+            return test_user
+        return persisted_user
+
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_user] = _test_user
-    app.dependency_overrides[get_current_admin] = _test_user
+    app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_current_admin] = override_current_user
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

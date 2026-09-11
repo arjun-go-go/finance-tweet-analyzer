@@ -36,6 +36,7 @@ def fetch_blogger_contexts(handles: list[str]) -> dict[str, str]:
             )
             .where(
                 Prediction.blogger_handle.in_(handles),
+                Prediction.scoring_eligible.is_(True),
                 Prediction.verdict.in_(SCORED_VERDICTS),
             )
             .group_by(Prediction.blogger_handle, Prediction.sentiment)
@@ -49,6 +50,7 @@ def fetch_blogger_contexts(handles: list[str]) -> dict[str, str]:
             )
             .where(
                 Prediction.blogger_handle.in_(handles),
+                Prediction.scoring_eligible.is_(True),
                 Prediction.verdict.in_(SCORED_VERDICTS),
             )
             .group_by(Prediction.blogger_handle)

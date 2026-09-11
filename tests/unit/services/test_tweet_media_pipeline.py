@@ -30,6 +30,17 @@ def _tweet(*, media_urls=None, status="pending") -> Tweet:
     )
 
 
+def test_vision_schema_unwraps_provider_singleton_array():
+    result = TweetMediaAnalysisOutput.model_validate_json(
+        '[{"is_financial":true,"combined_summary":"chart",'
+        '"images":[],"confidence":0.9}]'
+    )
+
+    assert result.is_financial is True
+    assert result.combined_summary == "chart"
+    assert result.confidence == 0.9
+
+
 def test_import_routes_text_and_media_tweets_to_distinct_outbox_flows(db_session):
     items = [
         TweetImportItem(
@@ -199,13 +210,36 @@ def test_supervisor_merges_visual_evidence_into_final_analysis():
                 }
             ],
             "classification": {},
-            "partial_analyses": [{"tweet_id": tweet_id, "summary": "Margin improved"}],
+            "partial_analyses": [
+                {
+                    "tweet_id": tweet_id,
+                    "tweet_summary": "Margin improved",
+                    "claims": [
+                        {
+                            "instrument": {"symbol": "NVDA"},
+                            "direction": "bullish",
+                            "horizon": "medium",
+                            "claim_type": "opinion",
+                            "opinion_source": "author",
+                            "thesis": "Margin improved",
+                            "evidence": ["Margin improved"],
+                            "media_evidence": [
+                                "Gross margin trend rises",
+                                "Margin reached 55%",
+                            ],
+                        }
+                    ],
+                }
+            ],
             "risk_assessments": [],
         }
     )
 
     analysis = result["analyses"][0]
     assert analysis["media_summary"] == "Chart confirms margin expansion."
-    assert analysis["media_evidence"] == ["Gross margin trend rises", "Margin reached 55%"]
+    assert analysis["claims"][0]["media_evidence"] == [
+        "Gross margin trend rises",
+        "Margin reached 55%",
+    ]
     assert analysis["text_image_consistency"] == "consistent"
     assert analysis["media_confidence"] == 0.93

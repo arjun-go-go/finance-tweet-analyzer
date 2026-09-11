@@ -25,7 +25,7 @@ export default function FilterBar({
   return (
     <div className="filter-panel">
       <div className="filter-field">
-        <span>信息源</span>
+        <span>博主</span>
         <input
           type="text"
           value={localBlogger}

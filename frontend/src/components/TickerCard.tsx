@@ -23,6 +23,8 @@ export default function TickerCard({
     strong_buy: { label: "强烈推荐", color: "bg-green-600 text-white" },
     buy: { label: "推荐买入", color: "bg-green-400 text-white" },
     neutral: { label: "中性观望", color: "bg-gray-400 text-white" },
+    none: { label: "暂无方向", color: "bg-gray-300 text-gray-700" },
+    mixed: { label: "多空分歧", color: "bg-amber-400 text-white" },
     sell: { label: "建议卖出", color: "bg-red-400 text-white" },
     strong_sell: { label: "强烈看空", color: "bg-red-600 text-white" },
   };
@@ -35,7 +37,7 @@ export default function TickerCard({
         <div>
           <h3 className="text-xl font-bold">{ticker}</h3>
           <span className="text-xs text-gray-500">
-            {mentionCount} 条推文提及 · {bloggers.length} 位博主
+            {mentionCount} 项逐标的观点 · {bloggers.length} 位博主
           </span>
         </div>
         <div className="text-right">
@@ -43,7 +45,7 @@ export default function TickerCard({
             {config.label}
           </span>
           <p className="text-2xl font-bold mt-1">{recommendationScore}</p>
-          <p className="text-xs text-gray-500">推荐指数</p>
+          <p className="text-xs text-gray-500">方向指数</p>
         </div>
       </div>
 

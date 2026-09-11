@@ -1,13 +1,12 @@
 # Finance Tweet Analyzer
 
-面向个人投资研究者的 Twitter 投资情报工作台。产品聚焦四件事：管理信息源、持续采集推文、提取可验证的投资信号、基于真实证据问答。
+面向个人投资研究者的 Twitter 投资观点工作台。产品聚焦三件事：持续采集关注博主、逐标的提取观点、用公开行情验证可验证预测。
 
 ## 核心页面
 
-- 今日：按研究范围聚合最新情报主题、风险和证据。
-- 信息源：新增、关注、暂停抓取 Twitter 博主，并查看其历史内容与预测表现。
-- 关注：维护关注标的，查看近期情报、方向变化和风险提醒。
-- 助手：查询正式关注关系、结构化业务数据及 ES + Milvus 混合检索证据。
+- 动态：按时间查看推文原文、逐标的观点、市场判断和引用证据。
+- 博主：新增、关注、暂停抓取 Twitter 博主，并查看其历史内容与预测表现。
+- 标的：查看被识别的全部已验证标的；可进一步关注并查看观点、风险和验证结果。
 - 设置：账户与研究范围入口。
 
 ## 数据流程
@@ -19,14 +18,12 @@ Twitter profile/tweets
         ├─ MinIO: 推文原始图片
         └─ Celery outbox
              ├─ 图片识别
-             ├─ Supervisor 分类与文本/风险分析
-             ├─ 预测提取与公开行情校验
+             ├─ Supervisor 编排逐标的观点与市场判断
+             ├─ 预测契约生成与公开行情校验
              ├─ 情报主题投影
              └─ RAG 分块
                     ├─ Elasticsearch: BM25/字段加权检索
                     └─ Milvus: 1024 维语义向量检索
-
-用户问题 → 窄路由选工具 → PG/ES/Milvus 召回 → RRF → rerank → 证据约束回答
 ```
 
 ## 技术栈
@@ -35,11 +32,11 @@ Twitter profile/tweets
 |---|---|
 | 前端 | Next.js 15、React 19、TypeScript |
 | API | FastAPI、Pydantic v2、JWT |
-| Agent | LangGraph、LangChain、OpenRouter |
+| 分析编排 | LangGraph Supervisor、LangChain、OpenRouter |
 | 异步任务 | Celery、Redis |
 | 主数据库 | PostgreSQL、Alembic、psycopg v3 |
 | 关键词检索 | Elasticsearch 8、IK 分词 |
-| 向量检索/记忆 | Milvus/Zilliz、mem0 |
+| 向量索引 | Milvus/Zilliz |
 | 对象存储 | MinIO |
 | Embedding / Rerank | DashScope `text-embedding-v4` / `qwen3-rerank` |
 
@@ -86,7 +83,6 @@ bash scripts/manage.sh stop
 
 ```bash
 uv run pytest -q
-uv run python scripts/evaluate_chat_tool_routing.py
 cd frontend && npm run build
 ```
 

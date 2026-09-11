@@ -16,10 +16,9 @@ interface NavItem {
 }
 
 const primary: NavItem[] = [
-  { href: "/", label: "今日", icon: "pulse" },
-  { href: "/sources", label: "信息源", icon: "sources" },
-  { href: "/watch", label: "关注", icon: "watchlist" },
-  { href: "/assistant", label: "助手", icon: "research" },
+  { href: "/", label: "动态", icon: "tweets" },
+  { href: "/sources", label: "博主", icon: "sources" },
+  { href: "/watch", label: "标的", icon: "watchlist" },
 ];
 
 function matchesPath(pathname: string, href: string) {
@@ -83,11 +82,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="workspace-shell">
       <aside className="workspace-sidebar">
-        <Link href="/" className="workspace-brand" aria-label="Signal 首页">
+        <Link href="/" className="workspace-brand" aria-label="Signal 动态">
           <span className="workspace-brand-mark"><span /></span>
           <div>
             <strong>Signal</strong>
-            <small>TWITTER INTELLIGENCE</small>
+            <small>标的与市场观点</small>
           </div>
         </Link>
 
@@ -99,8 +98,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="workspace-sidebar-footer">
           <p className="workspace-sidebar-note">
-            <strong>只保留重要信号</strong>
-            从关注的 Twitter 博主中提取可追溯的投资观点。
+            <strong>观点来自原文</strong>
+            识别每条推文里的标的观点与市场影响。
           </p>
           <div className="workspace-profile-row">
             <Link
@@ -124,7 +123,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               readOnly
               value=""
               onFocus={() => setSearchOpen(true)}
-              placeholder="搜索博主、标的或观点"
+              placeholder="搜索博主、标的或推文"
               aria-label="打开全局搜索"
             />
             <kbd>Ctrl K</kbd>
@@ -135,7 +134,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               {unreadAlerts > 0 && <span className="workspace-alert-count">{unreadAlerts > 99 ? "99+" : unreadAlerts}</span>}
             </button>
             <Link href="/sources?add=1" className="workspace-add-source">
-              <AppIcon name="plus" /><span>新增信息源</span>
+              <AppIcon name="plus" /><span>添加博主</span>
             </Link>
             <Link href="/settings" className="workspace-mobile-settings" aria-label="个人设置"><AppIcon name="settings" /></Link>
           </div>
@@ -143,7 +142,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="workspace-content">{children}</div>
       </main>
       <GlobalSearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <NotificationDrawer open={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
+      <NotificationDrawer
+        open={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        onUnreadChange={setUnreadAlerts}
+      />
     </div>
   );
 }

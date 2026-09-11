@@ -140,7 +140,7 @@ def test_search_query_uses_weighted_fields_stage_boost_and_time_decay():
     assert "tickers^8" in multi_match["fields"]
     assert "blogger_handle^3" in multi_match["fields"]
     assert "content^2" in multi_match["fields"]
-    assert {"filter": {"term": {"index_stage": "analysis"}}, "weight": 1.25} in query["functions"]
+    assert {"filter": {"term": {"index_stage": "claim"}}, "weight": 1.25} in query["functions"]
     assert {
         "gauss": {
             "published_at": {

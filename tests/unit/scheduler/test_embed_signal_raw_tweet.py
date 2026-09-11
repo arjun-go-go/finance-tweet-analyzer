@@ -110,7 +110,7 @@ def test_embed_signal_task_indexes_raw_tweet_without_analysis(monkeypatch):
     assert metadata["source_type"] == "tweet"
     assert metadata["source_id"] == str(tweet.id)
     assert metadata["index_stage"] == "raw"
-    assert metadata["sentiment"] == "unknown"
+    assert metadata["sentiment"] == "none"
     assert metadata["horizon"] == "unknown"
     assert metadata["ticker"] == ""
     assert db.committed is True

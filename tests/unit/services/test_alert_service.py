@@ -23,8 +23,8 @@ def test_alert_recipients_come_from_formal_follow_or_active_ticker(db_session):
     db_session.flush()
     db_session.add_all([
         UserBloggerFollow(user_id=follower.id, blogger_id=blogger.id),
-        TrackedTicker(user_id=tracker.id, ticker="BTC", frequency="manual", status="active", config={}),
-        TrackedTicker(user_id=unrelated.id, ticker="ETH", frequency="manual", status="paused", config={}),
+        TrackedTicker(user_id=tracker.id, ticker="BTC", status="active", config={}),
+        TrackedTicker(user_id=unrelated.id, ticker="ETH", status="paused", config={}),
     ])
     db_session.flush()
 

@@ -1,7 +1,7 @@
 """分析 Agent —— 推文投资信号提取。
 
 核心职责：
-    对一批推文逐条调用 LLM，提取 tickers / sentiment / horizon / key_points 等结构化字段。
+    对一批推文逐条调用 LLM，一次提取该推文中的全部逐标的观点 claims。
 
 关键设计：
     1. 博主画像注入 (blogger_context)：查询历史可信度 + 情绪分布，写入 system prompt，
@@ -21,6 +21,7 @@ from app.agents.llm import get_signal_llm
 from app.prompts import get_chat_prompt
 from app.schemas.signal import TweetAnalysis
 from app.services.blogger_context import fetch_blogger_contexts, build_blogger_context_block
+from app.services.commercial_attribution_service import detect_commercial_disclosure
 
 
 # ============================================================
@@ -49,11 +50,21 @@ async def _analyze_one(structured_llm, tweet: dict, blogger_context: str) -> dic
     """对单条推文执行 LLM 分析，返回结构化结果或 None（失败时）。"""
     start = time.perf_counter()
     try:
+        commercial_hint = detect_commercial_disclosure(tweet["content"])
         messages = _to_lc_messages(get_chat_prompt(
             "analysis/system_prompt",
             blogger_context=blogger_context,
             author_handle=tweet["author_handle"],
             content=tweet["content"],
+            editorial_content=commercial_hint["editorial_text"],
+            commercial_hint=json.dumps(
+                {
+                    key: value
+                    for key, value in commercial_hint.items()
+                    if key != "editorial_text"
+                },
+                ensure_ascii=False,
+            ),
             media_context=json.dumps(tweet.get("media_context") or {}, ensure_ascii=False),
             conversation_context=json.dumps(
                 tweet.get("conversation_context") or {}, ensure_ascii=False
@@ -113,11 +124,10 @@ async def _run_analysis(state: dict) -> dict:
                 "tweet_id": tweet["id"],
                 "author_handle": tweet["author_handle"],
                 "reasoning": "分类阶段判定为非金融内容，跳过分析",
+                "tweet_summary": "",
+                "is_investment_relevant": False,
                 "is_investment_related": False,
-                "overall_sentiment": "neutral",
-                "tickers": [],
-                "key_points": [],
-                "risk_factors": [],
+                "claims": [],
                 "confidence": 0.0,
             })
             skipped[-1] = {

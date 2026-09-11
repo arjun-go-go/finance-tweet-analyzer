@@ -20,7 +20,7 @@ class AnalysisResponse(BaseModel):
     batch_id: str
     analyzed: int
     analyses: list[dict]
-    ticker_summaries: list[dict]
+    claims_created: int
 
 
 class MultiBloggerRequest(BaseModel):

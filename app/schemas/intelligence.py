@@ -30,6 +30,7 @@ class IntelligenceFeedItem(BaseModel):
     title: str
     summary: str
     direction: str
+    horizon: str
     tickers: list[str]
     author: str
     confidence: float
@@ -132,6 +133,8 @@ class IntelligenceDetailResponse(BaseModel):
     thread: list[IntelligenceTweetDetail]
     media: list[IntelligenceMediaDetail]
     analysis: dict
+    claim: dict | None = None
+    claims: list[dict] = Field(default_factory=list)
     instruments: list[dict]
     predictions: list[dict]
     audit: list[dict]

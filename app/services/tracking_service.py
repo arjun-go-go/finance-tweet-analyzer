@@ -9,9 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.analysis import AnalysisResult
+from app.models.blogger import Blogger
 from app.models.tracked_ticker import TrackedTicker
-from app.models.intelligence_event import IntelligenceTopic
+from app.models.intelligence_event import IntelligenceEvent, IntelligenceTopic
 from app.models.prediction import Prediction
+from app.models.tweet import Tweet
+from app.models.user_blogger_follow import UserBloggerFollow
 from app.services.instrument_resolver import (
     is_downstream_verified_ticker,
     resolve_analysis_tickers,
@@ -160,38 +164,85 @@ def tracking_monitoring(db: Session, records: list[TrackedTicker]) -> tuple[dict
         return {}, {"intelligence_24h": 0, "attention": 0}
     now = datetime.now(timezone.utc)
     tickers = {record.ticker for record in records}
-    topics = list(db.execute(
-        select(IntelligenceTopic).where(
-            IntelligenceTopic.status == "active",
-            IntelligenceTopic.primary_ticker.in_(tickers),
-            IntelligenceTopic.last_seen_at >= now - timedelta(days=7),
+    user_id = records[0].user_id
+    followed_handles = list(
+        db.execute(
+            select(Blogger.handle)
+            .join(UserBloggerFollow, UserBloggerFollow.blogger_id == Blogger.id)
+            .where(UserBloggerFollow.user_id == user_id)
+        ).scalars()
+    )
+    events = []
+    if followed_handles:
+        events = list(
+            db.execute(
+                select(IntelligenceEvent)
+                .join(
+                    AnalysisResult,
+                    AnalysisResult.id == IntelligenceEvent.analysis_result_id,
+                )
+                .join(Tweet, Tweet.id == AnalysisResult.tweet_id)
+                .where(
+                    IntelligenceEvent.status == "active",
+                    IntelligenceEvent.primary_ticker.in_(tickers),
+                    IntelligenceEvent.published_at >= now - timedelta(days=7),
+                    func.lower(Tweet.author_handle).in_(
+                        [handle.lower() for handle in followed_handles]
+                    ),
+                )
+            ).scalars()
         )
-    ).scalars())
-    predictions = list(db.execute(
-        select(Prediction).where(Prediction.ticker.in_(tickers))
-    ).scalars())
+    topic_ids = {event.topic_id for event in events if event.topic_id}
+    topics = list(
+        db.execute(
+            select(IntelligenceTopic).where(IntelligenceTopic.id.in_(topic_ids))
+        ).scalars()
+    ) if topic_ids else []
+    predictions = []
+    if followed_handles:
+        predictions = list(
+            db.execute(
+                select(Prediction).where(
+                    Prediction.ticker.in_(tickers),
+                    func.lower(Prediction.blogger_handle).in_(
+                        [handle.lower() for handle in followed_handles]
+                    ),
+                )
+            ).scalars()
+        )
     output: dict[UUID, dict] = {}
     total_24h = 0
     attention = 0
     for record in records:
         ticker_topics = [topic for topic in topics if topic.primary_ticker == record.ticker]
-        recent = [topic for topic in ticker_topics if topic.last_seen_at >= now - timedelta(hours=24)]
-        previous = [topic for topic in ticker_topics if now - timedelta(hours=48) <= topic.last_seen_at < now - timedelta(hours=24)]
-        bullish = sum(1 for topic in recent if topic.direction == "bullish")
-        bearish = sum(1 for topic in recent if topic.direction == "bearish")
-        direction = "bullish" if bullish > bearish else "bearish" if bearish > bullish else "mixed" if recent else "neutral"
+        ticker_events = [event for event in events if event.primary_ticker == record.ticker]
+        recent = [event for event in ticker_events if event.published_at >= now - timedelta(hours=24)]
+        previous = [event for event in ticker_events if now - timedelta(hours=48) <= event.published_at < now - timedelta(hours=24)]
+        bullish = sum(1 for event in recent if event.direction == "bullish")
+        bearish = sum(1 for event in recent if event.direction == "bearish")
+        directional_count = bullish + bearish
+        if directional_count == 0:
+            direction = "neutral"
+        elif bullish > bearish:
+            direction = "bullish"
+        elif bearish > bullish:
+            direction = "bearish"
+        else:
+            direction = "mixed"
         current_score = bullish - bearish
-        previous_score = sum(1 if topic.direction == "bullish" else -1 if topic.direction == "bearish" else 0 for topic in previous)
+        previous_score = sum(1 if event.direction == "bullish" else -1 if event.direction == "bearish" else 0 for event in previous)
         trend = "up" if current_score > previous_score else "down" if current_score < previous_score else "flat"
         ticker_predictions = [prediction for prediction in predictions if prediction.ticker == record.ticker]
         active_predictions = [prediction for prediction in ticker_predictions if prediction.verdict is None]
         new_predictions = [prediction for prediction in ticker_predictions if prediction.created_at >= now - timedelta(hours=24)]
         latest_topic = max(ticker_topics, key=lambda value: value.last_seen_at, default=None)
+        latest_event = max(ticker_events, key=lambda value: value.published_at, default=None)
         latest_prediction = max(ticker_predictions, key=lambda value: value.published_at, default=None)
         alerts: list[dict] = []
-        if any(topic.lifecycle == "reversed" for topic in recent):
+        recent_topic_ids = {event.topic_id for event in recent if event.topic_id}
+        if any(topic.lifecycle == "reversed" and topic.id in recent_topic_ids for topic in ticker_topics):
             alerts.append({"type": "direction_reversal", "level": "high", "message": "观点方向出现反转"})
-        high_risks = sum(1 for topic in recent if topic.risk_level in {"high", "critical"})
+        high_risks = sum(1 for event in recent if event.risk_level in {"high", "critical"})
         if high_risks:
             alerts.append({"type": "risk", "level": "high", "message": f"出现 {high_risks} 条高风险情报"})
         if new_predictions:
@@ -204,11 +255,14 @@ def tracking_monitoring(db: Session, records: list[TrackedTicker]) -> tuple[dict
             "direction_trend": trend,
             "bullish_count": bullish,
             "bearish_count": bearish,
+            "directional_claim_count": directional_count,
+            "direction_basis": "followed_author_claims_24h",
+            "has_disagreement": bullish > 0 and bearish > 0,
             "active_predictions": len(active_predictions),
             "latest_prediction_sentiment": latest_prediction.sentiment if latest_prediction else None,
             "risk_count": high_risks,
-            "latest_title": latest_topic.title if latest_topic else None,
-            "latest_seen_at": latest_topic.last_seen_at if latest_topic else None,
+            "latest_title": latest_topic.title if latest_topic else latest_event.title if latest_event else None,
+            "latest_seen_at": latest_event.published_at if latest_event else None,
             "alerts": alerts,
         }
     return output, {"intelligence_24h": total_24h, "attention": attention}

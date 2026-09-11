@@ -1,7 +1,7 @@
 """信号 Agent —— 单条推文独立分析（早期版本/工具调用入口）。
 
 与 analysis_agent 的区别：
-    - signal_agent: 同步、单条调用，无 blogger_context 注入，用于 chat_agent 工具链
+    - signal_agent: 同步、单条调用，无 blogger_context 注入，用于手动分析和调试
     - analysis_agent: 异步批量并发，注入博主画像上下文，用于 Supervisor 管道
 
 本模块作为独立入口保留，供不经过 Supervisor 的场景使用
@@ -30,7 +30,7 @@ def _to_lc_messages(msg_dicts: list[dict]) -> list:
 def analyze_tweet(content: str, author_handle: str) -> dict:
     """同步分析单条推文，返回结构化字典。
 
-    适用场景：chat_agent 工具调用 / 手动调试 / 实时单条分析。
+    适用场景：手动调试 / 实时单条分析。
     不注入 blogger_context（无批量上下文优化）。
     """
     llm = get_signal_llm()
@@ -39,7 +39,8 @@ def analyze_tweet(content: str, author_handle: str) -> dict:
     result = structured_llm.invoke(messages)
     data = result.model_dump()
     data["media_summary"] = ""
-    data["media_evidence"] = []
     data["text_image_consistency"] = "no_media"
     data["media_confidence"] = 0.0
+    for claim in data.get("claims") or []:
+        claim["media_evidence"] = []
     return data

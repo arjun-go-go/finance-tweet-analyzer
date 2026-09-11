@@ -1,179 +1,269 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AppIcon from "@/components/AppIcon";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
 import {
   createTracking,
   deleteTracking,
+  fetchTickerSummaries,
   listTracking,
   validateTracking,
+  type TickerSummaryItem,
   type TrackingItem,
   type TrackingListResponse,
   type TrackingValidation,
 } from "@/lib/api";
-import { formatDateTime } from "@/lib/datetime";
 
-const MARKET_LABEL: Record<string, string> = { CN: "A股", HK: "港股", US: "美股", COMMODITY: "商品", CRYPTO: "加密货币" };
-const DIRECTION_LABEL: Record<string, string> = { bullish: "偏多", bearish: "偏空", mixed: "分歧", neutral: "观察" };
-const FILTERS = [{ value: "all", label: "全部关注" }, { value: "changed", label: "24h 有变化" }] as const;
+type AssetView = "all" | "tracked";
 
-function hasMeaningfulChange(item: TrackingItem) {
+const MARKET_LABEL: Record<string, string> = {
+  CN: "A股",
+  HK: "港股",
+  US: "美股",
+  COMMODITY: "商品",
+  CRYPTO: "加密货币",
+};
+
+const CONSENSUS_LABEL: Record<string, string> = {
+  strong_buy: "多数看多",
+  buy: "偏多",
+  strong_sell: "多数看空",
+  sell: "偏空",
+  mixed: "观点分歧",
+  neutral: "中性",
+  none: "暂无方向",
+};
+
+const MONITOR_DIRECTION: Record<string, string> = {
+  bullish: "偏多",
+  bearish: "偏空",
+  mixed: "观点分歧",
+  neutral: "暂无方向",
+};
+
+const REFERENCE_REASON: Record<string, string> = {
+  sponsor_related: "与推广方直接相关",
+  sponsor_relation_unclear: "商业关联待确认",
+  quoted_opinion: "引用观点",
+  third_party_opinion: "第三方观点",
+  opinion_source_unclear: "观点归属待确认",
+  risk_warning: "风险提示",
+  fact_mention: "事实提及",
+  news_mention: "新闻信息",
+  historical_recap: "历史复盘",
+  reference_mention: "仅提及标的",
+  opinion_not_author: "非博主本人观点",
+  claim_type_not_stance: "事实或背景信息",
+  direction_not_comparable: "尚未形成明确方向",
+  instrument_not_verified: "标的身份待确认",
+};
+
+function referenceSummary(reasons: Record<string, number> = {}) {
+  const keys = [
+    "sponsor_related",
+    "sponsor_relation_unclear",
+    "quoted_opinion",
+    "third_party_opinion",
+    "opinion_source_unclear",
+    "risk_warning",
+    "fact_mention",
+    "news_mention",
+    "historical_recap",
+    "reference_mention",
+    "direction_not_comparable",
+    "instrument_not_verified",
+    "opinion_not_author",
+    "claim_type_not_stance",
+  ].filter((candidate) => reasons[candidate]);
+  return keys.length
+    ? keys.slice(0, 3).map((key) => REFERENCE_REASON[key]).join(" · ")
+    : "暂无可计入统计的作者观点";
+}
+
+function TrackedAssetRow({ item, onRemove }: { item: TrackingItem; onRemove: () => void }) {
   const monitor = item.monitor || {};
-  return item.status === "active" && (
-    (monitor.alerts?.length || 0) > 0
-    || ((monitor.intelligence_24h || 0) > 0 && ["up", "down"].includes(monitor.direction_trend || ""))
+  const instrument = item.instrument || {};
+  return (
+    <article className="asset-directory-row">
+      <div className="asset-directory-symbol">
+        <strong>{item.ticker}</strong>
+        <span>{MARKET_LABEL[instrument.market || ""] || instrument.market || "已核验标的"}</span>
+      </div>
+      <div className="asset-directory-copy">
+        <div><b>{MONITOR_DIRECTION[monitor.direction || "neutral"]}</b><span>{item.status === "paused" ? "已暂停" : "关注中"}</span></div>
+        <p>{monitor.latest_title || "等待关注博主发布与该标的有关的新观点。"}</p>
+        <small>{monitor.intelligence_24h || 0} 项 24h 新观点 · {monitor.bullish_count || 0} 多 / {monitor.bearish_count || 0} 空</small>
+      </div>
+      <div className="asset-directory-actions">
+        <Link href={`/watch/${encodeURIComponent(item.ticker)}`}>查看</Link>
+        <button type="button" onClick={onRemove}>取消关注</button>
+      </div>
+    </article>
   );
 }
 
-function changeLabel(item: TrackingItem) {
-  if (item.status === "paused") return "已暂停关注";
-  const monitor = item.monitor || {};
-  if (monitor.alerts?.some((alert) => alert.type === "direction_reversal")) return "观点反转";
-  if (monitor.alerts?.some((alert) => alert.type === "risk")) return "出现高风险";
-  if (monitor.alerts?.some((alert) => alert.type === "new_prediction")) return "出现新预测";
-  if ((monitor.intelligence_24h || 0) > 0 && monitor.direction_trend === "up") return "观点升温";
-  if ((monitor.intelligence_24h || 0) > 0 && monitor.direction_trend === "down") return "观点转弱";
-  return monitor.intelligence_24h ? "方向稳定" : "暂无重要变化";
-}
-
-function distribution(item: TrackingItem) {
-  const bullish = item.monitor.bullish_count || 0;
-  const bearish = item.monitor.bearish_count || 0;
-  const neutral = Math.max((item.monitor.intelligence_24h || 0) - bullish - bearish, 0);
-  const total = Math.max(bullish + bearish + neutral, 1);
-  return {
-    bullish: Math.round(bullish / total * 100),
-    neutral: Math.round(neutral / total * 100),
-    bearish: Math.round(bearish / total * 100),
-  };
-}
-
-export default function WatchPage() {
-  const [data, setData] = useState<TrackingListResponse | null>(null);
+export default function AssetsPage() {
+  const [view, setView] = useState<AssetView>("all");
+  const [summaries, setSummaries] = useState<TickerSummaryItem[]>([]);
+  const [tracking, setTracking] = useState<TrackingListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]["value"]>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const [busyTicker, setBusyTicker] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<TrackingItem | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [ticker, setTicker] = useState("");
   const [validation, setValidation] = useState<TrackingValidation | null>(null);
-  const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<TrackingItem | null>(null);
+  const [validating, setValidating] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const result = await listTracking();
-      setData(result);
-      setSelectedId((current) => current && result.items.some((item) => item.id === current) ? current : result.items[0]?.id || null);
+      const [summaryData, trackingData] = await Promise.all([
+        fetchTickerSummaries({ limit: 100 }),
+        listTracking(),
+      ]);
+      setSummaries(summaryData.items);
+      setTracking(trackingData);
     } catch {
-      setError("无法读取关注标的，请检查服务连接后重试。");
+      setError("标的数据加载失败，请检查服务连接后重试。");
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const trackedByTicker = useMemo(
+    () => new Map((tracking?.items || []).map((item) => [item.ticker.toUpperCase(), item])),
+    [tracking],
+  );
+
+  const follow = async (symbol: string) => {
+    setBusyTicker(symbol);
+    setNotice("");
+    try {
+      await createTracking(symbol);
+      setNotice(`已关注 ${symbol}`);
+      await load();
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "关注标的失败");
+    } finally {
+      setBusyTicker("");
+    }
   };
 
-  useEffect(() => { void load(); }, []);
-
-  const items = useMemo(() => data?.items || [], [data]);
-  const visibleItems = useMemo(() => items.filter((item) => {
-    if (filter === "changed") return hasMeaningfulChange(item);
-    return true;
-  }), [filter, items]);
-  useEffect(() => {
-    if (!visibleItems.some((item) => item.id === selectedId)) {
-      setSelectedId(visibleItems[0]?.id || null);
+  const remove = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    setBusyTicker(target.ticker);
+    try {
+      await deleteTracking(target.id);
+      setNotice(`已取消关注 ${target.ticker}`);
+      await load();
+    } catch {
+      setNotice("取消关注失败，请稍后重试。");
+    } finally {
+      setBusyTicker("");
     }
-  }, [selectedId, visibleItems]);
-  const selected = visibleItems.find((item) => item.id === selectedId) || null;
-  const changedCount = items.filter(hasMeaningfulChange).length;
+  };
 
   const validate = async () => {
     if (!ticker.trim()) return;
-    setBusy(true); setNotice(""); setValidation(null);
-    try { setValidation(await validateTracking(ticker.trim().toUpperCase())); }
-    catch (reason) { setNotice(reason instanceof Error ? reason.message : "标的校验失败"); }
-    finally { setBusy(false); }
+    setValidating(true);
+    setNotice("");
+    setValidation(null);
+    try {
+      setValidation(await validateTracking(ticker.trim().toUpperCase()));
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "标的校验失败");
+    } finally {
+      setValidating(false);
+    }
   };
 
   const add = async () => {
     const symbol = validation?.instrument?.symbol;
     if (!validation?.accepted || !symbol) return;
-    setBusy(true); setNotice("");
-    try {
-      await createTracking(symbol);
-      setShowAdd(false); setTicker(""); setValidation(null);
-      await load();
-    } catch (reason) { setNotice(reason instanceof Error ? reason.message : "添加标的失败"); }
-    finally { setBusy(false); }
+    await follow(symbol);
+    setShowAdd(false);
+    setTicker("");
+    setValidation(null);
   };
 
-  const remove = async () => {
-    if (!deleteTarget) return;
-    await deleteTracking(deleteTarget.id);
-    setDeleteTarget(null);
-    await load();
-  };
+  if (loading) return <PageLoading label="正在加载标的" />;
+  if (error) return <PageError detail={error} onRetry={load} />;
 
-  return <div className="product-page watch-prototype-page">
-    <header className="watch-prototype-heading">
-      <div><p className="page-eyebrow">Watchlist</p><h1>关注</h1><p>不重复做行情软件，只看你关注博主的观点发生了什么变化。</p></div>
-      <button className="button-secondary" type="button" onClick={() => setShowAdd(true)}><AppIcon name="plus" />添加标的</button>
-    </header>
+  const trackedItems = tracking?.items || [];
 
-    <section className="watch-change-summary">
-      <span><AppIcon name="watchlist" /></span>
-      <div><strong>{changedCount ? `过去 24 小时，${changedCount} 个标的的观点发生明显变化` : "过去 24 小时暂无明显观点变化"}</strong><p>{data?.summary.intelligence_24h || 0} 条相关 Twitter 情报进入你的研究范围。</p></div>
-      <small>基于 {items.length} 个关注标的</small>
-    </section>
+  return (
+    <div className="asset-directory-page">
+      <header className="asset-directory-header">
+        <div><h1>标的</h1><p>汇总博主对股票、原油、黄金和加密货币的逐标的观点。</p></div>
+        <button className="button-secondary" type="button" onClick={() => setShowAdd(true)}><AppIcon name="plus" />关注标的</button>
+      </header>
 
-    <div className="watch-prototype-toolbar">
-      <div>{FILTERS.map((item) => <button key={item.value} className={filter === item.value ? "is-active" : ""} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div>
-      <span>{visibleItems.length} 个标的</span>
+      <div className="asset-directory-toolbar">
+        <nav aria-label="标的范围">
+          <button type="button" className={view === "all" ? "is-active" : ""} onClick={() => setView("all")}>全部标的</button>
+          <button type="button" className={view === "tracked" ? "is-active" : ""} onClick={() => setView("tracked")}>我的关注</button>
+        </nav>
+        <span>{view === "all" ? `${summaries.length} 个已核验标的` : `${trackedItems.length} 个关注标的`}</span>
+      </div>
+
+      {notice && <p className="asset-directory-notice" role="status">{notice}</p>}
+
+      {view === "all" ? (
+        summaries.length ? <section className="asset-directory-list" aria-label="全部标的">
+          {summaries.map((item) => {
+            const summary = item.result;
+            const tracked = trackedByTicker.get(summary.ticker.toUpperCase());
+            const hasEffectiveViews = summary.has_effective_views ?? summary.mention_count > 0;
+            const relatedCount = summary.related_claim_count ?? summary.mention_count;
+            const bloggerCount = hasEffectiveViews
+              ? summary.bloggers.length
+              : (summary.related_bloggers || []).length;
+            return (
+              <article className="asset-directory-row" key={item.id}>
+                <div className="asset-directory-symbol"><strong>{summary.ticker}</strong><span>{bloggerCount} 位博主</span></div>
+                <div className="asset-directory-copy">
+                  <div><b>{hasEffectiveViews ? CONSENSUS_LABEL[summary.consensus] || "暂无方向" : "仅供参考"}</b><span>{hasEffectiveViews ? `${summary.mention_count} 项有效观点` : `${relatedCount} 项相关信息`}</span></div>
+                  <p>{summary.summary || "已有结构化观点，暂无可展示的简要说明。"}</p>
+                  <small>{hasEffectiveViews
+                    ? `${summary.bullish_count} 多 / ${summary.bearish_count} 空${summary.neutral_count ? ` / ${summary.neutral_count} 中性` : ""}`
+                    : `${referenceSummary(summary.exclusion_reasons)} · 不参与多空统计`}</small>
+                </div>
+                <div className="asset-directory-actions">
+                  <Link href={`/watch/${encodeURIComponent(summary.ticker)}`}>查看</Link>
+                  {tracked
+                    ? <span className="is-tracked">已关注</span>
+                    : <button type="button" disabled={busyTicker === summary.ticker} onClick={() => void follow(summary.ticker)}>{busyTicker === summary.ticker ? "处理中…" : "关注"}</button>}
+                </div>
+              </article>
+            );
+          })}
+        </section> : <PageEmpty title="还没有标的信息" detail="博主推文完成逐标的分析后，已核验标的及其观点、引用和事实信息会显示在这里。" />
+      ) : (
+        trackedItems.length ? <section className="asset-directory-list" aria-label="关注标的">
+          {trackedItems.map((item) => <TrackedAssetRow key={item.id} item={item} onRemove={() => setDeleteTarget(item)} />)}
+        </section> : <PageEmpty title="还没有关注标的" detail="从全部标的中选择关注，或直接输入股票、原油、黄金及加密货币代码。" action={<button className="button-primary mt-3" onClick={() => setShowAdd(true)}>关注第一个标的</button>} />
+      )}
+
+      {showAdd && <div className="workspace-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAdd(false); }}>
+        <section className="watch-add-dialog" role="dialog" aria-modal="true" aria-label="关注标的">
+          <header><div><h2>关注标的</h2><span>用于持续聚合你关注博主的相关观点。</span></div><button onClick={() => setShowAdd(false)} aria-label="关闭">×</button></header>
+          <label><AppIcon name="search" /><input autoFocus value={ticker} onChange={(event) => { setTicker(event.target.value); setValidation(null); setNotice(""); }} onKeyDown={(event) => { if (event.key === "Enter") void validate(); }} placeholder="输入股票、WTI、XAU 或加密货币代码" /></label>
+          {validation && <div className={`watch-add-result ${validation.accepted ? "is-valid" : "is-invalid"}`}><b>{validation.instrument?.symbol || ticker.toUpperCase()}</b><div><strong>{validation.instrument?.resolved_name || validation.instrument?.name || "未找到正式标的"}</strong><small>{validation.accepted ? `${MARKET_LABEL[validation.instrument?.market || ""] || validation.instrument?.market || "已核验"} · ${(validation.instrument?.validation_sources || []).join(" / ")}` : validation.reason}</small></div><span>{validation.accepted ? "身份已核验" : "无法关注"}</span></div>}
+          <footer><span>{validation?.accepted ? `将聚合 ${validation.instrument?.symbol} 的博主观点` : "先完成正式标的校验"}</span>{validation?.accepted ? <button className="button-primary" disabled={Boolean(busyTicker)} onClick={() => void add()}>{busyTicker ? "正在关注" : "确认关注"}</button> : <button className="button-primary" disabled={validating || !ticker.trim()} onClick={() => void validate()}>{validating ? "正在校验" : "校验标的"}</button>}</footer>
+        </section>
+      </div>}
+
+      <ConfirmDialog open={Boolean(deleteTarget)} title={`取消关注 ${deleteTarget?.ticker || "标的"}？`} message="取消后不再进入你的关注列表，历史推文和分析记录不会删除。" confirmText="确认取消" variant="danger" onConfirm={remove} onCancel={() => setDeleteTarget(null)} />
     </div>
-
-    {loading ? <PageLoading label="正在整理关注标的" /> : error ? <PageError detail={error} onRetry={load} /> : items.length === 0 ? <PageEmpty title="还没有关注标的" detail="添加股票、原油、黄金或加密货币后，这里只聚合已关注博主的相关观点变化。" action={<button className="button-primary" onClick={() => setShowAdd(true)}>添加第一个标的</button>} /> : visibleItems.length === 0 ? <PageEmpty title="过去 24 小时没有明显变化" detail="这是有效的研究结果；新的重要观点出现后会自动进入这里。" /> : <div className={`watch-prototype-layout ${selected ? "has-detail" : ""}`}>
-      <section className="watch-prototype-list">
-        {visibleItems.map((item) => {
-          const instrument = item.instrument || {};
-          const monitor = item.monitor || {};
-          const direction = monitor.direction || "neutral";
-          const change = changeLabel(item);
-          return <button className={`watch-prototype-row ${selectedId === item.id ? "is-selected" : ""}`} key={item.id} onClick={() => setSelectedId(item.id)}>
-            <div><strong>{item.ticker}</strong><span>{MARKET_LABEL[instrument.market || ""] || instrument.market || "已核验"} · {DIRECTION_LABEL[direction]}</span></div>
-            <div><strong>{monitor.latest_title || `${item.ticker} 暂无新的重要观点`}</strong><p>{monitor.intelligence_24h ? `${monitor.intelligence_24h} 条情报，${monitor.bullish_count || 0} 条偏多，${monitor.bearish_count || 0} 条偏空。` : "已纳入研究范围，等待关注博主发布相关观点。"}</p><i><span style={{ width: `${Math.min(100, Math.max(12, (monitor.bullish_count || 0) * 18))}%` }} /><span className="is-risk" style={{ width: `${Math.min(100, (monitor.bearish_count || 0) * 18)}%` }} /></i></div>
-            <div><strong>{change}</strong><small>{monitor.latest_seen_at ? formatDateTime(monitor.latest_seen_at) : item.status === "paused" ? "历史记录已保留" : "等待更新"}</small></div>
-            <AppIcon name="arrow" />
-          </button>;
-        })}
-      </section>
-
-      {selected && <aside className="watch-prototype-detail">
-        <header><div><AppIcon name="watchlist" />观点变化</div><button type="button" onClick={() => setSelectedId(null)} aria-label="关闭详情">×</button></header>
-        <div className="watch-prototype-detail-body">
-          <div className="watch-detail-title"><div><h2>{selected.ticker}</h2><p>{MARKET_LABEL[selected.instrument?.market || ""] || selected.instrument?.market || "已核验标的"} · {selected.monitor.intelligence_24h || 0} 条更新</p></div><span className={`is-${selected.monitor.direction || "neutral"}`}>{DIRECTION_LABEL[selected.monitor.direction || "neutral"]}</span></div>
-          <p className="watch-detail-thesis">{selected.monitor.latest_title || "关注博主暂未形成新的明确观点；系统会继续等待可追溯证据。"}</p>
-          <section><span>关注博主观点分布</span>{(() => { const value = distribution(selected); return <div className="watch-distribution"><div><strong>{value.bullish}%</strong><small>偏多</small></div><div><strong>{value.neutral}%</strong><small>观察</small></div><div><strong>{value.bearish}%</strong><small>偏空 / 风险</small></div></div>; })()}</section>
-          <section><span>最近变化</span><div className="watch-change-list">{selected.monitor.latest_title ? <article><i /><div><small>{selected.monitor.latest_seen_at ? formatDateTime(selected.monitor.latest_seen_at) : "最近"}</small><strong>{selected.monitor.latest_title}</strong><p>来自已关注博主的结构化 Twitter 情报。</p></div></article> : <p>暂无可展示的观点变化。</p>}{selected.monitor.alerts?.map((alert) => <article key={`${alert.type}-${alert.message}`} className={`is-${alert.level}`}><i /><div><small>系统提醒</small><strong>{alert.message}</strong></div></article>)}</div></section>
-          {selected.instrument?.price_proxy_disclosure && <p className="watch-detail-disclosure">{selected.instrument.price_proxy_disclosure}</p>}
-          <div className="watch-detail-actions"><Link className="button-secondary" href={`/assistant?prompt=${encodeURIComponent(`总结关注博主最近对 ${selected.ticker} 的观点变化和证据`)}`}>向助手追问</Link><Link className="button-primary" href={`/watch/${encodeURIComponent(selected.id)}`}>完整标的</Link><button className="text-danger" onClick={() => setDeleteTarget(selected)}>取消关注</button></div>
-        </div>
-      </aside>}
-    </div>}
-
-    {showAdd && <div className="workspace-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAdd(false); }}><section className="watch-add-dialog" role="dialog" aria-modal="true" aria-label="添加关注标的">
-      <header><div><p className="page-eyebrow">Watchlist</p><h2>添加关注标的</h2><span>只用于聚合博主观点，不创建行情面板。</span></div><button onClick={() => setShowAdd(false)} aria-label="关闭">×</button></header>
-      <label><AppIcon name="search" /><input autoFocus value={ticker} onChange={(event) => { setTicker(event.target.value); setValidation(null); setNotice(""); }} onKeyDown={(event) => { if (event.key === "Enter") void validate(); }} placeholder="搜索股票、原油、黄金或加密货币" /></label>
-      {notice && <p className="form-message is-error">{notice}</p>}
-      {validation && <div className={`watch-add-result ${validation.accepted ? "is-valid" : "is-invalid"}`}><b>{validation.instrument?.symbol || ticker.toUpperCase()}</b><div><strong>{validation.instrument?.resolved_name || validation.instrument?.name || "未找到正式标的"}</strong><small>{validation.accepted ? `${MARKET_LABEL[validation.instrument?.market || ""] || validation.instrument?.market || "已核验"} · ${(validation.instrument?.validation_sources || []).join(" / ")}` : validation.reason}</small></div><span>{validation.accepted ? "身份已核验" : "无法添加"}</span></div>}
-      <footer><span>{validation?.accepted ? `将聚合与 ${validation.instrument?.symbol} 相关的博主观点` : "先完成正式标的校验"}</span>{validation?.accepted ? <button className="button-primary" disabled={busy} onClick={() => void add()}>{busy ? "正在添加" : "加入关注"}</button> : <button className="button-primary" disabled={busy || !ticker.trim()} onClick={() => void validate()}>{busy ? "正在校验" : "校验标的"}</button>}</footer>
-    </section></div>}
-
-    <ConfirmDialog open={!!deleteTarget} title={`取消关注 ${deleteTarget?.ticker || "标的"}？`} message="取消后不再进入你的个性化研究范围；历史推文和分析记录不会删除。" confirmText="确认取消" variant="danger" onConfirm={remove} onCancel={() => setDeleteTarget(null)} />
-  </div>;
+  );
 }

@@ -1,16 +1,16 @@
 """
 结构化数据检索器（SQL 路径）
 ============================================================
-职责：从 PostgreSQL 中查询与 ticker 相关的预测结果和分析摘要。
+职责：从 PostgreSQL 中精确查询预测结果和规范化逐标的观点。
 
 为什么不走向量检索：
-- predictions 和 analysis_results 是结构化表数据（含数值字段如 score/verdict）
+- predictions 和 instrument_claims 是结构化表数据（含数值字段如 score/verdict）
 - 需要精确的 ticker 过滤 + 时间排序，SQL 比向量检索更高效更精确
 - 结果已经是结构化的（不需要语义匹配），直接按 ticker 查询即可
 
 提供的数据类型：
 1. Prediction：系统对某 ticker 的多空预测（含 sentiment/score/verdict）
-2. AnalysisResult（ticker_summary 类型）：对某 ticker 的汇总分析
+2. InstrumentClaim：对某 ticker 的独立观点、证据与归属
 
 与向量检索路径互补：向量路径提供语义相关的非结构化内容，
 SQL 路径提供精确的结构化数据（历史预测准确率、数值评分等）。
@@ -27,7 +27,9 @@ from sqlalchemy.orm import Session
 from app.agents.self_query_agent import QueryIntent
 from app.core.deps import SessionLocal
 from app.models.analysis import AnalysisResult
+from app.models.instrument_claim import InstrumentClaim
 from app.models.prediction import Prediction
+from app.models.tweet import Tweet
 
 
 def retrieve_structured(intent: QueryIntent) -> list[dict]:
@@ -88,47 +90,77 @@ def retrieve_structured(intent: QueryIntent) -> list[dict]:
                 "score": 0.5,
             })
 
-        # 路径 2：ticker_summary 汇总分析
-        ticker_summary_stmt = select(AnalysisResult).where(
-            AnalysisResult.analysis_type == "ticker_summary"
+        # 路径 2：规范化逐标的观点
+        claim_stmt = (
+            select(InstrumentClaim, Tweet)
+            .join(
+                AnalysisResult,
+                AnalysisResult.id == InstrumentClaim.analysis_result_id,
+            )
+            .join(Tweet, Tweet.id == AnalysisResult.tweet_id)
+            .where(InstrumentClaim.downstream_eligible.is_(True))
         )
         if has_ticker:
-            ticker_summary_stmt = ticker_summary_stmt.where(
-                AnalysisResult.result["ticker"].astext == intent.ticker
+            claim_stmt = claim_stmt.where(
+                InstrumentClaim.instrument_symbol == intent.ticker.upper()
             )
         else:
-            ticker_summary_stmt = ticker_summary_stmt.order_by(
-                AnalysisResult.result["recommendation_score"].desc()
-            ).limit(5)
-
-        ticker_summaries = db.execute(ticker_summary_stmt).scalars().all()
+            claim_stmt = claim_stmt.limit(10)
         if intent.blogger_filter:
-            allowed_bloggers = {handle.lower() for handle in intent.blogger_filter}
-            ticker_summaries = [
-                item
-                for item in ticker_summaries
-                if allowed_bloggers.intersection(
-                    str(handle).lower() for handle in (item.result or {}).get("bloggers", [])
-                )
-            ]
+            claim_stmt = claim_stmt.where(
+                Tweet.author_handle.in_(intent.blogger_filter)
+            )
+        if intent.sentiment_filter:
+            claim_stmt = claim_stmt.where(
+                InstrumentClaim.direction.in_(intent.sentiment_filter)
+            )
+        if intent.horizon_filter:
+            claim_stmt = claim_stmt.where(
+                InstrumentClaim.horizon.in_(intent.horizon_filter)
+            )
+        if intent.time_range_start:
+            claim_stmt = claim_stmt.where(Tweet.published_at >= intent.time_range_start)
+        if intent.time_range_end:
+            claim_stmt = claim_stmt.where(Tweet.published_at <= intent.time_range_end)
+        claim_rows = db.execute(
+            claim_stmt.order_by(Tweet.published_at.desc()).limit(20)
+        ).all()
 
-        for ts in ticker_summaries:
-            data = ts.result or {}
+        for claim, tweet in claim_rows:
             content_parts = [
-                f"标的：{data.get('ticker', '')}",
-                f"共识：{data.get('consensus', 'neutral')}",
-                f"推荐度：{data.get('recommendation_score', 0)}",
-                f"看多：{data.get('bullish_count', 0)} 看空：{data.get('bearish_count', 0)}",
+                f"标的：{claim.instrument_symbol}",
+                f"方向：{claim.direction}",
+                f"周期：{claim.horizon}",
+                f"类型：{claim.claim_type}",
+                f"归属：{claim.opinion_source}",
+                f"商业关联：{claim.sponsor_relation}",
             ]
-            if data.get("summary"):
-                content_parts.append(f"观点：{data['summary']}")
-            if data.get("bloggers"):
-                content_parts.append(f"博主：{'、'.join(data['bloggers'][:5])}")
+            if claim.thesis:
+                content_parts.append(f"观点：{claim.thesis}")
+            if claim.evidence:
+                content_parts.append(f"证据：{'；'.join(claim.evidence)}")
             results.append({
-                "unique_id": f"summary:{ts.id}",
+                "unique_id": f"claim:{claim.id}",
                 "content": " | ".join(content_parts),
                 "source_type": "structured",
-                "metadata": data,
+                "metadata": {
+                    "source_type": "claim",
+                    "source_id": str(claim.id),
+                    "ticker": claim.instrument_symbol,
+                    "direction": claim.direction,
+                    "sentiment": claim.direction,
+                    "horizon": claim.horizon,
+                    "claim_type": claim.claim_type,
+                    "opinion_source": claim.opinion_source,
+                    "has_commercial_content": claim.sponsor_relation != "none",
+                    "sponsor_relation": claim.sponsor_relation,
+                    "performance_eligible": claim.performance_eligible,
+                    "performance_exclusion_reason": (
+                        claim.performance_exclusion_reason or ""
+                    ),
+                    "blogger_handle": tweet.author_handle,
+                    "published_at": tweet.published_at.isoformat(),
+                },
                 "score": 0.6,
             })
 

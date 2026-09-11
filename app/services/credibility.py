@@ -56,6 +56,7 @@ def recompute_blogger(db: Session, handle: str) -> None:
             func.coalesce(func.sum(Prediction.score), 0.0).label("correct_sum"),
         ).where(
             Prediction.blogger_handle == handle,
+            Prediction.scoring_eligible.is_(True),
             Prediction.verdict.in_(SCORED_VERDICTS),
         )
     ).one()

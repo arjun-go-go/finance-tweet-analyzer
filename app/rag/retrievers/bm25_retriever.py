@@ -18,7 +18,7 @@ def retrieve_es_bm25(intent: QueryIntent, user_id: UUID | None = None) -> list[d
     query_text = _query_text(intent)
     if not query_text:
         return []
-    return get_keyword_store().search_with_source_quotas(
+    results = get_keyword_store().search_with_source_quotas(
         query_text=query_text,
         source_quotas=settings.es_source_type_quota,
         user_id=user_id,
@@ -26,6 +26,16 @@ def retrieve_es_bm25(intent: QueryIntent, user_id: UUID | None = None) -> list[d
         time_range_start=intent.time_range_start,
         time_range_end=intent.time_range_end,
     )
+    filtered: list[dict] = []
+    for item in results:
+        metadata = item.get("metadata") or {}
+        direction = metadata.get("direction") or metadata.get("sentiment")
+        if intent.sentiment_filter and direction not in intent.sentiment_filter:
+            continue
+        if intent.horizon_filter and metadata.get("horizon") not in intent.horizon_filter:
+            continue
+        filtered.append(item)
+    return filtered
 
 
 def retrieve_bm25(intent: QueryIntent, user_id: UUID | None = None) -> list[dict]:

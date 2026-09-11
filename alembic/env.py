@@ -13,17 +13,6 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-LANGGRAPH_CHECKPOINT_TABLES = {
-    "checkpoints",
-    "checkpoint_blobs",
-    "checkpoint_writes",
-    "checkpoint_migrations",
-}
-
-
-def include_object(object_, name, type_, reflected, compare_to):
-    """Leave LangGraph checkpointer-owned tables outside app migrations."""
-    return not (type_ == "table" and name in LANGGRAPH_CHECKPOINT_TABLES)
 
 
 def run_migrations_offline() -> None:
@@ -32,7 +21,6 @@ def run_migrations_offline() -> None:
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
-        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -48,7 +36,6 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            include_object=include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

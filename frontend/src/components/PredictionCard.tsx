@@ -14,12 +14,27 @@ import { formatDate, formatDateTime } from "@/lib/datetime";
 
 export interface PredictionItem {
   id: string;
+  claim_id?: string | null;
   blogger_handle?: string | null;
   ticker: string;
   sentiment: string;
+  prediction_type: "price_direction" | "price_target" | "fundamental_metric" | "event_outcome" | string;
+  target_spec: {
+    target_metric?: string;
+    target_operator?: string;
+    target_value?: string;
+    target_unit?: string;
+    target_condition?: string;
+  };
+  temporal_expression: string | null;
   investment_horizon: string;
+  horizon_source: string;
+  time_confidence: number;
   published_at: string | null;
   verifiable_at: string | null;
+  verifier_type: string;
+  scoring_eligible: boolean;
+  verification_policy_version: string;
   verdict: string | null;
   score: number | null;
   verified_at: string | null;
@@ -30,10 +45,19 @@ export interface PredictionItem {
   creation_evidence?: {
     eligible?: boolean;
     minimum_confidence?: number;
-    eligible_tickers?: string[];
+    claim_id?: string;
+    reason_codes?: string[];
+    scoring_eligible?: boolean;
+    scoring_reason_codes?: string[];
+    time_resolution?: {
+      source?: string;
+      rationale?: string;
+      status?: string;
+      target_at?: string | null;
+    } | null;
   } | null;
   market_verification?: MarketVerificationEvidence | null;
-  lifecycle_status?: "tracking" | "due" | "review" | "verified" | "excluded";
+  lifecycle_status?: "tracking" | "due" | "review" | "unscored" | "verified" | "excluded";
   tweet: {
     id: string;
     content: string;
@@ -45,6 +69,33 @@ const SENTIMENT_LABEL: Record<string, string> = {
   bullish: "看好",
   bearish: "看空",
   neutral: "中性",
+  none: "无价格方向",
+};
+
+const PREDICTION_TYPE_LABEL: Record<string, string> = {
+  price_direction: "价格方向",
+  price_target: "目标价格",
+  fundamental_metric: "基本面指标",
+  event_outcome: "事件结果",
+};
+
+const HORIZON_SOURCE_LABEL: Record<string, string> = {
+  explicit_date: "原文明示日期",
+  explicit_duration: "原文明示时长",
+  explicit_period: "原文明示期间",
+  fiscal_period: "财务期间",
+  event_anchor: "事件锚点",
+  qualitative_label: "作者周期标签",
+  legacy_fixed_window: "旧版固定窗口",
+  missing: "时间依据缺失",
+};
+
+const VERIFIER_LABEL: Record<string, string> = {
+  market_price_direction: "自动行情方向验证",
+  market_price_target: "自动目标价格验证",
+  fundamental_metric: "自动财报指标验证",
+  event_outcome: "公开事件证据验证",
+  unsupported: "暂无验证器",
 };
 
 const HORIZON_LABEL: Record<string, string> = {
@@ -96,9 +147,13 @@ export default function PredictionCard({
   const verifiableMs = prediction.verifiable_at
     ? new Date(prediction.verifiable_at).getTime()
     : 0;
-  const isLocked = prediction.verdict === null && verifiableMs > now;
-  const isVerifiable = prediction.verdict === null && !isLocked;
+  const isLocked = prediction.scoring_eligible && prediction.verdict === null && verifiableMs > now;
+  const isVerifiable = prediction.scoring_eligible && prediction.verdict === null && verifiableMs > 0 && !isLocked;
   const isVerified = prediction.verdict !== null;
+  const isUnscored = !prediction.scoring_eligible && prediction.verdict === null;
+  const isIdentityReview =
+    prediction.market_verification?.status === "manual_review" &&
+    prediction.market_verification?.review_type === "instrument_identity";
 
   const [editing, setEditing] = useState(false);
   const [note, setNote] = useState(prediction.note ?? "");
@@ -173,14 +228,14 @@ export default function PredictionCard({
     }
   };
 
-  const retryMarketData = async () => {
+  const retryVerificationData = async () => {
     setSubmitting(true);
     setError(null);
     try {
       const updated = await retryPredictionMarketVerification(prediction.id);
       onChanged?.(updated);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "行情重试失败");
+      setError(reason instanceof Error ? reason.message : "验证数据重试失败");
     } finally {
       setSubmitting(false);
     }
@@ -228,7 +283,9 @@ export default function PredictionCard({
     }
   };
 
-  const showVerifyForm = isVerifiable || (isVerified && prediction.verdict !== "excluded" && editing);
+  const showVerifyForm =
+    (isVerifiable && !isIdentityReview) ||
+    (isVerified && prediction.verdict !== "excluded" && editing);
   const containerClass = isLocked
     ? "border-gray-300 bg-gray-50 opacity-80"
     : sentimentBorder(prediction.sentiment);
@@ -239,6 +296,9 @@ export default function PredictionCard({
         <div className="flex flex-wrap items-center gap-2">
           <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs font-bold">
             {prediction.ticker}
+          </span>
+          <span className="prediction-contract-type">
+            {PREDICTION_TYPE_LABEL[prediction.prediction_type] ?? prediction.prediction_type}
           </span>
           <span
             className={`px-2 py-0.5 rounded text-xs font-semibold ${
@@ -301,19 +361,42 @@ export default function PredictionCard({
         {prediction.tweet.content}
       </p>
 
+      <section className="prediction-contract-summary">
+        <div>
+          <span>预测目标</span>
+          <strong>{prediction.target_spec?.target_value || prediction.target_spec?.target_condition || prediction.target_spec?.target_metric || SENTIMENT_LABEL[prediction.sentiment] || "未说明"}{prediction.target_spec?.target_unit ? ` ${prediction.target_spec.target_unit}` : ""}</strong>
+        </div>
+        <div>
+          <span>时间依据</span>
+          <strong>{prediction.temporal_expression || HORIZON_SOURCE_LABEL[prediction.horizon_source] || "未说明"}</strong>
+          <small>{HORIZON_SOURCE_LABEL[prediction.horizon_source] || prediction.horizon_source}</small>
+        </div>
+        <div>
+          <span>验证方式</span>
+          <strong>{VERIFIER_LABEL[prediction.verifier_type] || prediction.verifier_type}</strong>
+          <small>{prediction.verifiable_at ? `目标日期 ${formatDate(prediction.verifiable_at)}` : "目标日期待专用数据源补全"}</small>
+        </div>
+      </section>
+
+      {isUnscored && (
+        <p className="prediction-unscored-note">
+          已保存为可追溯预测契约；当前不自动计分，也不会影响博主命中率。
+        </p>
+      )}
+
       {prediction.creation_evidence?.eligible && (
         <div className="prediction-entry-rule">
           <strong>进入预测依据</strong>
           <span>作者本人判断</span>
-          <span>方向与期限明确</span>
+          <span>预测目标与时间证据明确</span>
           <span>标的已验证</span>
           <span>原文证据完整</span>
-          <small>{prediction.creation_rule_version || "prediction_eligibility_v2"}</small>
+          <small>{prediction.creation_rule_version || "prediction_contract_v1"}</small>
         </div>
       )}
 
       {prediction.market_verification && (
-        <MarketEvidence
+        <VerificationEvidence
           evidence={prediction.market_verification}
           predictionTicker={prediction.ticker}
           manuallyResolved={isVerified && prediction.verified_by === "manual"}
@@ -330,8 +413,8 @@ export default function PredictionCard({
           />
           <div className="prediction-review-buttons">
             {prediction.market_verification?.status === "market_data_unavailable" && (
-              <button className="is-retry" disabled={submitting} onClick={() => void retryMarketData()}>
-                重新获取行情
+              <button className="is-retry" disabled={submitting} onClick={() => void retryVerificationData()}>
+                重新获取验证数据
               </button>
             )}
             {prediction.sentiment !== "neutral" && (
@@ -434,7 +517,17 @@ function formatPrice(value: number | null) {
   return value.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
 }
 
-function MarketEvidence({
+function evidenceText(observation: Record<string, unknown>, key: string) {
+  const value = observation[key];
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "";
+}
+
+function evidenceNumber(observation: Record<string, unknown>, key: string) {
+  const value = observation[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function VerificationEvidence({
   evidence,
   predictionTicker,
   manuallyResolved,
@@ -445,11 +538,27 @@ function MarketEvidence({
 }) {
   const isReview = evidence.status === "manual_review";
   const isUnavailable = evidence.status === "market_data_unavailable";
+  const isTracking = evidence.status === "tracking";
+  const verificationType = evidence.verification_type || "market_price_direction";
+  const isDirection = verificationType === "market_price_direction";
+  const isPriceTarget = verificationType === "market_price_target";
+  const isFundamental = verificationType === "fundamental_metric";
+  const isEvent = verificationType === "event_outcome";
   const isNonDirectional = evidence.review_type === "non_directional" || evidence.status === "excluded_non_directional";
   const isDuplicate = evidence.review_type === "duplicate_prediction" || evidence.status === "excluded_duplicate";
+  const observation = evidence.observation || {};
+  const observedValue = evidenceNumber(observation, "scaled_value") ?? evidenceNumber(observation, "observed_value");
+  const observedUnit = evidenceText(observation, "unit") || evidenceText(observation, "observed_unit");
   const symbol = evidence.provider_symbol || evidence.identity?.symbol || predictionTicker;
   const market = evidence.market || evidence.identity?.market;
   const identityLabel = market ? `${symbol} · ${MARKET_LABEL[market] || market}（${market}）` : symbol;
+  const trackingLabel = isFundamental
+    ? "等待正式财报"
+    : isEvent
+      ? "等待事件截止"
+      : isPriceTarget
+        ? "等待目标价格验证"
+        : "等待行情方向验证";
   const statusLabel = manuallyResolved
     ? "人工复核已完成"
     : isDuplicate
@@ -461,8 +570,10 @@ function MarketEvidence({
     : isReview
       ? "需要人工复核"
       : isUnavailable
-        ? "行情暂不可用"
-        : "行情验证证据";
+        ? "验证数据暂不可用"
+        : isTracking
+          ? trackingLabel
+          : "预测验证证据";
   return (
     <section className={`prediction-evidence ${isReview ? "is-review" : isUnavailable ? "is-unavailable" : ""}`}>
       <header>
@@ -470,18 +581,42 @@ function MarketEvidence({
           <span className="prediction-evidence-kicker">{statusLabel}</span>
           <strong>{identityLabel}</strong>
         </div>
-        {evidence.directional_return !== null && (
+        {isDirection && typeof evidence.directional_return === "number" && (
           <b className={evidence.directional_return >= 0 ? "is-positive" : "is-negative"}>
             {formatPercent(evidence.directional_return)}
           </b>
         )}
       </header>
-      {evidence.start_price !== null && evidence.end_price !== null && (
+      {(isDirection || isPriceTarget) && evidence.start_price !== null && evidence.end_price !== null && (
         <div className="prediction-price-path">
           <div><small>起始价格</small><strong>{formatPrice(evidence.start_price)}</strong><span>{evidence.start_observed_at}</span></div>
           <i aria-hidden="true" />
           <div><small>期末价格</small><strong>{formatPrice(evidence.end_price)}</strong><span>{evidence.end_observed_at}</span></div>
-          <div><small>判定阈值</small><strong>{formatPercent(evidence.threshold)}</strong><span>{evidence.rule_version}</span></div>
+          <div>
+            <small>{isPriceTarget ? "目标阈值" : "方向阈值"}</small>
+            <strong>
+              {isPriceTarget
+                ? `${formatPrice(evidence.threshold)}${observedUnit ? ` ${observedUnit}` : ""}`
+                : formatPercent(evidence.threshold)}
+            </strong>
+            <span>{evidence.rule_version}</span>
+          </div>
+        </div>
+      )}
+
+      {isFundamental && (
+        <div className="prediction-observation-grid">
+          <div><small>财报指标</small><strong>{evidenceText(observation, "metric") || evidenceText(observation, "provider_metric") || "—"}</strong><span>{evidenceText(observation, "provider_metric")}</span></div>
+          <div><small>实际值</small><strong>{observedValue === null ? "—" : formatPrice(observedValue)}{observedUnit ? ` ${observedUnit}` : ""}</strong><span>{evidenceText(observation, "period")}</span></div>
+          <div><small>披露时间</small><strong>{evidenceText(observation, "filed_at") || "等待披露"}</strong><span>{evidence.rule_version}</span></div>
+        </div>
+      )}
+
+      {isEvent && (
+        <div className="prediction-observation-grid">
+          <div><small>事件状态</small><strong>{evidenceText(observation, "listing_status") || evidenceText(observation, "validation_status") || "待确认"}</strong><span>{evidenceText(observation, "reason")}</span></div>
+          <div><small>发生日期</small><strong>{evidenceText(observation, "event_date") || "缺少权威日期"}</strong><span>{evidenceText(observation, "occurred_in_window") === "true" ? "位于预测窗口内" : ""}</span></div>
+          <div><small>验证规则</small><strong>{evidence.rule_version}</strong><span>没有事件日期时不自动计分</span></div>
         </div>
       )}
 
@@ -503,7 +638,7 @@ function MarketEvidence({
       )}
       <footer>
         <span>{evidence.provider || "身份核验规则"}</span>
-        <span>{manuallyResolved ? "管理员人工判定" : isDuplicate ? "保留较早预测" : evidence.applied ? "系统自动判定" : "等待管理员处理"}</span>
+        <span>{manuallyResolved ? "管理员人工判定" : isDuplicate ? "保留较早预测" : evidence.applied ? "系统自动判定" : isTracking ? "等待自动验证" : "等待管理员处理"}</span>
       </footer>
     </section>
   );

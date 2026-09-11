@@ -5,7 +5,15 @@ const DIRECTION_LABELS: Record<string, string> = {
   bullish: "看多",
   bearish: "看空",
   neutral: "中性",
+  none: "无方向",
   mixed: "分歧",
+};
+
+const HORIZON_LABELS: Record<string, string> = {
+  short: "短期",
+  medium: "中期",
+  long: "长期",
+  unknown: "周期未说明",
 };
 
 const KIND_LABELS: Record<string, string> = {
@@ -49,10 +57,11 @@ export default function IntelligenceCard({
         <span className={`today-signal-spine is-${item.kind}`} />
         <span className="today-signal-copy">
           <span className="today-signal-meta">
-            <b className={`direction-${item.direction}`}>
-              {DIRECTION_LABELS[item.direction] || "中性"}
-            </b>
+            {item.kind === "opinion" && <b className={`direction-${item.direction}`}>
+              {DIRECTION_LABELS[item.direction] || "未明确方向"}
+            </b>}
             <span>{KIND_LABELS[item.kind] || "投资观点"}</span>
+            <span>{HORIZON_LABELS[item.horizon] || "周期未说明"}</span>
             <span>@{item.author}</span>
             <span>{formatTime(item.published_at)}</span>
           </span>

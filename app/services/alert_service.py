@@ -123,7 +123,31 @@ def publish_prediction_alerts(db: Session, prediction: Prediction) -> int:
         blogger_handle=prediction.blogger_handle,
         tickers=[prediction.ticker],
     )
-    direction = "看好" if prediction.sentiment == "bullish" else "看空"
+    type_labels = {
+        "price_direction": "价格方向预测",
+        "price_target": "目标价格预测",
+        "fundamental_metric": "基本面预测",
+        "event_outcome": "事件预测",
+    }
+    direction = (
+        "看好"
+        if prediction.sentiment == "bullish"
+        else "看空"
+        if prediction.sentiment == "bearish"
+        else "待验证"
+    )
+    target = prediction.target_spec or {}
+    target_text = str(
+        target.get("target_value")
+        or target.get("target_condition")
+        or target.get("target_metric")
+        or direction
+    )
+    timing = (
+        f"预计 {prediction.verifiable_at.date().isoformat()} 验证"
+        if prediction.verifiable_at
+        else "等待专用数据源补全验证日期"
+    )
     created = 0
     for user_id in users:
         if _create_alert(
@@ -133,7 +157,10 @@ def publish_prediction_alerts(db: Session, prediction: Prediction) -> int:
             kind="new_prediction",
             severity="info",
             title=f"@{prediction.blogger_handle.lstrip('@')} 新增 {prediction.ticker} 预测",
-            message=f"{direction} · {prediction.investment_horizon}，将在验证窗口到期后自动核验行情。",
+            message=(
+                f"{type_labels.get(prediction.prediction_type, '预测')} · "
+                f"{target_text} · {prediction.investment_horizon}，{timing}。"
+            ),
             source_type="prediction",
             source_id=str(prediction.id),
             target_url=f"/bloggers/{quote(prediction.blogger_handle, safe='')}",

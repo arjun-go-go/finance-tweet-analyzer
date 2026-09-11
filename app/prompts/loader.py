@@ -14,14 +14,12 @@
 
 文件结构:
     prompts/
-      chat.yaml          — chat_agent 各节 prompt
       supervisor.yaml    — 分类 prompt (system + human)
       analysis.yaml      — 分析 prompt
       risk.yaml          — 风险评估 prompt
       signal.yaml        — 信号分析 prompt
       sql.yaml           — SQL agent prompt + DDL
       self_query.yaml    — 查询意图解析 prompt
-      memory.yaml        — 压缩/偏好提取 prompt
 """
 from __future__ import annotations
 
