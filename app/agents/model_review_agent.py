@@ -69,22 +69,16 @@ def _claim_signature(claim: dict) -> tuple:
 def _market_view_signature(view: dict) -> tuple:
     return (
         str(view.get("market") or "GLOBAL"),
-        _clean_text(view.get("benchmark")),
         str(view.get("impact") or "unclear"),
-        str(view.get("horizon") or "unknown"),
-        str(view.get("topic") or "other"),
         str(view.get("opinion_source") or "unclear"),
     )
 
 
-def _commercial_signature(analysis: dict) -> tuple:
+def _commercial_signature(analysis: dict) -> bool:
     disclosure = analysis.get("commercial_disclosure") or {}
-    return (
-        bool(
-            analysis.get("is_sponsored")
-            or disclosure.get("has_commercial_content")
-        ),
-        _clean_text(disclosure.get("sponsor_handle")),
+    return bool(
+        analysis.get("is_sponsored")
+        or disclosure.get("has_commercial_content")
     )
 
 
@@ -175,7 +169,11 @@ def _routing_metadata(
     return {
         "primary_model": settings.signal_model,
         "review_model": settings.review_model if status != "not_required" else None,
-        "arbiter_model": settings.report_model if status == "arbitrated" else None,
+        "arbiter_model": (
+            settings.report_model
+            if status in {"arbitrated", "arbitration_failed"}
+            else None
+        ),
         "final_model": final_model or settings.signal_model,
         "review_status": status,
         "review_reasons": reasons,
