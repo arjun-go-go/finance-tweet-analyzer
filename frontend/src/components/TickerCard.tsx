@@ -20,13 +20,13 @@ export default function TickerCard({
   summary,
 }: TickerCardProps) {
   const consensusConfig: Record<string, { label: string; color: string }> = {
-    strong_buy: { label: "强烈推荐", color: "bg-green-600 text-white" },
-    buy: { label: "推荐买入", color: "bg-green-400 text-white" },
+    strong_buy: { label: "多数看多", color: "bg-green-600 text-white" },
+    buy: { label: "偏多", color: "bg-green-400 text-white" },
     neutral: { label: "中性观望", color: "bg-gray-400 text-white" },
     none: { label: "暂无方向", color: "bg-gray-300 text-gray-700" },
     mixed: { label: "多空分歧", color: "bg-amber-400 text-white" },
-    sell: { label: "建议卖出", color: "bg-red-400 text-white" },
-    strong_sell: { label: "强烈看空", color: "bg-red-600 text-white" },
+    sell: { label: "偏空", color: "bg-red-400 text-white" },
+    strong_sell: { label: "多数看空", color: "bg-red-600 text-white" },
   };
 
   const config = consensusConfig[consensus] || consensusConfig.neutral;

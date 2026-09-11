@@ -50,6 +50,8 @@ def _claim_signature(claim: dict) -> tuple:
     forecast = claim.get("forecast") or {}
     return (
         _clean_text(instrument.get("symbol") or instrument.get("original_name")),
+        str(instrument.get("asset_type") or "unknown"),
+        str(instrument.get("market_hint") or instrument.get("market") or "unknown"),
         str(claim.get("direction") or "none"),
         str(claim.get("horizon") or "unknown"),
         str(claim.get("claim_type") or "reference"),
@@ -69,6 +71,7 @@ def _claim_signature(claim: dict) -> tuple:
 def _market_view_signature(view: dict) -> tuple:
     return (
         str(view.get("market") or "GLOBAL"),
+        _clean_text(view.get("benchmark")),
         str(view.get("impact") or "unclear"),
         str(view.get("opinion_source") or "unclear"),
     )

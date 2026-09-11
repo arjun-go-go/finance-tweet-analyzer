@@ -10,6 +10,34 @@ from app.models.instrument_claim import InstrumentClaim
 from app.models.tweet import Tweet
 
 
+def classify_consensus(
+    *,
+    bullish: int,
+    bearish: int,
+    neutral: int,
+    independent_bloggers: int,
+) -> tuple[str, float | None]:
+    """Return a direction label without overstating a small sample."""
+    directional = bullish + bearish
+    if directional == 0:
+        return ("neutral", 50.0) if neutral else ("none", None)
+    if bullish == bearish:
+        return "mixed", 50.0
+
+    bullish_ratio = bullish / directional
+    bearish_ratio = bearish / directional
+    if independent_bloggers >= 3 and bullish_ratio >= 0.7:
+        consensus = "strong_buy"
+    elif bullish > bearish:
+        consensus = "buy"
+    elif independent_bloggers >= 3 and bearish_ratio >= 0.7:
+        consensus = "strong_sell"
+    else:
+        consensus = "sell"
+    score = round(50 + ((bullish - bearish) / directional) * 50, 1)
+    return consensus, score
+
+
 def _reference_reason_keys(claim: InstrumentClaim) -> list[str]:
     """Return every user-facing reason why a claim is reference-only."""
     reasons: list[str] = []
@@ -105,29 +133,22 @@ def aggregate_instrument_claims(db: Session) -> list[dict]:
         bearish = data["bearish"]
         neutral = data["neutral"]
         directional = bullish + bearish
-        if directional == 0:
-            consensus = "neutral" if neutral else "none"
-            score = 50.0 if neutral else None
-        elif bullish == bearish:
-            consensus = "mixed"
-            score = 50.0
-        else:
-            bullish_ratio = bullish / directional
-            bearish_ratio = bearish / directional
-            if bullish_ratio >= 0.7:
-                consensus = "strong_buy"
-            elif bullish > bearish:
-                consensus = "buy"
-            elif bearish_ratio >= 0.7:
-                consensus = "strong_sell"
-            else:
-                consensus = "sell"
-            score = round(50 + ((bullish - bearish) / directional) * 50, 1)
+        independent_bloggers = len(data["bloggers"])
+        consensus, score = classify_consensus(
+            bullish=bullish,
+            bearish=bearish,
+            neutral=neutral,
+            independent_bloggers=independent_bloggers,
+        )
         output.append(
             {
                 "ticker": symbol,
                 "mention_count": bullish + bearish + neutral,
                 "bloggers": sorted(data["bloggers"]),
+                "independent_blogger_count": independent_bloggers,
+                "consensus_sample_status": (
+                    "sufficient" if independent_bloggers >= 3 else "limited"
+                ),
                 "related_bloggers": sorted(data["related_bloggers"]),
                 "related_claim_count": data["related_claim_count"],
                 "reference_only_count": data["reference_only_count"],

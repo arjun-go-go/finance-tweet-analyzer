@@ -167,7 +167,9 @@ def test_analysis_agent_receives_relationship_context(monkeypatch):
         },
     }
 
-    result = asyncio.run(analysis_agent._analyze_one(FakeStructuredLlm(), tweet, ""))
+    result = asyncio.run(
+        analysis_agent.analyze_tweet_with_llm(FakeStructuredLlm(), tweet, "")
+    )
 
     assert result is not None
     assert '"tweet_type": "retweet"' in captured["conversation_context"]

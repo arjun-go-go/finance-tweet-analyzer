@@ -12,6 +12,8 @@ prompts:
       - 判断 is_investment_relevant，并保持 is_investment_related 与它一致。
       - tweet_summary 只做事实摘要，不判断整条推文情绪。
       - 无法归入单一标的、但对市场有明确含义的宏观内容写入 market_views；market 使用 CN、HK、US、COMMODITY、CRYPTO 或 GLOBAL。
+      - SOX、SPX、NDX、DJI、HSI 等指数写入 market_views 的 benchmark，不得创建 equity claim。
+      - “PE 难以扩张、估值承压”不自动等于看空股价；没有明确价格方向或买卖态度时 direction=none。
       - market_views 的 impact 使用 positive、negative、mixed、unclear，topic 使用 rates、inflation、liquidity、policy、growth、geopolitics、earnings、supply_demand、regulation、other。
       - market_views 必须分别记录 horizon、thesis、evidence、opinion_source 和 confidence；没有原文影响判断时使用 unclear，不得补写结论。
       - 一条推文可以同时有 claims 与 market_views；若两者都没有，两个数组均为空。

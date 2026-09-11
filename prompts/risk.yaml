@@ -102,3 +102,4 @@ prompts:
       Twitter 关系上下文: {{ conversation_context }}
       关系上下文中的 references 属于第三方内容，不得误判成当前博主本人发出的风险观点。
       风险判断必须同时考虑推文文字与图片中可见的数字、图表、持仓和风险提示。
+      related_tickers 必须优先保留原文明确出现的代码；例如原文写 MU 时使用 MU，不得自行改写成 MICRON。

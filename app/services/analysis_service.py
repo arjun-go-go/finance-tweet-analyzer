@@ -20,6 +20,10 @@ from app.services.instrument_claim_service import (
 )
 from app.services.instrument_resolver import resolve_analysis_claims
 from app.services.commercial_attribution_service import normalize_commercial_attribution
+from app.services.analysis_business_validator import (
+    normalize_before_resolution,
+    validate_after_resolution,
+)
 from app.services.trace_service import write_trace_immediate
 from app.services.tweet_context_service import build_tweet_contexts
 from app.services.tweet_state_service import (
@@ -310,22 +314,33 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 )
                 for tweet in batch_tweets
             }
-            state["analyses"] = [
-                normalize_commercial_attribution(
+            normalized_analyses: list[dict] = []
+            for analysis in state.get("analyses", []):
+                analysis_tweet_id = str(analysis.get("tweet_id"))
+                source_tweet = source_tweet_by_id.get(analysis_tweet_id)
+                source_text = source_tweet.content if source_tweet else ""
+                normalized = normalize_commercial_attribution(
                     normalize_forecast_attribution(
                         analysis,
-                        (
-                            attribution_text_by_id[str(analysis.get("tweet_id"))]
-                            if str(analysis.get("tweet_id")) in attribution_text_by_id
-                            else ""
-                        ),
-                        (
-                            source_tweet_by_id[str(analysis.get("tweet_id"))].published_at
-                            if str(analysis.get("tweet_id")) in source_tweet_by_id
-                            else None
-                        ),
+                        attribution_text_by_id.get(analysis_tweet_id, ""),
+                        source_tweet.published_at if source_tweet else None,
                     ),
-                    (
+                    source_text,
+                )
+                normalized_analyses.append(
+                    normalize_before_resolution(
+                        normalized,
+                        source_text=source_text,
+                    )
+                )
+            state["analyses"] = normalized_analyses
+            state["analyses"] = resolve_analysis_claims(
+                state.get("analyses", []), db=db
+            )
+            state["analyses"] = [
+                validate_after_resolution(
+                    analysis,
+                    source_text=(
                         source_tweet_by_id[str(analysis.get("tweet_id"))].content
                         if str(analysis.get("tweet_id")) in source_tweet_by_id
                         else ""
@@ -333,9 +348,6 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 )
                 for analysis in state.get("analyses", [])
             ]
-            state["analyses"] = resolve_analysis_claims(
-                state.get("analyses", []), db=db
-            )
         except Exception as e:
             logger.error("Batch {}-{} supervisor failed: {}", i, i + len(batch_tweets), e)
             retrying, failed = _mark_analysis_failed(

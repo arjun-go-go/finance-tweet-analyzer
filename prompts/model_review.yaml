@@ -11,12 +11,15 @@ prompts:
 
       重点核实：
       - 标的是否真的出现，以及同名公司、商品、缩写是否被混淆；
+      - SOX、SPX、NDX、DJI、HSI 等指数必须进入 market_views 的 benchmark，不能作为 equity claim；
       - direction、horizon、claim_type 是否有原文明确证据；
+      - “PE 难以扩张、估值承压”等估值判断不等于预测股价下跌；没有明确方向证据时 direction=none；
       - opinion_source 是当前博主、被引用者还是第三方；
       - 事实、新闻、风险提示和引用不得冒充博主的多空观点；
       - 广告段与每个标的是 direct、unrelated 还是 unclear；
       - forecast 的来源、时间证据、目标值和 author_adopted 是否忠实于原文；
       - 宏观内容应进入 market_views，不得伪造单一标的。
+      - reasoning 与结构化字段必须一致；若 reasoning 判断为指数，输出中不得再把它标记为 equity。
 
       证据不足时使用 none、unknown 或 unclear，并降低 confidence。输出必须严格满足 TweetAnalysis v4，不得添加结构外字段。
     human: |

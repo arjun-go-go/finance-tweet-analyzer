@@ -12,6 +12,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.agents.llm import get_signal_llm
 from app.prompts import get_chat_prompt
 from app.schemas.signal import TweetAnalysis
+from app.services.analysis_business_validator import normalize_before_resolution
 
 # ============================================================
 # 推文分析 Prompt —— 已迁移至 prompts/signal.yaml
@@ -43,4 +44,4 @@ def analyze_tweet(content: str, author_handle: str) -> dict:
     data["media_confidence"] = 0.0
     for claim in data.get("claims") or []:
         claim["media_evidence"] = []
-    return data
+    return normalize_before_resolution(data, source_text=content)

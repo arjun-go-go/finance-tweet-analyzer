@@ -232,7 +232,7 @@ export default function AssetsPage() {
               <article className="asset-directory-row" key={item.id}>
                 <div className="asset-directory-symbol"><strong>{summary.ticker}</strong><span>{bloggerCount} 位博主</span></div>
                 <div className="asset-directory-copy">
-                  <div><b>{hasEffectiveViews ? CONSENSUS_LABEL[summary.consensus] || "暂无方向" : "仅供参考"}</b><span>{hasEffectiveViews ? `${summary.mention_count} 项有效观点` : `${relatedCount} 项相关信息`}</span></div>
+                  <div><b>{hasEffectiveViews ? CONSENSUS_LABEL[summary.consensus] || "暂无方向" : "仅供参考"}</b><span>{hasEffectiveViews ? `${summary.mention_count} 项有效观点${summary.consensus_sample_status === "limited" ? " · 样本较少" : ""}` : `${relatedCount} 项相关信息`}</span></div>
                   <p>{summary.summary || "已有结构化观点，暂无可展示的简要说明。"}</p>
                   <small>{hasEffectiveViews
                     ? `${summary.bullish_count} 多 / ${summary.bearish_count} 空${summary.neutral_count ? ` / ${summary.neutral_count} 中性` : ""}`

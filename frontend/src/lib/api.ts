@@ -260,6 +260,8 @@ export interface TickerSummary {
   ticker: string;
   mention_count: number;
   bloggers: string[];
+  independent_blogger_count?: number;
+  consensus_sample_status?: "limited" | "sufficient";
   related_bloggers: string[];
   related_claim_count: number;
   reference_only_count: number;

@@ -27,7 +27,7 @@ class InstrumentIdentity(BaseModel):
 
     symbol: str = Field(..., description="候选代码，如 BTC、AAPL、600519.SH、XAU、WTI")
     original_name: str = Field(default="", description="推文中的原始名称、代码或黑话")
-    asset_type: Literal["equity", "crypto", "commodity", "unknown"] = "unknown"
+    asset_type: Literal["equity", "crypto", "commodity", "index", "unknown"] = "unknown"
     market_hint: Literal["CN", "HK", "US", "CRYPTO", "COMMODITY", "unknown"] = "unknown"
 
     @field_validator("symbol", mode="before")

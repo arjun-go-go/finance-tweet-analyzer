@@ -168,7 +168,7 @@ export default function WatchAssetDetailPage() {
             <h2>{summary?.summary || `${ticker} 暂无新的明确观点`}</h2>
             <p>
               {hasEffectiveViews
-                ? `共收录 ${claimTotal} 项可追溯观点，来自 ${bloggerCount} 位博主。统计只计算博主本人对该标的的明确判断。`
+                ? `共收录 ${claimTotal} 项可追溯观点，来自 ${bloggerCount} 位博主。统计只计算博主本人对该标的的明确判断。${bloggerCount < 3 ? "当前样本较少，不形成多数共识。" : ""}`
                 : relatedClaimCount
                   ? `已收录 ${relatedClaimCount} 项相关信息，但目前仅属于商业相关、引用、第三方或事实信息，不参与多空统计。`
                   : "系统会等待博主发布带有明确标的、方向和证据的观点。"}

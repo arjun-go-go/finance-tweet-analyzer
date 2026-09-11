@@ -2,6 +2,25 @@ from app.agents import signal_agent
 from app.schemas.signal import TweetAnalysis
 
 
+def test_v4_signal_accepts_market_index_as_extraction_candidate():
+    result = TweetAnalysis(
+        is_investment_relevant=True,
+        claims=[
+            {
+                "instrument": {
+                    "symbol": "SOX",
+                    "original_name": "SOX",
+                    "asset_type": "index",
+                    "market_hint": "US",
+                },
+                "claim_type": "opinion",
+            }
+        ],
+    )
+
+    assert result.claims[0].instrument.asset_type == "index"
+
+
 def test_v4_signal_distinguishes_reference_from_author_recommendation():
     result = TweetAnalysis(
         is_investment_relevant=True,

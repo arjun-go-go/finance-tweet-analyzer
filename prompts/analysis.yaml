@@ -27,6 +27,7 @@ prompts:
       - 同一标的同时出现作者观点与被引用者观点，必须按归属输出两个 claim。
       - 同一标的已有作者的 prediction/recommendation/opinion 时，支撑它的财报事实、新闻、催化剂、风险和失效条件应写入该 claim，不得再为每项材料创建看多、看空、中性、无方向四个同级 claim。
       - 风险因素不等于看空。只有作者明确预测价格/基本面下行，或明确建议卖出、回避时，才输出 bearish 的 prediction/recommendation/opinion；一般风险写入 risk_factors 或 invalidation_conditions。
+      - “PE 难以扩张、估值承压、估值偏高”只属于估值观点或风险背景，不能单独推出标的价格 bearish；如果作者没有明确给出价格方向或买卖态度，direction=none。
       - 综合判断同时包含利好和风险，不等于 neutral。若作者最终仍给出明确方向，保留该方向并记录风险；只有作者明确表示中性、观望或无方向偏好时才用 neutral。
       - 单条 claim 的 direction 只能是 bullish、bearish、neutral、none；禁止输出 mixed。
       - “分歧”只能由后续系统在多个可比 claim 之间聚合得到，模型不得在单条 claim 中判断。
@@ -34,6 +35,8 @@ prompts:
       3. 标的提取
       - 只提取 A股、港股、美股、原油、黄金、加密货币。
       - symbol 去掉 $ 并大写；保留 original_name。
+      - SOX、SPX、NDX、DJI、HSI 等指数或大盘基准不是单一股票，必须写入 market_views 的 benchmark，禁止创建 equity claim。
+      - asset_type=index 只允许作为识别过程中的临时候选；最终指数必须进入 market_views，不进入逐标的多空统计。
       - 黄金统一候选 XAU，原油统一候选 WTI；黄金股、油气股仍提取股票代码。
       - 未上市公司保留原始公司名作为候选 symbol，禁止编造股票代码。
       - 只出现行业、宏观主题且无法落到具体支持标的时，不创建虚假标的 claim。
