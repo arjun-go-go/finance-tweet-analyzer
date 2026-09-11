@@ -42,7 +42,7 @@ def get_signal_llm() -> ChatOpenAI:
 def get_report_llm() -> ChatOpenAI:
     """仲裁模型 —— 关键字段冲突裁决和复杂生成。
 
-    temperature=0.1 降低仲裁漂移，timeout=120s 容忍复杂结构化输出延迟。
+    temperature=0.1 降低仲裁漂移，墙钟超时由复核节点强制约束。
     """
     from langchain_openai import ChatOpenAI
 
@@ -51,7 +51,10 @@ def get_report_llm() -> ChatOpenAI:
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         temperature=0.1,
-        timeout=120,
+        timeout=settings.report_llm_timeout_seconds,
+        max_retries=settings.report_llm_max_retries,
+        max_completion_tokens=settings.report_llm_max_completion_tokens,
+        extra_body={"reasoning": {"effort": settings.report_llm_reasoning_effort}},
         http_client=httpx.Client(proxy=settings.http_proxy),
         http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )

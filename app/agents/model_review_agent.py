@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
@@ -189,6 +190,7 @@ async def _arbitrate_one(
     review: dict,
     conflicts: list[str],
 ) -> dict | None:
+    start = time.perf_counter()
     try:
         messages = _to_lc_messages(
             get_chat_prompt(
@@ -206,12 +208,26 @@ async def _arbitrate_one(
                 review_result=json.dumps(review, ensure_ascii=False, default=str),
             )
         )
-        result = await structured_llm.ainvoke(messages)
+        result = await asyncio.wait_for(
+            structured_llm.ainvoke(messages),
+            timeout=settings.report_llm_timeout_seconds,
+        )
         if result is None:
             raise ValueError("arbiter returned no result")
+        logger.debug(
+            "[Arbiter] tweet={} latency={}ms conflicts={}",
+            str(tweet.get("id") or "")[:8],
+            int((time.perf_counter() - start) * 1000),
+            conflicts,
+        )
         return result.model_dump()
     except Exception as exc:
-        logger.warning("Model arbiter failed for tweet {}: {}", tweet.get("id"), exc)
+        logger.warning(
+            "Model arbiter failed for tweet {} ({}ms): {}",
+            tweet.get("id"),
+            int((time.perf_counter() - start) * 1000),
+            exc,
+        )
         return None
 
 

@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     signal_llm_max_completion_tokens: int = 6000
     signal_llm_reasoning_effort: str = "none"
     signal_llm_max_retries: int = 1
+    report_llm_timeout_seconds: float = 150.0
+    report_llm_max_completion_tokens: int = 6000
+    report_llm_reasoning_effort: str = "none"
+    report_llm_max_retries: int = 0
     vision_prompt_version: str = "v1"
     vision_max_images_per_tweet: int = 4
     vision_max_image_dimension: int = 1600
