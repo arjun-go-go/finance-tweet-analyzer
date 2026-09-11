@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -296,13 +297,26 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             source_tweet_by_id = {
                 str(tweet.id): tweet for tweet in batch_tweets
             }
+            attribution_text_by_id = {
+                str(tweet.id): "\n".join(
+                    (
+                        tweet.content,
+                        json.dumps(
+                            conversation_context_by_tweet.get(tweet.id, {}),
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    )
+                )
+                for tweet in batch_tweets
+            }
             state["analyses"] = [
                 normalize_commercial_attribution(
                     normalize_forecast_attribution(
                         analysis,
                         (
-                            source_tweet_by_id[str(analysis.get("tweet_id"))].content
-                            if str(analysis.get("tweet_id")) in source_tweet_by_id
+                            attribution_text_by_id[str(analysis.get("tweet_id"))]
+                            if str(analysis.get("tweet_id")) in attribution_text_by_id
                             else ""
                         ),
                         (
