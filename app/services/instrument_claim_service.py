@@ -75,6 +75,71 @@ def _forecast_target_context(source_text: str, forecast: dict) -> str:
     return "\n".join(windows) if windows else source_text
 
 
+def _forecast_target_positions(text: str, forecast: dict) -> list[int]:
+    tokens = re.findall(r"\d+(?:\.\d+)?", str(forecast.get("target_value") or ""))
+    return [
+        match.start()
+        for token in dict.fromkeys(tokens)
+        for match in re.finditer(re.escape(token), text)
+    ]
+
+
+def _source_cue_score(match: re.Match, target_positions: list[int]) -> int:
+    """Prefer the closest cue before a target; cues after it are weak evidence."""
+    if not target_positions:
+        return match.start()
+    return min(
+        (
+            target_position - match.end()
+            if match.end() <= target_position
+            else 10_000 + match.start() - target_position
+        )
+        for target_position in target_positions
+    )
+
+
+def _detect_forecast_source(text: str, forecast: dict) -> tuple[str, str] | None:
+    target_positions = _forecast_target_positions(text, forecast)
+    candidates: list[tuple[int, int, str, str]] = []
+
+    for match in _NAMED_FORECAST_RE.finditer(text):
+        name = match.group("name").strip()
+        if name in _NON_THIRD_PARTY_SOURCE_NAMES:
+            continue
+        if name == "老黄":
+            name = "黄仁勋"
+        candidates.append(
+            (_source_cue_score(match, target_positions), 0, "third_party", name)
+        )
+    for match in _COMPANY_FORECAST_RE.finditer(text):
+        candidates.append(
+            (
+                _source_cue_score(match, target_positions),
+                1,
+                "company_guidance",
+                "公司 / 管理层",
+            )
+        )
+    for match in _MARKET_FORECAST_RE.finditer(text):
+        candidates.append(
+            (
+                _source_cue_score(match, target_positions),
+                2,
+                "market_consensus",
+                "市场一致预期",
+            )
+        )
+    for match in _AUTHOR_ADOPTION_RE.finditer(text):
+        candidates.append(
+            (_source_cue_score(match, target_positions), 3, "author", "当前博主")
+        )
+
+    if not candidates:
+        return None
+    _, _, source_type, source_name = min(candidates)
+    return source_type, source_name
+
+
 def normalize_forecast_attribution(
     analysis: dict,
     source_text: str,
@@ -114,26 +179,9 @@ def normalize_forecast_attribution(
         source_type = str(forecast.get("forecast_source") or "unclear")
         source_name = str(forecast.get("source_name") or "").strip()
 
-        named_match = next(
-            (
-                match
-                for match in _NAMED_FORECAST_RE.finditer(attribution_text)
-                if match.group("name").strip()
-                not in _NON_THIRD_PARTY_SOURCE_NAMES
-            ),
-            None,
-        )
-        if named_match:
-            source_type = "third_party"
-            source_name = named_match.group("name").strip()
-            if source_name == "老黄":
-                source_name = "黄仁勋"
-        elif _COMPANY_FORECAST_RE.search(attribution_text):
-            source_type = "company_guidance"
-            source_name = "公司 / 管理层"
-        elif _MARKET_FORECAST_RE.search(attribution_text):
-            source_type = "market_consensus"
-            source_name = "市场一致预期"
+        detected_source = _detect_forecast_source(attribution_text, forecast)
+        if detected_source:
+            source_type, source_name = detected_source
         elif explicitly_adopted and claim.get("opinion_source") == "author":
             source_type = "author"
             source_name = "当前博主"
