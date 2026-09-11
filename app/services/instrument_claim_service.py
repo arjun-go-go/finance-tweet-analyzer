@@ -18,7 +18,9 @@ AUTHOR_STANCE_DIRECTIONS = ("bullish", "bearish", "neutral")
 SPONSOR_RELATIONS = ("none", "unrelated", "direct", "unclear")
 
 _AUTHOR_ADOPTION_RE = re.compile(
-    r"(?:我|本人|个人)(?:明确)?(?:认为|预计|预测|判断|同意|认可|目标是|看多|看空)"
+    r"(?:我|本人|个人)(?:明确)?(?:"
+    r"预计|预测|目标(?:是|为)|(?:认为|判断)(?:将|会|能|可|可以|有望)|"
+    r"(?:同意|认可)(?:这个|该|上述)?(?:预测|目标|指引))"
     r"|(?:我的|本人给出的)(?:预测|判断|目标)"
 )
 _MARKET_FORECAST_RE = re.compile(r"市场(?:一致)?(?:认为|预期|预计|预测|共识)")
@@ -27,9 +29,25 @@ _COMPANY_FORECAST_RE = re.compile(
     r"|(?:公司|官方|管理层)(?:收入|营收|利润|增长|毛利率|产量)?指引"
 )
 _NAMED_FORECAST_RE = re.compile(
+    r"(?<![A-Za-z0-9_\u4e00-\u9fff])@?"
     r"(?P<name>[A-Za-z][A-Za-z0-9_.\- ]{0,24}|[\u4e00-\u9fff]{2,8})"
     r"(?:说|称|表示|认为|预计|预测|给出(?:目标|指引)?)"
 )
+_NON_THIRD_PARTY_SOURCE_NAMES = {
+    "我",
+    "本人",
+    "个人",
+    "作者",
+    "博主",
+    "当前博主",
+    "市场",
+    "公司",
+    "官方",
+    "管理层",
+    "财报",
+    "业绩会",
+    "电话会",
+}
 _FORECAST_SOURCE_LABELS = {
     "quoted": "引用账号",
     "third_party": "第三方",
@@ -71,8 +89,6 @@ def normalize_forecast_attribution(
     """
     payload = dict(analysis)
     normalized_claims: list[dict] = []
-    explicitly_adopted = bool(_AUTHOR_ADOPTION_RE.search(source_text or ""))
-
     for raw_claim in payload.get("claims") or []:
         if not isinstance(raw_claim, dict):
             continue
@@ -94,6 +110,7 @@ def normalize_forecast_attribution(
             "\n".join(part for part in (source_text, evidence_text) if part),
             forecast,
         )
+        explicitly_adopted = bool(_AUTHOR_ADOPTION_RE.search(attribution_text))
         source_type = str(forecast.get("forecast_source") or "unclear")
         source_name = str(forecast.get("source_name") or "").strip()
 
@@ -102,7 +119,7 @@ def normalize_forecast_attribution(
                 match
                 for match in _NAMED_FORECAST_RE.finditer(attribution_text)
                 if match.group("name").strip()
-                not in {"市场", "公司", "官方", "管理层", "财报", "业绩会", "电话会"}
+                not in _NON_THIRD_PARTY_SOURCE_NAMES
             ),
             None,
         )
@@ -113,10 +130,13 @@ def normalize_forecast_attribution(
                 source_name = "黄仁勋"
         elif _COMPANY_FORECAST_RE.search(attribution_text):
             source_type = "company_guidance"
-            source_name = source_name or "公司 / 管理层"
+            source_name = "公司 / 管理层"
         elif _MARKET_FORECAST_RE.search(attribution_text):
             source_type = "market_consensus"
-            source_name = source_name or "市场一致预期"
+            source_name = "市场一致预期"
+        elif explicitly_adopted and claim.get("opinion_source") == "author":
+            source_type = "author"
+            source_name = "当前博主"
         elif source_type == "unclear" and claim.get("opinion_source") == "author":
             source_type = "author"
             source_name = source_name or "当前博主"
