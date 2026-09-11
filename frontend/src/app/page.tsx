@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import ActivityTweetCard, { type ActivityTweet } from "@/components/ActivityTweetCard";
+import ActivityTweetCard, { ActivityAnalysisPanel, type ActivityTweet } from "@/components/ActivityTweetCard";
 import AppIcon from "@/components/AppIcon";
 import { PageEmpty, PageError, PageLoading } from "@/components/PageState";
 import { fetchTweets } from "@/lib/api";
@@ -35,6 +35,8 @@ export default function ActivityPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [selectedTweetId, setSelectedTweetId] = useState<string | null>(null);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
 
   const load = useCallback(async (reset = false) => {
     if (reset) setLoading(true);
@@ -67,6 +69,10 @@ export default function ActivityPage() {
     () => tweets.filter((tweet) => matchesFilter(tweet, filter)),
     [filter, tweets],
   );
+  const selectedTweet = useMemo(
+    () => visibleTweets.find((tweet) => tweet.id === selectedTweetId) || visibleTweets[0] || null,
+    [selectedTweetId, visibleTweets],
+  );
   const hasMore = tweets.length < total;
 
   if (loading) return <PageLoading label="正在加载最新推文" />;
@@ -91,7 +97,11 @@ export default function ActivityPage() {
               key={item.value}
               type="button"
               className={filter === item.value ? "is-active" : ""}
-              onClick={() => setFilter(item.value)}
+              onClick={() => {
+                setFilter(item.value);
+                setSelectedTweetId(null);
+                setAnalysisOpen(false);
+              }}
             >
               {item.label}
             </button>
@@ -112,9 +122,35 @@ export default function ActivityPage() {
           detail={hasMore ? "当前已载入的推文中没有匹配内容，可以继续加载更早的推文。" : "新的相关推文完成分析后会显示在这里。"}
         />
       ) : (
-        <section className="activity-feed" aria-label="推文动态">
-          {visibleTweets.map((tweet) => <ActivityTweetCard key={tweet.id} tweet={tweet} />)}
-        </section>
+        <div className="activity-workbench">
+          <section className="activity-feed" aria-label="推文动态">
+            {visibleTweets.map((tweet) => (
+              <ActivityTweetCard
+                key={tweet.id}
+                tweet={tweet}
+                selectable
+                selected={selectedTweet?.id === tweet.id}
+                onOpenAnalysis={() => {
+                  setSelectedTweetId(tweet.id);
+                  setAnalysisOpen(true);
+                }}
+              />
+            ))}
+          </section>
+          {selectedTweet && (
+            <>
+              <button
+                className={`activity-inspector-backdrop ${analysisOpen ? "is-open" : ""}`}
+                type="button"
+                aria-label="关闭分析面板"
+                onClick={() => setAnalysisOpen(false)}
+              />
+              <aside className={`activity-inspector ${analysisOpen ? "is-open" : ""}`} aria-label="选中推文分析">
+                <ActivityAnalysisPanel tweet={selectedTweet} onClose={() => setAnalysisOpen(false)} />
+              </aside>
+            </>
+          )}
+        </div>
       )}
 
       {error && tweets.length > 0 && <p className="activity-load-error">加载更多失败，请稍后重试。</p>}

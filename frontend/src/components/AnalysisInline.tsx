@@ -279,7 +279,7 @@ export default function AnalysisInline({ analysis }: { analysis: AnalysisData })
   const [openVerification, setOpenVerification] = useState<string | null>(null);
 
   if (!analysis.is_investment_related && !analysis.is_investment_relevant) {
-    return <div className="mt-2 border-l-2 border-slate-200 pl-3 text-xs text-slate-500">非投资内容</div>;
+    return <div className="analysis-inline-detail mt-2 border-l-2 border-slate-200 pl-3 text-xs text-slate-500">非投资内容</div>;
   }
 
   const claims = analysis.claims || [];
@@ -287,7 +287,7 @@ export default function AnalysisInline({ analysis }: { analysis: AnalysisData })
   const disclosure = analysis.commercial_disclosure;
   const sponsor = disclosure?.sponsor_handle || disclosure?.sponsor_name;
   return (
-    <div className="mt-3 space-y-3 rounded-lg bg-white/70 p-3">
+    <div className="analysis-inline-detail mt-3 space-y-3 rounded-lg bg-white/70 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <strong className="text-sm text-slate-900">逐标的观点</strong>

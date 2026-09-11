@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { formatDateTime } from "@/lib/datetime";
+import AppIcon from "./AppIcon";
 import AnalysisInline, {
   groupInstrumentClaims,
   isAuthorStanceClaim,
@@ -105,6 +106,17 @@ const RELATION_LABEL: Record<string, string> = {
   repost: "转发",
 };
 
+const CLAIM_TYPE_LABEL: Record<string, string> = {
+  recommendation: "操作建议",
+  prediction: "可验证预测",
+  opinion: "作者观点",
+  risk_warning: "风险提示",
+  fact: "事实信息",
+  news: "新闻信息",
+  recap: "历史复盘",
+  reference: "仅提及",
+};
+
 function primaryClaim(group: InstrumentClaimGroup) {
   return group.claims.find(isPerformanceEligibleClaim)
     || group.authorStances[0]
@@ -180,7 +192,156 @@ function MarketViewRow({ view }: { view: MarketViewData }) {
   );
 }
 
-export default function ActivityTweetCard({ tweet }: { tweet: ActivityTweet }) {
+function PanelClaim({ claim, referenceOnly }: { claim: InstrumentClaimData; referenceOnly: boolean }) {
+  const direction = DIRECTION_LABEL[claim.direction] || "相关信息";
+  const evidence = claim.evidence || [];
+  const risks = [...(claim.risk_factors || []), ...(claim.invalidation_conditions || [])];
+
+  return (
+    <article className={`activity-inspector-claim is-${claim.direction || "none"}`}>
+      <div className="activity-inspector-claim-meta">
+        <span className="activity-inspector-direction">{referenceOnly ? performanceExclusionLabel(claim) : direction}</span>
+        <span>{HORIZON_LABEL[claim.horizon] || "周期未说明"}</span>
+        <span>{CLAIM_TYPE_LABEL[claim.claim_type] || claim.claim_type}</span>
+      </div>
+      <p>{claim.thesis || evidence[0] || "原文提到了该标的，但没有形成明确方向判断。"}</p>
+      {evidence.length > 0 && (
+        <div className="activity-inspector-evidence">
+          <b>判断依据</b>
+          <ul>{evidence.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>
+        </div>
+      )}
+      {(claim.catalysts?.length || risks.length) ? (
+        <div className="activity-inspector-factors">
+          {claim.catalysts?.length ? <div className="is-catalyst"><b>催化条件</b><span>{claim.catalysts.join("；")}</span></div> : null}
+          {risks.length ? <div className="is-risk"><b>风险 / 失效</b><span>{risks.join("；")}</span></div> : null}
+        </div>
+      ) : null}
+      <small>提取置信度 {Math.round((claim.confidence || 0) * 100)}%{referenceOnly ? " · 不参与多空统计" : ""}</small>
+    </article>
+  );
+}
+
+function PanelInstrument({ group, referenceOnly = false }: { group: InstrumentClaimGroup; referenceOnly?: boolean }) {
+  const market = group.instrument.market || group.instrument.market_hint || "unknown";
+  const targetHref = group.claims.some((item) => item.instrument.validation_status === "verified")
+    ? `/watch/${encodeURIComponent(group.symbol)}`
+    : null;
+
+  return (
+    <section className={`activity-inspector-instrument ${referenceOnly ? "is-reference" : ""}`}>
+      <header>
+        <div>
+          {targetHref ? <Link href={targetHref}>{group.symbol}</Link> : <strong>{group.symbol}</strong>}
+          <span>{group.instrument.original_name || MARKET_LABEL[market] || market}</span>
+        </div>
+        <small>{MARKET_LABEL[market] || market}</small>
+      </header>
+      <div className="activity-inspector-claim-list">
+        {group.claims.map((claim, index) => (
+          <PanelClaim key={claim.id || `${group.symbol}-${claim.horizon}-${index}`} claim={claim} referenceOnly={referenceOnly} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function ActivityAnalysisPanel({ tweet, onClose }: { tweet: ActivityTweet; onClose?: () => void }) {
+  const analysis = tweet.analysis;
+  const claims = useMemo(() => analysis?.claims || [], [analysis?.claims]);
+  const groups = useMemo(() => groupInstrumentClaims(claims), [claims]);
+  const effectiveGroups = useMemo(
+    () => groups
+      .map((group) => claimSubset(group, group.claims.filter(isPerformanceEligibleClaim)))
+      .filter((group) => group.claims.length > 0),
+    [groups],
+  );
+  const referenceGroups = useMemo(
+    () => groups
+      .map((group) => claimSubset(group, group.claims.filter((claim) => !isPerformanceEligibleClaim(claim))))
+      .filter((group) => group.claims.length > 0),
+    [groups],
+  );
+  const marketViews = analysis?.market_views || [];
+  const hasAnalysis = groups.length > 0 || marketViews.length > 0;
+  const handle = tweet.author_handle.replace(/^@/, "");
+  const isProcessing = ["pending", "analyzing", "retrying"].includes(tweet.status);
+
+  return (
+    <div className="activity-inspector-panel">
+      <header className="activity-inspector-head">
+        <div>
+          <span>推文分析</span>
+          <h2>{tweet.author_name || `@${handle}`}</h2>
+          <p>@{handle} · {formatDateTime(tweet.published_at)}</p>
+        </div>
+        {onClose && <button type="button" onClick={onClose} aria-label="关闭分析面板"><AppIcon name="close" /></button>}
+      </header>
+
+      <div className="activity-inspector-body">
+        {analysis?.tweet_summary && (
+          <section className="activity-inspector-summary">
+            <span>核心摘要</span>
+            <p>{analysis.tweet_summary}</p>
+          </section>
+        )}
+
+        {effectiveGroups.length > 0 && (
+          <section className="activity-inspector-section">
+            <div className="activity-inspector-title"><h3>有效观点</h3><span>{effectiveGroups.reduce((count, group) => count + group.claims.length, 0)} 项计入统计</span></div>
+            {effectiveGroups.map((group) => <PanelInstrument key={group.symbol} group={group} />)}
+          </section>
+        )}
+
+        {referenceGroups.length > 0 && (
+          <section className="activity-inspector-section is-reference">
+            <div className="activity-inspector-title"><h3>相关标的 · 仅供参考</h3><span>{referenceGroups.reduce((count, group) => count + group.claims.length, 0)} 项不参与统计</span></div>
+            {referenceGroups.map((group) => <PanelInstrument key={group.symbol} group={group} referenceOnly />)}
+          </section>
+        )}
+
+        {marketViews.length > 0 && (
+          <section className="activity-inspector-section is-market">
+            <div className="activity-inspector-title"><h3>{groups.length ? "市场背景" : "市场判断"}</h3><span>{marketViews.length} 项</span></div>
+            <div className="activity-inspector-market-list">
+              {marketViews.map((view, index) => (
+                <article className={`activity-inspector-market is-${view.impact}`} key={`${view.market}-${view.topic}-${index}`}>
+                  <div><b>{IMPACT_LABEL[view.impact] || "影响待观察"}</b><span>{MARKET_LABEL[view.market] || view.market} · {TOPIC_LABEL[view.topic] || "市场"}</span></div>
+                  <p>{view.thesis || "原文包含市场信息，但未给出明确影响判断。"}</p>
+                  {view.evidence?.length ? <small>依据：{view.evidence.join("；")}</small> : null}
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {!hasAnalysis && (
+          <div className="activity-inspector-empty">
+            <strong>{isProcessing ? "分析正在进行" : "暂无明确投资判断"}</strong>
+            <p>{isProcessing ? "完成后会在这里按标的展示方向、依据与风险。" : "这条推文未识别到明确标的观点或市场影响。"}</p>
+          </div>
+        )}
+
+        {analysis?.is_sponsored && (
+          <p className="activity-inspector-sponsored">含平台推广。商业关联会按每项观点分别判断，直接相关或关系待确认的内容不计入成绩。</p>
+        )}
+      </div>
+
+      <footer className="activity-inspector-footer">
+        <a href={`https://x.com/${handle}/status/${tweet.tweet_id}`} target="_blank" rel="noreferrer">查看原推文 <AppIcon name="external" /></a>
+      </footer>
+    </div>
+  );
+}
+
+interface ActivityTweetCardProps {
+  tweet: ActivityTweet;
+  selectable?: boolean;
+  selected?: boolean;
+  onOpenAnalysis?: () => void;
+}
+
+export default function ActivityTweetCard({ tweet, selectable = false, selected = false, onOpenAnalysis }: ActivityTweetCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [showEvidence, setShowEvidence] = useState(false);
   const analysis = tweet.analysis;
@@ -219,8 +380,16 @@ export default function ActivityTweetCard({ tweet }: { tweet: ActivityTweet }) {
   const reposts = metrics.retweets ?? metrics.retweet_count;
   const views = metrics.views ?? metrics.view_count;
 
+  const directionSummary = useMemo(() => {
+    const labels = effectiveGroups
+      .map((group) => group.claims.find(isPerformanceEligibleClaim)?.direction)
+      .filter((direction): direction is string => Boolean(direction))
+      .map((direction) => DIRECTION_LABEL[direction] || "相关信息");
+    return [...new Set(labels)];
+  }, [effectiveGroups]);
+
   return (
-    <article className="activity-card">
+    <article className={`activity-card ${selectable ? "is-selectable" : ""} ${selected ? "is-selected" : ""}`}>
       <header className="activity-card-author">
         <Link href={`/sources/${encodeURIComponent(handle)}`}>
           <strong>{tweet.author_name || `@${handle}`}</strong>
@@ -257,7 +426,27 @@ export default function ActivityTweetCard({ tweet }: { tweet: ActivityTweet }) {
         );
       })}
 
-      <section className="activity-analysis" aria-label="推文分析">
+      {selectable ? (
+        <button
+          className="activity-analysis-trigger"
+          type="button"
+          aria-pressed={selected}
+          onClick={onOpenAnalysis}
+        >
+          <span>
+            <b>{hasAnalysis ? "查看推文分析" : isProcessing ? "分析进行中" : "查看分析结果"}</b>
+            <small>
+              {effectiveClaimCount ? `${effectiveClaimCount} 项有效观点` : "无有效标的观点"}
+              {referenceClaimCount ? ` · ${referenceClaimCount} 项参考信息` : ""}
+              {marketViews.length ? ` · ${marketViews.length} 项市场判断` : ""}
+            </small>
+          </span>
+          <span className="activity-analysis-trigger-directions">
+            {directionSummary.slice(0, 3).map((label) => <i key={label}>{label}</i>)}
+            <AppIcon name="arrow" />
+          </span>
+        </button>
+      ) : <section className="activity-analysis" aria-label="推文分析">
         {effectiveGroups.length > 0 && (
           <div className="activity-analysis-section">
             <div className="activity-analysis-label"><span>有效观点</span><small>{effectiveClaimCount} 项计入统计</small></div>
@@ -305,7 +494,7 @@ export default function ActivityTweetCard({ tweet }: { tweet: ActivityTweet }) {
             )}
           </>
         )}
-      </section>
+      </section>}
 
       <footer className="activity-card-footer">
         <div>
