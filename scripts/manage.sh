@@ -206,6 +206,51 @@ show_logs() {
   tail -n 120 -f "$(log_file "$service")"
 }
 
+systemd_available() {
+  command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user cat finance-app.target >/dev/null 2>&1
+}
+
+systemd_units_for() {
+  case "${1:-}" in
+    "") echo "finance-app.target" ;;
+    backend) echo "finance-backend.service" ;;
+    frontend) echo "finance-frontend.service" ;;
+    beat) echo "finance-beat.service" ;;
+    worker) echo "finance-worker-analysis.service finance-worker-default.service finance-worker-index.service finance-worker-ingest.service finance-worker-jobs.service finance-worker-vision.service" ;;
+    *) return 1 ;;
+  esac
+}
+
+systemd_status_units_for() {
+  if [[ -n "${1:-}" ]]; then
+    systemd_units_for "$1"
+  else
+    echo "finance-backend.service finance-frontend.service finance-beat.service finance-worker-analysis.service finance-worker-default.service finance-worker-index.service finance-worker-ingest.service finance-worker-jobs.service finance-worker-vision.service"
+  fi
+}
+
+systemd_status() {
+  local target="${1:-}" unit state
+  local units=()
+  read -r -a units <<< "$(systemd_status_units_for "$target")"
+  for unit in "${units[@]}"; do
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    printf "%-32s %s\n" "$unit" "$state"
+  done
+}
+
+systemd_logs() {
+  local target="${1:-}" unit
+  local units=() args=()
+  [[ "$target" == "all" ]] && target=""
+  read -r -a units <<< "$(systemd_status_units_for "$target")"
+  for unit in "${units[@]}"; do
+    args+=("-u" "$unit")
+  done
+  journalctl --user "${args[@]}" -n 120 -f
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -220,6 +265,30 @@ EOF
 
 command="${1:-}"
 target="${2:-}"
+
+if systemd_available; then
+  case "$command" in
+    start|stop|restart)
+      systemd_units=()
+      read -r -a systemd_units <<< "$(systemd_units_for "$target")"
+      systemctl --user "$command" "${systemd_units[@]}"
+      systemd_status "$target"
+      exit 0
+      ;;
+    status)
+      systemd_status "$target"
+      exit 0
+      ;;
+    health)
+      health_check
+      exit 0
+      ;;
+    logs)
+      systemd_logs "$target"
+      exit 0
+      ;;
+  esac
+fi
 
 case "$command" in
   start)
