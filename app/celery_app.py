@@ -47,6 +47,7 @@ celery.conf.update(
         "app.scheduler.tasks.auto_verify_predictions_task": {"queue": "prediction"},
         "app.scheduler.tasks.archive_tweet_media_task": {"queue": "ingest"},
         "app.scheduler.tasks.analyze_tweet_media_task": {"queue": "vision"},
+        "app.scheduler.tasks.recover_stale_media_analysis_task": {"queue": "default"},
         "app.scheduler.tasks.analyze_tweet_task": {"queue": "analysis"},
         "app.scheduler.tasks.embed_signal_task": {"queue": "embed"},
         "app.scheduler.tasks.backfill_signals_task": {"queue": "embed"},
@@ -97,6 +98,12 @@ celery.conf.beat_schedule = {
         "schedule": 600,
         "kwargs": {"batch_size": 15},
         "options": {"queue": "embed"},
+    },
+    "recover-stale-media-analysis": {
+        "task": "app.scheduler.tasks.recover_stale_media_analysis_task",
+        "schedule": 300,
+        "kwargs": {"batch_size": 100},
+        "options": {"queue": "default"},
     },
     "auto-verify-predictions-periodic": {
         "task": "app.scheduler.tasks.auto_verify_predictions_task",

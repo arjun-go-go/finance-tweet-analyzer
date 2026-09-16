@@ -30,6 +30,7 @@ export interface ActivityTweet {
   tweet_id: string;
   author_handle: string;
   author_name: string;
+  author_avatar_url?: string | null;
   content: string;
   published_at: string;
   status: string;
@@ -117,6 +118,48 @@ const CLAIM_TYPE_LABEL: Record<string, string> = {
   reference: "仅提及",
 };
 
+const FORECAST_TYPE_LABEL: Record<string, string> = {
+  price_direction: "价格方向",
+  price_target: "目标价格",
+  fundamental_metric: "基本面指标",
+  event_outcome: "事件结果",
+};
+
+const FORECAST_SOURCE_LABEL: Record<string, string> = {
+  author: "博主本人",
+  quoted: "引用账号",
+  third_party: "第三方",
+  market_consensus: "市场一致预期",
+  company_guidance: "公司 / 管理层指引",
+  unclear: "来源待确认",
+};
+
+const RISK_LEVEL_LABEL: Record<string, string> = {
+  low: "低",
+  medium: "中",
+  high: "高",
+  critical: "极高",
+};
+
+const TARGET_OPERATOR_LABEL: Record<string, string> = {
+  up: "上涨",
+  down: "下跌",
+  gte: "不低于",
+  lte: "不高于",
+  equals: "达到",
+  range: "位于区间",
+  occurs: "发生",
+  not_occurs: "不发生",
+  unknown: "未说明",
+};
+
+const SPONSOR_RELATION_LABEL: Record<string, string> = {
+  none: "无商业内容",
+  unrelated: "与推广方无直接关联",
+  direct: "与推广方直接相关",
+  unclear: "商业关系待确认",
+};
+
 function primaryClaim(group: InstrumentClaimGroup) {
   return group.claims.find(isPerformanceEligibleClaim)
     || group.authorStances[0]
@@ -144,6 +187,144 @@ function sourceLabel(source: string) {
   if (source === "quoted") return "引用判断";
   if (source === "third_party") return "第三方判断";
   return "归属待确认";
+}
+
+function isVerifiedInstrument(instrument: InstrumentClaimData["instrument"]) {
+  if (instrument.verification) {
+    return instrument.verification.status === "verified"
+      && instrument.verification.downstream_eligible === true;
+  }
+  return instrument.validation_status === "verified" && instrument.tradable === true;
+}
+
+function compactReferenceLabel(claim: InstrumentClaimData) {
+  if (!isVerifiedInstrument(claim.instrument)) return "身份待确认";
+  if (claim.sponsor_relation === "direct") return "商业相关";
+  if (claim.sponsor_relation === "unclear") return "商业关系待确认";
+  if (claim.opinion_source === "quoted") return "引用观点";
+  if (claim.opinion_source === "third_party") return "第三方观点";
+  if (claim.opinion_source === "unclear") return "归属待确认";
+  if (claim.claim_type === "risk_warning") return "风险提示";
+  if (["fact", "news", "recap", "reference"].includes(claim.claim_type)) return "仅提及";
+  return claim.direction === "none" ? "无明确方向" : "仅供参考";
+}
+
+function formatPriceTarget(target: Record<string, unknown>) {
+  const targetType: Record<string, string> = {
+    entry: "入场",
+    target: "目标",
+    stop: "止损",
+    support: "支撑",
+    resistance: "阻力",
+    other: "价格",
+  };
+  const type = targetType[String(target.target_type || "other")] || "价格";
+  const value = [target.value, target.currency].filter(Boolean).join(" ");
+  return [type, value, target.condition].filter(Boolean).join("：");
+}
+
+interface SubjectBadge {
+  key: string;
+  subject: string;
+  detail: string;
+  tone: string;
+  title: string;
+  href?: string;
+}
+
+function ActivitySubjectStrip({ groups, marketViews }: { groups: InstrumentClaimGroup[]; marketViews: MarketViewData[] }) {
+  const badges: SubjectBadge[] = [];
+  const seen = new Set<string>();
+  const addBadge = (badge: SubjectBadge) => {
+    if (seen.has(badge.key)) return;
+    seen.add(badge.key);
+    badges.push(badge);
+  };
+
+  groups.forEach((group) => {
+    const href = group.claims.some((claim) => isVerifiedInstrument(claim.instrument))
+      ? `/watch/${encodeURIComponent(group.symbol)}`
+      : undefined;
+    const authorStances = group.authorStances;
+    const quotedStances = group.quotedStances;
+
+    if (authorStances.length) {
+      authorStances.forEach((claim) => {
+        const direction = DIRECTION_LABEL[claim.direction] || "相关信息";
+        const horizon = HORIZON_LABEL[claim.horizon] || "";
+        const eligible = isPerformanceEligibleClaim(claim);
+        const suffix = eligible ? "" : ` · ${compactReferenceLabel(claim)}`;
+        addBadge({
+          key: `instrument:${group.symbol}:author:${claim.horizon}:${claim.direction}:${suffix}`,
+          subject: group.symbol,
+          detail: `${horizon}${direction}${suffix}`,
+          tone: eligible ? claim.direction : "reference",
+          title: eligible ? "博主本人有效观点" : performanceExclusionLabel(claim),
+          href,
+        });
+      });
+      return;
+    }
+
+    if (quotedStances.length) {
+      quotedStances.forEach((claim) => {
+        const direction = DIRECTION_LABEL[claim.direction] || "相关信息";
+        const horizon = HORIZON_LABEL[claim.horizon] || "";
+        addBadge({
+          key: `instrument:${group.symbol}:${claim.opinion_source}:${claim.horizon}:${claim.direction}`,
+          subject: group.symbol,
+          detail: `${claim.opinion_source === "quoted" ? "引用" : "第三方"}${horizon}${direction}`,
+          tone: "reference",
+          title: performanceExclusionLabel(claim),
+          href,
+        });
+      });
+      return;
+    }
+
+    const claim = primaryClaim(group);
+    if (!claim) return;
+    addBadge({
+      key: `instrument:${group.symbol}:mention`,
+      subject: group.symbol,
+      detail: compactReferenceLabel(claim),
+      tone: "none",
+      title: performanceExclusionLabel(claim),
+      href,
+    });
+  });
+
+  marketViews.forEach((view) => {
+    const subject = view.benchmark || MARKET_LABEL[view.market] || view.market;
+    const sourcePrefix = view.opinion_source === "author"
+      ? ""
+      : view.opinion_source === "quoted"
+        ? "引用"
+        : view.opinion_source === "third_party"
+          ? "第三方"
+          : "归属待确认 · ";
+    const impact = IMPACT_LABEL[view.impact] || "影响待观察";
+    addBadge({
+      key: `market:${subject}:${view.impact}:${view.horizon}:${view.opinion_source}`,
+      subject,
+      detail: `${sourcePrefix}${impact}`,
+      tone: view.opinion_source === "author" ? `market-${view.impact}` : "reference",
+      title: `${TOPIC_LABEL[view.topic] || "市场"} · ${sourceLabel(view.opinion_source)}`,
+    });
+  });
+
+  if (!badges.length) return null;
+  return (
+    <div className="activity-subject-strip" aria-label="推文提取的投资标的与市场判断">
+      {badges.map((badge) => {
+        const content = <><b>{badge.subject}</b><span>{badge.detail}</span></>;
+        const className = `activity-subject-chip is-${badge.tone}`;
+        return badge.href
+          ? <Link className={className} href={badge.href} key={badge.key} title={badge.title}>{content}</Link>
+          : <span className={className} key={badge.key} title={badge.title}>{content}</span>;
+      })}
+    </div>
+  );
 }
 
 function ClaimRow({ group, referenceOnly = false }: { group: InstrumentClaimGroup; referenceOnly?: boolean }) {
@@ -194,8 +375,12 @@ function MarketViewRow({ view }: { view: MarketViewData }) {
 
 function PanelClaim({ claim, referenceOnly }: { claim: InstrumentClaimData; referenceOnly: boolean }) {
   const direction = DIRECTION_LABEL[claim.direction] || "相关信息";
-  const evidence = claim.evidence || [];
-  const risks = [...(claim.risk_factors || []), ...(claim.invalidation_conditions || [])];
+  const evidence = [...new Set([...(claim.evidence || []), ...(claim.media_evidence || [])])];
+  const risks = claim.risk_factors || [];
+  const invalidations = claim.invalidation_conditions || [];
+  const forecast = claim.forecast;
+  const hasForecast = Boolean(forecast?.prediction_type && forecast.prediction_type !== "none");
+  const forecastTarget = [forecast?.target_value, forecast?.target_unit].filter(Boolean).join(" ");
 
   return (
     <article className={`activity-inspector-claim is-${claim.direction || "none"}`}>
@@ -203,6 +388,7 @@ function PanelClaim({ claim, referenceOnly }: { claim: InstrumentClaimData; refe
         <span className="activity-inspector-direction">{referenceOnly ? performanceExclusionLabel(claim) : direction}</span>
         <span>{HORIZON_LABEL[claim.horizon] || "周期未说明"}</span>
         <span>{CLAIM_TYPE_LABEL[claim.claim_type] || claim.claim_type}</span>
+        <span>{sourceLabel(claim.opinion_source)}</span>
       </div>
       <p>{claim.thesis || evidence[0] || "原文提到了该标的，但没有形成明确方向判断。"}</p>
       {evidence.length > 0 && (
@@ -211,32 +397,68 @@ function PanelClaim({ claim, referenceOnly }: { claim: InstrumentClaimData; refe
           <ul>{evidence.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>
         </div>
       )}
-      {(claim.catalysts?.length || risks.length) ? (
+      {(claim.catalysts?.length || risks.length || invalidations.length || claim.entry_conditions?.length) ? (
         <div className="activity-inspector-factors">
           {claim.catalysts?.length ? <div className="is-catalyst"><b>催化条件</b><span>{claim.catalysts.join("；")}</span></div> : null}
-          {risks.length ? <div className="is-risk"><b>风险 / 失效</b><span>{risks.join("；")}</span></div> : null}
+          {risks.length ? <div className="is-risk"><b>风险因素</b><span>{risks.join("；")}</span></div> : null}
+          {claim.entry_conditions?.length ? <div className="is-entry"><b>入场条件</b><span>{claim.entry_conditions.join("；")}</span></div> : null}
+          {invalidations.length ? <div className="is-invalidation"><b>失效条件</b><span>{invalidations.join("；")}</span></div> : null}
         </div>
       ) : null}
-      <small>提取置信度 {Math.round((claim.confidence || 0) * 100)}%{referenceOnly ? " · 不参与多空统计" : ""}</small>
+      {claim.risk_details?.length ? (
+        <div className="activity-inspector-risk-details">
+          <b>风险明细{claim.risk_level ? ` · ${RISK_LEVEL_LABEL[claim.risk_level] || claim.risk_level}风险` : ""}</b>
+          <ul>{claim.risk_details.map((risk, index) => (
+            <li key={`${risk.description || risk.category}-${index}`}>
+              {risk.description || risk.category || "风险信息"}
+              {(risk.severity || risk.urgency) && <span>{[risk.severity, risk.urgency].filter(Boolean).join(" / ")}</span>}
+            </li>
+          ))}</ul>
+        </div>
+      ) : null}
+      {(hasForecast || claim.price_targets?.length) ? (
+        <div className="activity-inspector-forecast">
+          <b>预测与价格条件</b>
+          {hasForecast && <dl>
+            <div><dt>预测类型</dt><dd>{FORECAST_TYPE_LABEL[forecast?.prediction_type || ""] || forecast?.prediction_type}</dd></div>
+            <div><dt>预测来源</dt><dd>{forecast?.source_name || FORECAST_SOURCE_LABEL[forecast?.forecast_source || "unclear"]}</dd></div>
+            {forecast?.temporal_expression && <div><dt>时间依据</dt><dd>{forecast.temporal_expression}</dd></div>}
+            {forecast?.target_metric && <div><dt>目标指标</dt><dd>{forecast.target_metric}</dd></div>}
+            {forecast?.target_operator && forecast.target_operator !== "unknown" && <div><dt>目标关系</dt><dd>{TARGET_OPERATOR_LABEL[forecast.target_operator] || forecast.target_operator}</dd></div>}
+            {forecastTarget && <div><dt>目标值</dt><dd>{forecastTarget}</dd></div>}
+            {forecast?.target_condition && <div><dt>成立条件</dt><dd>{forecast.target_condition}</dd></div>}
+            <div><dt>博主采纳</dt><dd>{forecast?.author_adopted ? "已明确采纳" : "未明确采纳"}</dd></div>
+          </dl>}
+          {claim.price_targets?.length ? <p>价格水平：{claim.price_targets.map(formatPriceTarget).join("；")}</p> : null}
+        </div>
+      ) : null}
+      <small>
+        提取置信度 {Math.round((claim.confidence || 0) * 100)}%
+        {claim.sponsor_relation && claim.sponsor_relation !== "none" ? ` · ${SPONSOR_RELATION_LABEL[claim.sponsor_relation]}` : ""}
+        {referenceOnly ? ` · ${performanceExclusionLabel(claim)} · 不参与多空统计` : " · 参与多空统计"}
+      </small>
     </article>
   );
 }
 
 function PanelInstrument({ group, referenceOnly = false }: { group: InstrumentClaimGroup; referenceOnly?: boolean }) {
   const market = group.instrument.market || group.instrument.market_hint || "unknown";
-  const targetHref = group.claims.some((item) => item.instrument.validation_status === "verified")
+  const verified = group.claims.some((item) => isVerifiedInstrument(item.instrument));
+  const targetHref = verified
     ? `/watch/${encodeURIComponent(group.symbol)}`
     : null;
+  const instrumentName = group.instrument.resolved_name || group.instrument.original_name;
 
   return (
     <section className={`activity-inspector-instrument ${referenceOnly ? "is-reference" : ""}`}>
       <header>
         <div>
           {targetHref ? <Link href={targetHref}>{group.symbol}</Link> : <strong>{group.symbol}</strong>}
-          <span>{group.instrument.original_name || MARKET_LABEL[market] || market}</span>
+          <span>{instrumentName || MARKET_LABEL[market] || market}</span>
         </div>
-        <small>{MARKET_LABEL[market] || market}</small>
+        <small>{MARKET_LABEL[market] || market}{group.instrument.exchange ? ` · ${group.instrument.exchange}` : ""} · {verified ? "身份已验证" : "身份待确认"}</small>
       </header>
+      {!verified && group.instrument.validation_reason && <p className="activity-inspector-identity-note">{group.instrument.validation_reason}</p>}
       <div className="activity-inspector-claim-list">
         {group.claims.map((claim, index) => (
           <PanelClaim key={claim.id || `${group.symbol}-${claim.horizon}-${index}`} claim={claim} referenceOnly={referenceOnly} />
@@ -278,11 +500,21 @@ export function ActivityAnalysisPanel({ tweet, onClose }: { tweet: ActivityTweet
         {onClose && <button type="button" onClick={onClose} aria-label="关闭分析面板"><AppIcon name="close" /></button>}
       </header>
 
-      <div className="activity-inspector-body">
+      <div className="activity-inspector-body" tabIndex={0} aria-label="推文完整分析，可滚动查看">
         {analysis?.tweet_summary && (
           <section className="activity-inspector-summary">
-            <span>核心摘要</span>
+            <span>核心摘要 · 提取置信度 {Math.round((analysis.confidence || 0) * 100)}%</span>
             <p>{analysis.tweet_summary}</p>
+          </section>
+        )}
+
+        {analysis?.media_summary && (
+          <section className="activity-inspector-media-summary">
+            <span>图片信息</span>
+            <p>{analysis.media_summary}</p>
+            {analysis.text_image_consistency && analysis.text_image_consistency !== "no_media" && (
+              <small>图文关系：{analysis.text_image_consistency} · 图片提取置信度 {Math.round((analysis.media_confidence || 0) * 100)}%</small>
+            )}
           </section>
         )}
 
@@ -306,9 +538,10 @@ export function ActivityAnalysisPanel({ tweet, onClose }: { tweet: ActivityTweet
             <div className="activity-inspector-market-list">
               {marketViews.map((view, index) => (
                 <article className={`activity-inspector-market is-${view.impact}`} key={`${view.market}-${view.topic}-${index}`}>
-                  <div><b>{IMPACT_LABEL[view.impact] || "影响待观察"}</b><span>{MARKET_LABEL[view.market] || view.market} · {TOPIC_LABEL[view.topic] || "市场"}</span></div>
+                  <div><b>{IMPACT_LABEL[view.impact] || "影响待观察"}</b><span>{view.benchmark || MARKET_LABEL[view.market] || view.market}</span><span>{TOPIC_LABEL[view.topic] || "市场"}</span></div>
                   <p>{view.thesis || "原文包含市场信息，但未给出明确影响判断。"}</p>
                   {view.evidence?.length ? <small>依据：{view.evidence.join("；")}</small> : null}
+                  <small>{HORIZON_LABEL[view.horizon] || "周期未说明"} · {sourceLabel(view.opinion_source)} · 提取置信度 {Math.round((view.confidence || 0) * 100)}%</small>
                 </article>
               ))}
             </div>
@@ -323,7 +556,14 @@ export function ActivityAnalysisPanel({ tweet, onClose }: { tweet: ActivityTweet
         )}
 
         {analysis?.is_sponsored && (
-          <p className="activity-inspector-sponsored">含平台推广。商业关联会按每项观点分别判断，直接相关或关系待确认的内容不计入成绩。</p>
+          <div className="activity-inspector-sponsored">
+            <b>含平台推广</b>
+            <p>商业关联会按每项观点分别判断，直接相关或关系待确认的内容不计入成绩。</p>
+            {(analysis.commercial_disclosure?.sponsor_handle || analysis.commercial_disclosure?.sponsor_name) && (
+              <small>推广方：{analysis.commercial_disclosure.sponsor_handle || analysis.commercial_disclosure.sponsor_name}</small>
+            )}
+            {analysis.commercial_disclosure?.disclosure_text && <small>披露原文：{analysis.commercial_disclosure.disclosure_text}</small>}
+          </div>
         )}
       </div>
 
@@ -391,15 +631,48 @@ export default function ActivityTweetCard({ tweet, selectable = false, selected 
   return (
     <article className={`activity-card ${selectable ? "is-selectable" : ""} ${selected ? "is-selected" : ""}`}>
       <header className="activity-card-author">
-        <Link href={`/sources/${encodeURIComponent(handle)}`}>
-          <strong>{tweet.author_name || `@${handle}`}</strong>
-          <span>@{handle}</span>
+        <Link className="activity-card-identity" href={`/sources/${encodeURIComponent(handle)}`}>
+          {tweet.author_avatar_url ? (
+            <img className="activity-card-avatar" src={tweet.author_avatar_url} alt="" />
+          ) : (
+            <span className="activity-card-avatar is-fallback" aria-hidden="true">
+              {(tweet.author_name || handle).trim().slice(0, 2).toUpperCase()}
+            </span>
+          )}
+          <span className="activity-card-author-copy">
+            <strong>{tweet.author_name || `@${handle}`}</strong>
+            <span>@{handle}</span>
+          </span>
         </Link>
         <div>
           {tweet.tweet_type && tweet.tweet_type !== "original" && <span>{RELATION_LABEL[tweet.tweet_type] || tweet.tweet_type}</span>}
           <time dateTime={tweet.published_at}>{formatDateTime(tweet.published_at)}</time>
         </div>
       </header>
+
+      {selectable && <ActivitySubjectStrip groups={groups} marketViews={marketViews} />}
+
+      {selectable && (
+        <button
+          className="activity-analysis-trigger"
+          type="button"
+          aria-pressed={selected}
+          onClick={onOpenAnalysis}
+        >
+          <span>
+            <b>{hasAnalysis ? "查看推文分析" : isProcessing ? "分析进行中" : "查看分析结果"}</b>
+            <small>
+              {effectiveClaimCount ? `${effectiveClaimCount} 项有效观点` : "无有效标的观点"}
+              {referenceClaimCount ? ` · ${referenceClaimCount} 项参考信息` : ""}
+              {marketViews.length ? ` · ${marketViews.length} 项市场判断` : ""}
+            </small>
+          </span>
+          <span className="activity-analysis-trigger-directions">
+            {directionSummary.slice(0, 3).map((label) => <i key={label}>{label}</i>)}
+            <AppIcon name="arrow" />
+          </span>
+        </button>
+      )}
 
       <p className={`activity-card-content ${expanded ? "is-expanded" : ""}`}>{tweet.content}</p>
       {tweet.content.length > 240 && (
@@ -426,27 +699,7 @@ export default function ActivityTweetCard({ tweet, selectable = false, selected 
         );
       })}
 
-      {selectable ? (
-        <button
-          className="activity-analysis-trigger"
-          type="button"
-          aria-pressed={selected}
-          onClick={onOpenAnalysis}
-        >
-          <span>
-            <b>{hasAnalysis ? "查看推文分析" : isProcessing ? "分析进行中" : "查看分析结果"}</b>
-            <small>
-              {effectiveClaimCount ? `${effectiveClaimCount} 项有效观点` : "无有效标的观点"}
-              {referenceClaimCount ? ` · ${referenceClaimCount} 项参考信息` : ""}
-              {marketViews.length ? ` · ${marketViews.length} 项市场判断` : ""}
-            </small>
-          </span>
-          <span className="activity-analysis-trigger-directions">
-            {directionSummary.slice(0, 3).map((label) => <i key={label}>{label}</i>)}
-            <AppIcon name="arrow" />
-          </span>
-        </button>
-      ) : <section className="activity-analysis" aria-label="推文分析">
+      {!selectable && <section className="activity-analysis" aria-label="推文分析">
         {effectiveGroups.length > 0 && (
           <div className="activity-analysis-section">
             <div className="activity-analysis-label"><span>有效观点</span><small>{effectiveClaimCount} 项计入统计</small></div>

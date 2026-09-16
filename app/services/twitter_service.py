@@ -8,6 +8,7 @@ from curl_cffi import requests as cffi_requests
 from loguru import logger
 
 from app.core.config import settings
+from app.core.resilience import resilient_tool
 
 CST = timezone(timedelta(hours=8))
 
@@ -173,6 +174,7 @@ def convert_profile_to_upsert(raw: dict) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 TWEETS_GRAPHQL_ENDPOINT = "https://twitter.com/i/api/graphql/XicnWRbyQ3WgVY__VataBQ/UserTweets"
+TWEET_DETAIL_GRAPHQL_ENDPOINT = "https://x.com/i/api/graphql/snmujSvB_9WXyd8yjvZ24Q/TweetResultByRestId"
 
 TWEETS_FEATURES = {
     "vibe_api_enabled": True,
@@ -191,7 +193,7 @@ TWEETS_FEATURES = {
     "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
     "view_counts_everywhere_api_enabled": True,
     "longform_notetweets_consumption_enabled": True,
-    "responsive_web_twitter_article_tweet_consumption_enabled": False,
+    "responsive_web_twitter_article_tweet_consumption_enabled": True,
     "tweet_awards_web_tipping_enabled": False,
     "freedom_of_speech_not_reach_fetch_enabled": True,
     "standardized_nudges_misinfo": True,
@@ -200,6 +202,17 @@ TWEETS_FEATURES = {
     "longform_notetweets_inline_media_enabled": True,
     "responsive_web_media_download_video_enabled": False,
     "responsive_web_enhance_cards_enabled": False,
+}
+
+TWEET_DETAIL_FIELD_TOGGLES = {
+    "withArticleRichContentState": True,
+    "withArticlePlainText": True,
+    "withArticleSummaryText": True,
+    "withArticleVoiceOver": False,
+    "withGrokAnalyze": False,
+    "withDisallowedReplyControls": False,
+    "withPayments": False,
+    "withAuxiliaryUserLabels": False,
 }
 
 
@@ -221,6 +234,21 @@ def _build_tweets_url(user_id: str, cursor: str | None = None) -> str:
         variables["cursor"] = cursor
     params = f"variables={quote(json.dumps(variables))}&features={quote(json.dumps(TWEETS_FEATURES))}"
     return f"{TWEETS_GRAPHQL_ENDPOINT}?{params}"
+
+
+def _build_tweet_detail_url(tweet_id: str) -> str:
+    variables = {
+        "tweetId": tweet_id,
+        "withCommunity": False,
+        "includePromotedContent": False,
+        "withVoice": False,
+    }
+    params = (
+        f"variables={quote(json.dumps(variables))}"
+        f"&features={quote(json.dumps(TWEETS_FEATURES))}"
+        f"&fieldToggles={quote(json.dumps(TWEET_DETAIL_FIELD_TOGGLES))}"
+    )
+    return f"{TWEET_DETAIL_GRAPHQL_ENDPOINT}?{params}"
 
 
 def _strip_text(text: str) -> str:
@@ -250,6 +278,104 @@ def _tweet_full_text(tweet_obj: dict) -> str:
     except (KeyError, TypeError):
         pass
     return text
+
+
+def _tweet_article_payload(tweet_obj: dict) -> dict | None:
+    wrapper = tweet_obj.get("article")
+    if not isinstance(wrapper, dict):
+        return None
+
+    detail = wrapper.get("article_results", {}).get("result")
+    if isinstance(detail, dict):
+        return detail
+
+    preview = wrapper.get("article")
+    return preview if isinstance(preview, dict) else None
+
+
+def _article_plain_text(article: dict) -> str:
+    plain_text = str(article.get("plain_text") or "").strip()
+    if plain_text:
+        return plain_text
+
+    blocks = article.get("content_state", {}).get("blocks", [])
+    if not isinstance(blocks, list):
+        return ""
+    return "\n".join(
+        str(block.get("text") or "").strip()
+        for block in blocks
+        if isinstance(block, dict) and str(block.get("text") or "").strip()
+    )
+
+
+def _article_content(article: dict) -> str:
+    title = str(article.get("title") or "").strip()
+    body = _article_plain_text(article)
+    if not body:
+        body = str(article.get("preview_text") or "").strip()
+    if title and body:
+        return f"{title}\n\n{body}"
+    return title or body
+
+
+def _article_metadata(article: dict) -> dict:
+    cover = article.get("cover_media") or {}
+    media_info = cover.get("media_info") or {}
+    article_id = str(article.get("rest_id") or "")
+    return {
+        "rest_id": article_id,
+        "title": str(article.get("title") or ""),
+        "preview_text": str(article.get("preview_text") or ""),
+        "summary_text": str(article.get("summary_text") or ""),
+        "url": f"https://x.com/i/article/{article_id}" if article_id else "",
+        "cover_media_url": str(media_info.get("original_img_url") or ""),
+        "content_complete": bool(_article_plain_text(article)),
+    }
+
+
+def _article_cover_media(article: dict) -> dict | None:
+    cover = article.get("cover_media") or {}
+    media_url = str((cover.get("media_info") or {}).get("original_img_url") or "")
+    if not media_url:
+        return None
+    return {
+        "media_status_id": str(cover.get("media_id") or cover.get("id") or ""),
+        "media_url": media_url,
+        "reference_type": "article_cover",
+    }
+
+
+def _append_media_once(media_items: list[dict], media: dict | None) -> None:
+    if media and not any(item.get("media_url") == media["media_url"] for item in media_items):
+        media_items.append(media)
+
+
+@resilient_tool(
+    retries=2,
+    circuit_name="twitter_article_api",
+    fallback_message="X Article 正文暂时无法获取。",
+)
+def fetch_tweet_article(tweet_id: str) -> dict | None:
+    """Fetch the full X Article attached to a tweet without scraping its web page."""
+    response = cffi_requests.get(
+        _build_tweet_detail_url(tweet_id),
+        impersonate=random.choice(IMPERSONATE_LIST),
+        cookies=COOKIES,
+        headers=HEADERS,
+        proxies={"http": settings.http_proxy, "https": settings.http_proxy},
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"Twitter detail API returned {response.status_code}")
+
+    data = response.json()
+    if data.get("errors"):
+        raise RuntimeError(f"Twitter detail API errors: {data['errors']}")
+
+    result = _unwrap_tweet_result(
+        data.get("data", {}).get("tweetResult", {}).get("result", {})
+    )
+    return _tweet_article_payload(result)
 
 
 def _tweet_author(tweet_obj: dict) -> tuple[str, str, str]:
@@ -317,12 +443,18 @@ def _parse_tweet_entry(entry: dict) -> dict | None:
     if not author_handle:
         return None
 
+    article = _tweet_article_payload(tweets)
     item = {}
     item["user_id"] = user_id
     item["name"] = author_name
     item["user_name"] = author_handle
     item["tweet_name"] = author_handle
-    item["tweet_text"] = _strip_text(_tweet_full_text(tweets))
+    item["tweet_text"] = (
+        _article_content(article)
+        if article
+        else _strip_text(_tweet_full_text(tweets))
+    )
+    item["article"] = _article_metadata(article) if article else None
     item["lang"] = legacy.get("lang", "")
     item["data_time_iso"] = (
         _cst_to_iso(legacy["created_at"]) if legacy.get("created_at") else ""
@@ -343,6 +475,7 @@ def _parse_tweet_entry(entry: dict) -> dict | None:
     item["reposted_tweet_id"] = None
     item["referenced_tweets"] = []
     item["media_images"] = _tweet_media(tweets)
+    _append_media_once(item["media_images"], _article_cover_media(article or {}))
 
     retweeted_result = legacy.get("retweeted_status_result")
     quoted_result = tweets.get("quoted_status_result") or legacy.get("quoted_status_result")
@@ -454,6 +587,28 @@ def fetch_user_tweets(user_id: str, max_pages: int = 1) -> list[dict]:
             break
 
         tweets, next_cursor = _parse_tweets_response(data)
+        for tweet in tweets:
+            article_meta = tweet.get("article")
+            if not isinstance(article_meta, dict) or article_meta.get("content_complete"):
+                continue
+            article = fetch_tweet_article(tweet["data_id"])
+            if not isinstance(article, dict):
+                logger.warning(
+                    "X Article detail unavailable for tweet_id={}: {}",
+                    tweet["data_id"],
+                    article,
+                )
+                continue
+            content = _article_content(article)
+            if content:
+                tweet["tweet_text"] = content
+            tweet["article"] = _article_metadata(article)
+            _append_media_once(tweet["media_images"], _article_cover_media(article))
+            logger.info(
+                "Fetched X Article for tweet_id={} (chars={})",
+                tweet["data_id"],
+                len(tweet["tweet_text"]),
+            )
         logger.info("Page {}: got {} tweets for user_id={}", page + 1, len(tweets), user_id)
         all_tweets.extend(tweets)
 

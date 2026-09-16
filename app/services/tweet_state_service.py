@@ -52,6 +52,7 @@ _ALLOWED_TRANSITIONS = {
         TweetProcessingState.FAILED,
     },
     TweetProcessingState.MEDIA_ANALYZING: {
+        TweetProcessingState.MEDIA_ANALYSIS_PENDING,
         TweetProcessingState.ANALYSIS_PENDING,
         TweetProcessingState.FAILED,
     },

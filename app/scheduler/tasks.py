@@ -65,6 +65,7 @@ def analyze_tweet_task(self, tweet_id: str) -> dict:
     bind=True,
     name="app.scheduler.tasks.analyze_tweet_media_task",
     acks_late=True,
+    reject_on_worker_lost=True,
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_backoff_max=300,
@@ -77,6 +78,36 @@ def analyze_tweet_media_task(self, tweet_id: str) -> dict:
     db = SessionLocal()
     try:
         return analyze_tweet_media(db, tweet_id)
+    finally:
+        db.close()
+
+
+@shared_task(
+    bind=True,
+    name="app.scheduler.tasks.recover_stale_media_analysis_task",
+    acks_late=True,
+)
+def recover_stale_media_analysis_task(
+    self,
+    batch_size: int = 100,
+) -> dict:
+    """Requeue media analyses abandoned by an interrupted vision worker."""
+    from app.services.tweet_media_analysis_service import (
+        recover_stale_tweet_media_analyses,
+    )
+
+    db = SessionLocal()
+    try:
+        result = recover_stale_tweet_media_analyses(
+            db,
+            batch_size=batch_size,
+        )
+        if result["requeued"]:
+            logger.warning(
+                "[Celery] Requeued %d stale media analyses",
+                result["requeued"],
+            )
+        return result
     finally:
         db.close()
 

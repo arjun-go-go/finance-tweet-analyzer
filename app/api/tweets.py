@@ -9,6 +9,7 @@ from app.core.deps import get_db
 from app.core.auth import get_current_admin, get_current_user
 from app.models.user import User
 from app.models.analysis import AnalysisResult
+from app.models.blogger import Blogger
 from app.models.instrument_claim import InstrumentClaim
 from app.models.tweet import Tweet
 from app.models.tweet_media_asset import TweetMediaAsset
@@ -28,6 +29,7 @@ class TweetListItem(BaseModel):
     tweet_id: str
     author_handle: str
     author_name: str
+    author_avatar_url: str | None = None
     content: str
     published_at: str
     status: str
@@ -99,9 +101,26 @@ def list_tweets(
 
     # If include_analysis, batch-fetch related analysis_results
     analysis_map: dict[str, dict] = {}
+    avatar_map: dict[str, str | None] = {}
     media_map: dict[str, list[TweetMediaItem]] = {}
     reference_media_map: dict[str, dict[str, TweetMediaItem]] = {}
     if rows:
+        normalized_handles = {
+            tweet.author_handle.strip().lstrip("@").lower()
+            for tweet in rows
+            if tweet.author_handle
+        }
+        if normalized_handles:
+            blogger_rows = db.execute(
+                select(Blogger.handle, Blogger.avatar_url).where(
+                    func.lower(Blogger.handle).in_(normalized_handles)
+                )
+            ).all()
+            avatar_map = {
+                handle.strip().lstrip("@").lower(): avatar_url
+                for handle, avatar_url in blogger_rows
+            }
+
         reference_urls_by_tweet: dict[str, set[str]] = {}
         for tweet in rows:
             urls = {
@@ -199,6 +218,9 @@ def list_tweets(
             tweet_id=t.tweet_id,
             author_handle=t.author_handle,
             author_name=t.author_name or "",
+            author_avatar_url=avatar_map.get(
+                t.author_handle.strip().lstrip("@").lower()
+            ),
             content=t.content,
             published_at=t.published_at.isoformat() if t.published_at else "",
             status=t.status or "pending",

@@ -146,7 +146,7 @@ export default function ActivityPage() {
                 onClick={() => setAnalysisOpen(false)}
               />
               <aside className={`activity-inspector ${analysisOpen ? "is-open" : ""}`} aria-label="选中推文分析">
-                <ActivityAnalysisPanel tweet={selectedTweet} onClose={() => setAnalysisOpen(false)} />
+                <ActivityAnalysisPanel key={selectedTweet.id} tweet={selectedTweet} onClose={() => setAnalysisOpen(false)} />
               </aside>
             </>
           )}

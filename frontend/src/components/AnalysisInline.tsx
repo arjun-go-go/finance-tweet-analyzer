@@ -5,6 +5,7 @@ import { useState } from "react";
 export interface InstrumentDetail {
   symbol: string;
   original_name?: string;
+  resolved_name?: string;
   market?: string;
   market_hint?: string;
   exchange?: string;

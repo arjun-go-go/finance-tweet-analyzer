@@ -25,12 +25,18 @@ def import_tweets(
     skipped = 0
     seen_ids: set[str] = set()
     imported_tweets: list[Tweet] = []
+    enriched_tweets: list[Tweet] = []
 
     for item in items:
         if item.tweet_id in seen_ids:
             skipped += 1
             continue
         seen_ids.add(item.tweet_id)
+
+        if not item.content.strip() and not item.media_urls and not item.referenced_tweets:
+            logger.warning("Skipping tweet {} because it has no analyzable content", item.tweet_id)
+            skipped += 1
+            continue
 
         exists = db.execute(
             select(Tweet).where(Tweet.tweet_id == item.tweet_id)
@@ -45,6 +51,25 @@ def import_tweets(
             exists.quoted_tweet_id = item.quoted_tweet_id
             exists.reposted_tweet_id = item.reposted_tweet_id
             exists.referenced_tweets = item.referenced_tweets
+            if item.content.strip() and not (exists.content or "").strip():
+                exists.content = item.content
+                exists.raw_json = item.raw_json
+                exists.media_urls = item.media_urls
+                exists.author_name = item.author_name
+                exists.status = "media_pending" if item.media_urls else "pending"
+                exists.analysis_attempts = 0
+                exists.analysis_last_error = None
+                exists.analysis_next_retry_at = None
+                exists.analysis_started_at = None
+                exists.analysis_completed_at = None
+                exists.failure_stage = None
+                exists.processing_updated_at = datetime.now(timezone.utc)
+                enriched_tweets.append(exists)
+                logger.info(
+                    "Enriched previously empty tweet {} with {} characters",
+                    item.tweet_id,
+                    len(item.content),
+                )
             skipped += 1
             continue
 
@@ -70,10 +95,11 @@ def import_tweets(
         imported_tweets.append(tweet)
         imported += 1
 
-    if imported_tweets and hasattr(db, "flush"):
+    pipeline_tweets = imported_tweets + enriched_tweets
+    if pipeline_tweets and hasattr(db, "flush"):
         db.flush()
 
-    for tweet in imported_tweets:
+    for tweet in pipeline_tweets:
         enqueue_outbox_event(
             db,
             "tweet.index_requested",

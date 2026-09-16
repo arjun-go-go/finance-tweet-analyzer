@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image, ImageOps
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.agents.llm import get_vision_llm
@@ -202,6 +202,61 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         )
         db.commit()
         raise
+
+
+def recover_stale_tweet_media_analyses(
+    db: Session,
+    *,
+    batch_size: int = 100,
+) -> dict:
+    """Requeue media analyses left running after an interrupted vision worker."""
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.analysis_processing_timeout_seconds
+    )
+    stale_tweets = list(
+        db.execute(
+            select(Tweet)
+            .where(
+                Tweet.status == TweetProcessingState.MEDIA_ANALYZING.value,
+                or_(
+                    Tweet.processing_updated_at.is_(None),
+                    Tweet.processing_updated_at <= cutoff,
+                ),
+            )
+            .order_by(Tweet.processing_updated_at.asc().nullsfirst())
+            .limit(max(1, min(int(batch_size), 500)))
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+    )
+
+    recovered_ids: list[str] = []
+    for tweet in stale_tweets:
+        record = db.execute(
+            select(TweetMediaAnalysis).where(
+                TweetMediaAnalysis.tweet_id == tweet.id
+            )
+        ).scalar_one_or_none()
+        if record is not None and record.status == "analyzing":
+            record.status = "pending"
+            record.error_detail = None
+
+        transition_tweet_state(
+            tweet,
+            TweetProcessingState.MEDIA_ANALYSIS_PENDING,
+        )
+        enqueue_outbox_event(
+            db,
+            "tweet.media_analyze_requested",
+            {"tweet_id": str(tweet.id)},
+        )
+        recovered_ids.append(str(tweet.id))
+
+    db.commit()
+    return {
+        "requeued": len(recovered_ids),
+        "tweet_ids": recovered_ids,
+        "stale_before": cutoff.isoformat(),
+    }
 
 
 def enqueue_tweet_media_analysis_backfill(db: Session) -> dict:
