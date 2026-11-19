@@ -4,7 +4,7 @@
 
 **适合已经有固定信息源、想减少刷时间线的研究者。** 支持 A 股、港股、美股、原油、黄金和加密货币。没有具体标的的宏观判断单独展示。
 
-[功能与界面](#从一条推文开始) · [本地启动](#本地启动) · [验证与部署](#验证与部署)
+[功能与界面](#从一条推文开始) · [系统架构](#系统架构) · [本地启动](#本地启动) · [验证与部署](#验证与部署)
 
 ## 从一条推文开始
 
@@ -28,19 +28,35 @@
 
 以上截图来自本版实际运行的应用，使用独立测试库的虚构演示数据。
 
-## 工作流程
+## 系统架构
 
-1. **采集原文。** 保存正文、作者、时间、长文、引用关系；可归档图片。原文入库后即可生成检索索引，分析不影响原文查看。
-2. **逐标的分析。** LangGraph 先分类，再提取标的和宏观观点，同时识别风险；图片证据参与分析。非金融内容写入明确的跳过结果。
-3. **复核与业务校验。** 主模型处理分类、提取、风险，复核模型检查歧义或高价值内容，仲裁模型解决关键分歧。业务层处理标的身份、作者归属、商业关联和下游资格。
-4. **发布和验证。** 结果写入 PostgreSQL，异步生成分析索引和情报。只有满足目标、期限及资格条件的预测进入验证。ES 与 Milvus 是可重建索引，不是原文的唯一副本。
+Next.js 通过 FastAPI 读取原文、分析和关注关系。动态和「关注变化」直接查询 PostgreSQL，采集、图片识别、文本分析和索引由 Celery Worker 异步执行。PostgreSQL 是业务数据的事实源，检索索引可以从它重建。
 
-| 模块 | 实现 |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagram/system-architecture/signal-architecture.svg">
+  <img alt="Signal 系统架构：Next.js、FastAPI、PostgreSQL、Celery 队列、模型和索引之间的关系" src="diagram/system-architecture/signal-architecture.light.svg">
+</picture>
+
+[浅色 PNG](diagram/system-architecture/signal-architecture.light@2x.png) · [深色 PNG](diagram/system-architecture/signal-architecture@2x.png)
+
+### 组件与技术栈
+
+| 组件 | 主要职责 |
 | --- | --- |
-| 页面与接口 | Next.js 15、FastAPI |
-| 异步任务 | Celery、Redis、PostgreSQL Outbox；分开处理采集、文本、图片和索引 |
-| 模型 | OpenAI Chat Completions 用于文本和图片；DashScope 用于嵌入与重排 |
-| 数据与搜索 | PostgreSQL；可选对象存储、Elasticsearch 8/IK、Milvus 或 Chroma |
+| Next.js 15 / FastAPI | 提供动态、博主、标的和运行监控；API 负责鉴权、业务查询和分页。 |
+| PostgreSQL | 保存推文原文、作者与引用关系、图片元数据、分析结果、逐标的观点、预测和用户关注。Outbox 事件及索引任务状态也保存在这里。 |
+| Celery Beat / Redis / Worker | Beat 调度定时采集、验证和补偿任务；Outbox 派发器把已提交事件送进 Redis。Worker 分别消费采集、视觉、分析、索引、预测和通用队列。 |
+| MinIO / 本地存储 | 保存归档图片文件；PostgreSQL 保存文件关联和识别结果。 |
+| LangGraph / OpenAI | Supervisor 编排分类、逐标的提取、风险分析和跨模型复核；独立视觉任务解析图表与图片证据。 |
+| Elasticsearch 8 + IK / Milvus（可换 Chroma） | 分别维护关键词和向量索引。DashScope 提供嵌入与重排；混合检索用于检索调试，动态页不依赖它召回。 |
+
+### 数据如何流动
+
+1. **原文先入库。** 采集 Worker 读取 X 时间线，将正文、长文、引用和媒体信息与待处理事件同事务保存。原文索引立即排队，不等待分析；含图推文进入归档和视觉任务，纯文本直接进入分析队列。见[采集入库](app/services/tweet_service.py)和 [Outbox 派发](app/services/outbox_service.py)。
+2. **分析后校验并保存。** Supervisor 先分类，非金融内容直接写入跳过结果；金融内容结合图文证据提取逐标的与宏观观点，按条件复核或仲裁。业务层再核对标的身份、观点归属、商业关联及下游资格。见 [LangGraph 编排](app/agents/supervisor.py)和[分析入库](app/services/analysis_service.py)。
+3. **分析结果再派生。** 已保存的原文和分析可以在页面查看。入库后异步更新情报和索引，只有符合下游资格的逐标的观点会生成观点索引。宏观判断仍可在动态页查看；满足预测契约的观点才进入独立的预测验证流程。见[索引和验证任务](app/scheduler/tasks.py)。
+
+暂停 OpenAI 文本或图片分析时，采集、原文入库、图片归档和原文索引仍可运行。管理员恢复时可以选择「仅恢复新增」或补跑历史。
 
 ## 本地启动
 

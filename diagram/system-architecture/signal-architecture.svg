@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 683" role="img" aria-labelledby="title desc">
+  <title id="title">Signal 系统架构</title>
+  <desc id="desc">Next.js 通过 FastAPI 读取 PostgreSQL。Outbox 派发器与 Celery Beat 向 Redis 投递任务；Celery Worker 采集 X、处理图片和分析，并写回 PostgreSQL 和可重建的搜索索引。</desc>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --bg-grid: #1e293b;
+      --mask: #0f172a;
+      --text: white;
+      --text-muted: #94a3b8;
+      --arrow: #64748b;
+      --color-primary-fill: rgba(8,51,68,0.4);
+      --color-primary-stroke: #22d3ee;
+      --color-secondary-fill: rgba(6,78,59,0.4);
+      --color-secondary-stroke: #34d399;
+      --color-tertiary-fill: rgba(76,29,149,0.4);
+      --color-tertiary-stroke: #a78bfa;
+      --color-accent-stroke: #fbbf24;
+      --color-connector-fill: rgba(251,146,60,0.3);
+      --color-connector-stroke: #fb923c;
+      --color-neutral-fill: rgba(30,41,59,0.5);
+      --color-neutral-stroke: #94a3b8;
+    }
+    text { font-family: 'JetBrains Mono', 'Cascadia Code', 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', monospace; }
+    .region { fill: none; stroke: var(--color-accent-stroke); stroke-width: 1; stroke-opacity: .55; stroke-dasharray: 8 4; }
+    .wire { fill: none; stroke: var(--arrow); stroke-width: 1.65; marker-end: url(#arrowhead); }
+    .wire.writeback { stroke-dasharray: 5 4; }
+    .mask { fill: var(--mask); }
+    .frontend { fill: var(--color-primary-fill); stroke: var(--color-primary-stroke); }
+    .service { fill: var(--color-secondary-fill); stroke: var(--color-secondary-stroke); }
+    .storage { fill: var(--color-tertiary-fill); stroke: var(--color-tertiary-stroke); }
+    .broker { fill: var(--color-connector-fill); stroke: var(--color-connector-stroke); }
+    .external { fill: var(--color-neutral-fill); stroke: var(--color-neutral-stroke); }
+    .box { stroke-width: 1.25; }
+    .title { fill: var(--text); font-size: 20px; font-weight: 700; }
+    .subtitle, .detail { fill: var(--text-muted); font-size: 11px; }
+    .section { fill: var(--color-accent-stroke); font-size: 11px; font-weight: 650; }
+    .name { fill: var(--text); font-size: 13px; font-weight: 650; }
+    .compact { font-size: 11px; }
+    .annotation { fill: var(--text-muted); font-size: 10px; }
+    .legend { fill: var(--text-muted); font-size: 10px; }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="var(--bg-grid)" stroke-width=".55"/>
+    </pattern>
+    <marker id="arrowhead" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <polygon points="0 0,8 3.5,0 7" fill="var(--arrow)"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" fill="var(--bg)"/>
+  <rect width="100%" height="100%" fill="url(#grid)"/>
+
+  <rect class="region" x="30" y="84" width="1040" height="126" rx="12"/>
+  <rect class="region" x="30" y="232" width="1040" height="252" rx="12"/>
+  <rect class="region" x="30" y="498" width="1040" height="121" rx="12"/>
+
+  <path class="wire" d="M230 155H306"/>
+  <path class="wire" d="M532 155H698"/>
+  <path class="wire" d="M811 185V249"/>
+  <path class="wire" d="M811 313V358"/>
+  <path class="wire" d="M952 392H924"/>
+  <path class="wire" d="M702 392H576"/>
+  <path class="wire" d="M228 392H333"/>
+  <path class="wire writeback" d="M493 348V226H649V174H698"/>
+  <path class="wire" d="M374 436V465H162V533"/>
+  <path class="wire" d="M453 436V533"/>
+  <path class="wire" d="M536 436V465H842V533"/>
+
+  <rect class="mask" x="52" y="125" width="178" height="60" rx="7"/>
+  <rect class="mask" x="310" y="125" width="222" height="60" rx="7"/>
+  <rect class="mask" x="702" y="125" width="300" height="60" rx="7"/>
+  <rect class="mask" x="52" y="362" width="176" height="60" rx="7"/>
+  <rect class="mask" x="337" y="348" width="235" height="88" rx="8"/>
+  <rect class="mask" x="702" y="253" width="218" height="60" rx="7"/>
+  <rect class="mask" x="702" y="362" width="218" height="60" rx="7"/>
+  <rect class="mask" x="952" y="362" width="96" height="60" rx="7"/>
+  <rect class="mask" x="52" y="537" width="220" height="60" rx="7"/>
+  <rect class="mask" x="337" y="537" width="235" height="60" rx="7"/>
+  <rect class="mask" x="682" y="537" width="320" height="60" rx="7"/>
+
+  <rect class="box frontend" x="52" y="125" width="178" height="60" rx="7"/>
+  <rect class="box service" x="310" y="125" width="222" height="60" rx="7"/>
+  <rect class="box storage" x="702" y="125" width="300" height="60" rx="7"/>
+  <rect class="box external" x="52" y="362" width="176" height="60" rx="7"/>
+  <rect class="box service" x="337" y="348" width="235" height="88" rx="8"/>
+  <rect class="box service" x="702" y="253" width="218" height="60" rx="7"/>
+  <rect class="box broker" x="702" y="362" width="218" height="60" rx="7"/>
+  <rect class="box service" x="952" y="362" width="96" height="60" rx="7"/>
+  <rect class="box storage" x="52" y="537" width="220" height="60" rx="7"/>
+  <rect class="box external" x="337" y="537" width="235" height="60" rx="7"/>
+  <rect class="box storage" x="682" y="537" width="320" height="60" rx="7"/>
+
+  <text class="section" x="52" y="108">页面与请求</text>
+  <text class="section" x="52" y="257">异步任务</text>
+  <text class="section" x="52" y="521">处理依赖</text>
+  <g text-anchor="middle">
+    <text class="name" x="141" y="150">Next.js</text>
+    <text class="detail" x="141" y="168">动态 / 博主 / 标的</text>
+    <text class="name" x="421" y="150">FastAPI</text>
+    <text class="detail" x="421" y="168">鉴权、业务查询与分页</text>
+    <text class="name" x="852" y="150">PostgreSQL</text>
+    <text class="detail" x="852" y="168">原文、观点、关注、预测和 Outbox</text>
+
+    <text class="name" x="140" y="387">X 时间线</text>
+    <text class="detail" x="140" y="405">原文 / 引用 / 图片</text>
+    <text class="name" x="454.5" y="378">Celery Worker</text>
+    <text class="detail" x="454.5" y="397">采集 / 图像 / 文本 / 索引 / 预测</text>
+    <text class="detail" x="454.5" y="415">文本分析由 LangGraph 编排</text>
+    <text class="name" x="811" y="278">Outbox 派发器</text>
+    <text class="detail" x="811" y="296">读取已提交的待投递事件</text>
+    <text class="name" x="811" y="387">Redis / Celery 队列</text>
+    <text class="detail" x="811" y="405">任务按职责派发</text>
+    <text class="name compact" x="1000" y="387">Celery Beat</text>
+    <text class="detail" x="1000" y="405">定时调度</text>
+
+    <text class="name" x="162" y="562">MinIO / 本地存储</text>
+    <text class="detail" x="162" y="580">原始图片文件</text>
+    <text class="name" x="454.5" y="562">模型和行情服务</text>
+    <text class="detail" x="454.5" y="580">OpenAI、DashScope、行情源</text>
+    <text class="name" x="842" y="562">Elasticsearch / Milvus</text>
+    <text class="detail" x="842" y="580">关键词 / 向量索引，可重建</text>
+
+    <text class="annotation" x="268" y="143">认证请求</text>
+    <text class="annotation" x="617" y="143">业务读写</text>
+    <text class="annotation" x="572" y="222">读写业务数据</text>
+    <text class="annotation" x="839" y="339">投递</text>
+    <text class="annotation" x="639" y="380">消费任务</text>
+    <text class="annotation" x="280" y="380">读取时间线</text>
+  </g>
+
+  <g>
+    <rect class="box frontend" x="52" y="639" width="12" height="12" rx="2"/>
+    <text class="legend" x="72" y="649">用户入口</text>
+    <rect class="box service" x="175" y="639" width="12" height="12" rx="2"/>
+    <text class="legend" x="195" y="649">业务服务</text>
+    <rect class="box broker" x="298" y="639" width="12" height="12" rx="2"/>
+    <text class="legend" x="318" y="649">异步队列</text>
+    <rect class="box storage" x="421" y="639" width="12" height="12" rx="2"/>
+    <text class="legend" x="441" y="649">数据存储</text>
+    <rect class="box external" x="544" y="639" width="12" height="12" rx="2"/>
+    <text class="legend" x="564" y="649">外部依赖</text>
+  </g>
+  <text class="title" x="30" y="44">Signal 系统架构</text>
+  <text class="subtitle" x="30" y="65">页面从事实库读取；任务和索引独立执行</text>
+</svg>
