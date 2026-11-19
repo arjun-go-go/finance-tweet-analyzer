@@ -134,13 +134,14 @@ def test_context_builder_batches_thread_query_and_separates_references():
         datetime(2026, 8, 13, 1, tzinfo=timezone.utc),
         references=[{"type": "quoted", "author_handle": "bob", "content": "Third party claim"}],
     )
-    db = _FakeDb([first, second])
+    later = _stored_tweet("thread-3", "Future update", datetime(2026, 8, 13, 2, tzinfo=timezone.utc))
+    db = _FakeDb([first, second, later])
 
     contexts = build_tweet_contexts(db, [second])
     context = contexts[second.id]
 
     assert db.execute_count == 1
-    assert [item["tweet_id"] for item in context["author_thread"]] == ["thread-1", "thread-2"]
+    assert [item["tweet_id"] for item in context["author_thread"]] == ["thread-1"]
     assert context["references"][0]["author_handle"] == "bob"
     assert "must not be attributed" in context["attribution_rule"]
 

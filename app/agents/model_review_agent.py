@@ -1,7 +1,7 @@
 """Cross-model review for high-value tweet analyses.
 
-Qwen Plus remains the primary extractor.  Luna independently re-extracts only
-important or ambiguous tweets, and Qwen Max is invoked only when the two models
+The review model independently re-extracts only important or ambiguous tweets.
+The arbiter is invoked only when the primary and review models
 disagree on fields that affect product semantics or downstream statistics.
 """
 from __future__ import annotations
@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import unicodedata
+from decimal import Decimal, InvalidOperation
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
@@ -42,35 +44,62 @@ def _to_lc_messages(msg_dicts: list[dict]) -> list:
 
 
 def _clean_text(value: object) -> str:
-    return str(value or "").strip().upper()
+    return " ".join(unicodedata.normalize("NFKC", str(value if value is not None else "")).upper().split())
+
+
+def _target_value(value: object) -> str | Decimal:
+    cleaned = _clean_text(value)
+    try:
+        number = Decimal(cleaned)
+        return number if number.is_finite() else cleaned
+    except InvalidOperation:
+        return cleaned
+
+
+def _forecast_signature(forecast: dict) -> tuple:
+    prediction_type = forecast.get("prediction_type") or "none"
+    if prediction_type == "none" or not (
+        forecast.get("forecast_source") == "author" or forecast.get("author_adopted")
+    ):
+        # Different summaries of unadopted guidance/quotes do not change a
+        # blogger's prediction. Author vs non-author still produces a conflict.
+        return ()
+    return (
+        prediction_type,
+        _clean_text(forecast.get("temporal_expression")),
+        _clean_text(forecast.get("target_metric")),
+        str(forecast.get("target_operator") or "unknown"),
+        _target_value(forecast.get("target_value")),
+        _clean_text(forecast.get("target_unit")),
+        _clean_text(forecast.get("target_condition")) if prediction_type == "event_outcome" else "",
+    )
 
 
 def _claim_signature(claim: dict) -> tuple:
     instrument = claim.get("instrument") or {}
-    forecast = claim.get("forecast") or {}
+    forecast = _forecast_signature(claim.get("forecast") or {})
+    claim_type = str(claim.get("claim_type") or "reference")
+    direction = str(claim.get("direction") or "none")
+    # Fact/news/recap/reference labels do not affect attribution or direction.
+    if claim_type in {"fact", "news", "recap", "reference"}:
+        claim_type = "context"
+    sponsor = str(claim.get("sponsor_relation") or "none")
     return (
-        _clean_text(instrument.get("symbol") or instrument.get("original_name")),
-        str(instrument.get("asset_type") or "unknown"),
-        str(instrument.get("market_hint") or instrument.get("market") or "unknown"),
-        str(claim.get("direction") or "none"),
-        str(claim.get("horizon") or "unknown"),
-        str(claim.get("claim_type") or "reference"),
+        _clean_text(instrument.get("symbol") or instrument.get("original_name")).lstrip("$"),
+        _clean_text(instrument.get("asset_type") or "unknown"),
+        _clean_text(instrument.get("market_hint") or instrument.get("market") or "unknown"),
+        direction,
+        str(claim.get("horizon") or "unknown") if direction != "none" else "",
+        claim_type,
         str(claim.get("opinion_source") or "unclear"),
-        str(claim.get("sponsor_relation") or "none"),
-        str(forecast.get("prediction_type") or "none"),
-        str(forecast.get("forecast_source") or "unclear"),
-        bool(forecast.get("author_adopted")),
-        _clean_text(forecast.get("temporal_expression")),
-        _clean_text(forecast.get("target_metric")),
-        str(forecast.get("target_operator") or "unknown"),
-        _clean_text(forecast.get("target_value")),
-        _clean_text(forecast.get("target_unit")),
+        "unrelated" if sponsor in {"none", "unrelated"} else sponsor,
+        forecast,
     )
 
 
 def _market_view_signature(view: dict) -> tuple:
     return (
-        str(view.get("market") or "GLOBAL"),
+        _clean_text(view.get("market") or "GLOBAL"),
         _clean_text(view.get("benchmark")),
         str(view.get("impact") or "unclear"),
         str(view.get("opinion_source") or "unclear"),
@@ -86,36 +115,36 @@ def _commercial_signature(analysis: dict) -> bool:
 
 
 def critical_conflicts(primary: dict, review: dict) -> list[str]:
-    """Return semantic fields whose disagreement requires Max arbitration."""
+    """Return the semantic disagreements that require arbitration."""
     conflicts: list[str] = []
     if bool(primary.get("is_investment_relevant")) != bool(
         review.get("is_investment_relevant")
     ):
         conflicts.append("investment_relevance")
 
-    primary_claims = sorted(
+    primary_claims = {
         _claim_signature(item)
         for item in primary.get("claims") or []
         if isinstance(item, dict)
-    )
-    review_claims = sorted(
+    }
+    review_claims = {
         _claim_signature(item)
         for item in review.get("claims") or []
         if isinstance(item, dict)
-    )
+    }
     if primary_claims != review_claims:
         conflicts.append("instrument_claims")
 
-    primary_views = sorted(
+    primary_views = {
         _market_view_signature(item)
         for item in primary.get("market_views") or []
         if isinstance(item, dict)
-    )
-    review_views = sorted(
+    }
+    review_views = {
         _market_view_signature(item)
         for item in review.get("market_views") or []
         if isinstance(item, dict)
-    )
+    }
     if primary_views != review_views:
         conflicts.append("market_views")
 

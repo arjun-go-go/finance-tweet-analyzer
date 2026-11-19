@@ -3,7 +3,7 @@ from app.core.config import Settings
 
 def _settings(**overrides):
     values = {
-        "openrouter_api_key": "test-openrouter",
+        "openai_api_key": "test-openai",
         "dashscope_api_key": "test-dashscope",
         "jwt_secret_key": "test-jwt-secret",
         "elasticsearch_url": "",

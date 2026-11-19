@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,10 +25,20 @@ def _bounded_references(
     references: list[dict] | None,
     *,
     author_handle: str,
+    published_at: datetime | None,
 ) -> list[dict]:
     bounded = []
     for reference in (references or [])[:5]:
         item = dict(reference)
+        if published_at and item.get("published_at"):
+            try:
+                reference_time = datetime.fromisoformat(str(item["published_at"]))
+                if reference_time.tzinfo is None:
+                    reference_time = reference_time.replace(tzinfo=timezone.utc)
+                if reference_time > published_at:
+                    continue
+            except ValueError:
+                pass
         item["content"] = str(item.get("content") or "")[:CONTEXT_CONTENT_LIMIT]
         reference_author = str(item.get("author_handle") or "").lstrip("@").lower()
         current_author = author_handle.lstrip("@").lower()
@@ -52,7 +63,7 @@ def build_tweet_contexts(db: Session, tweets: list[Tweet]) -> dict:
         thread_rows = db.execute(
             select(Tweet)
             .where(Tweet.conversation_tweet_id.in_(conversation_ids))
-            .order_by(Tweet.published_at.asc())
+            .order_by(Tweet.published_at.asc(), Tweet.id.asc())
         ).scalars().all()
 
     grouped: dict[tuple[str, str], list[Tweet]] = defaultdict(list)
@@ -64,12 +75,10 @@ def build_tweet_contexts(db: Session, tweets: list[Tweet]) -> dict:
     for tweet in tweets:
         key = (tweet.conversation_tweet_id, tweet.author_handle.lower())
         same_author_thread = grouped.get(key, []) if tweet.conversation_tweet_id else []
-        current_index = next(
-            (index for index, row in enumerate(same_author_thread) if row.id == tweet.id),
-            len(same_author_thread),
-        )
-        start = max(0, current_index - THREAD_CONTEXT_LIMIT // 2)
-        selected = same_author_thread[start:start + THREAD_CONTEXT_LIMIT]
+        selected = [
+            row for row in same_author_thread
+            if row.id != tweet.id and row.published_at <= tweet.published_at
+        ][-THREAD_CONTEXT_LIMIT:]
 
         contexts[tweet.id] = {
             "tweet_type": tweet.tweet_type or "original",
@@ -81,6 +90,7 @@ def build_tweet_contexts(db: Session, tweets: list[Tweet]) -> dict:
             "references": _bounded_references(
                 tweet.referenced_tweets,
                 author_handle=tweet.author_handle,
+                published_at=tweet.published_at,
             ),
             "attribution_rule": (
                 "author_thread and references marked author_self are the followed "

@@ -4,6 +4,11 @@ from fastapi import HTTPException
 from app.api import analysis
 
 
+@pytest.fixture(autouse=True)
+def enabled_analysis(monkeypatch):
+    monkeypatch.setattr(analysis, "require_analysis_enabled", lambda _db: {"enabled": True})
+
+
 def _result():
     return {
         "batch_id": "batch",

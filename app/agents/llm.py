@@ -1,93 +1,98 @@
-"""LLM 工厂 —— 三模型分工策略。
-
-所有模型通过 OpenRouter 统一网关接入，经本地 HTTP 代理转发。
-模型分工平衡成本、响应时间和关键信号准确性：
-    - signal_model: 高频分类、逐标的提取、风险评估和查询意图识别
-    - review_model: 跨模型独立复核和图文理解
-    - report_model: 仅处理关键字段冲突仲裁及复杂生成
-"""
+"""OpenAI 官方 Chat Completions 客户端，按分析角色分配模型。"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 import httpx
+from langchain_core.callbacks import BaseCallbackHandler
 
 from app.core.config import settings
+from app.services.analysis_control_service import (
+    record_model_failure,
+    require_analysis_enabled,
+)
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
 
 
-def get_signal_llm() -> ChatOpenAI:
-    """信号模型 —— 快速判别型任务（分类、分析、风险评估）。
+class _AnalysisModelCallback(BaseCallbackHandler):
+    """Persist provider failures even when an Agent applies a local fallback."""
 
-    temperature=0.1 保证输出确定性，timeout=30s 适配短文本快速响应。
-    """
+    def __init__(self, model: str):
+        self.model = model
+
+    def on_llm_error(self, error: BaseException, **kwargs) -> None:
+        exc = error if isinstance(error, Exception) else RuntimeError(str(error))
+        record_model_failure(exc, provider="openai", model=self.model)
+
+
+def _create_openai_llm(
+    model: str,
+    *,
+    reasoning_effort: str,
+    max_completion_tokens: int,
+    timeout: float,
+    max_retries: int | None = None,
+) -> ChatOpenAI:
     from langchain_openai import ChatOpenAI
 
+    require_analysis_enabled()
+    proxy = settings.http_proxy or None
+
     return ChatOpenAI(
-        model=settings.signal_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        temperature=0.1,
+        model=model,
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        use_responses_api=False,
+        reasoning_effort=reasoning_effort,
+        max_completion_tokens=max_completion_tokens,
+        timeout=timeout,
+        max_retries=max_retries,
+        callbacks=[_AnalysisModelCallback(model)],
+        http_client=httpx.Client(proxy=proxy),
+        http_async_client=httpx.AsyncClient(proxy=proxy),
+    )
+
+
+def get_signal_llm() -> ChatOpenAI:
+    """分类、逐标的提取、风险评估与检索意图识别。"""
+    return _create_openai_llm(
+        settings.signal_model,
+        reasoning_effort=settings.signal_llm_reasoning_effort,
         timeout=settings.signal_llm_timeout_seconds,
         max_retries=settings.signal_llm_max_retries,
         max_completion_tokens=settings.signal_llm_max_completion_tokens,
-        extra_body={"reasoning": {"effort": settings.signal_llm_reasoning_effort}},
-        http_client=httpx.Client(proxy=settings.http_proxy),
-        http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )
 
 
 def get_report_llm() -> ChatOpenAI:
-    """仲裁模型 —— 关键字段冲突裁决和复杂生成。
-
-    temperature=0.1 降低仲裁漂移，墙钟超时由复核节点强制约束。
-    """
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(
-        model=settings.report_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        temperature=0.1,
+    """裁决关键字段的分歧。"""
+    return _create_openai_llm(
+        settings.report_model,
+        reasoning_effort=settings.report_llm_reasoning_effort,
         timeout=settings.report_llm_timeout_seconds,
         max_retries=settings.report_llm_max_retries,
         max_completion_tokens=settings.report_llm_max_completion_tokens,
-        extra_body={"reasoning": {"effort": settings.report_llm_reasoning_effort}},
-        http_client=httpx.Client(proxy=settings.http_proxy),
-        http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )
 
 
 def get_review_llm() -> ChatOpenAI:
-    """独立复核模型 —— 用不同模型家族复核关键提取结果。"""
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(
-        model=settings.review_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        temperature=0.0,
+    """用独立模型复核关键提取结果。"""
+    return _create_openai_llm(
+        settings.review_model,
+        reasoning_effort=settings.review_llm_reasoning_effort,
         timeout=settings.signal_llm_timeout_seconds,
         max_retries=settings.signal_llm_max_retries,
         max_completion_tokens=settings.signal_llm_max_completion_tokens,
-        http_client=httpx.Client(proxy=settings.http_proxy),
-        http_async_client=httpx.AsyncClient(proxy=settings.http_proxy),
     )
 
 
 def get_vision_llm() -> ChatOpenAI:
-    """Multimodal model used to extract evidence from tweet text and images."""
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(
-        model=settings.vision_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        temperature=0.0,
-        max_tokens=settings.vision_max_output_tokens,
+    """从推文文字和图片中提取结构化证据。"""
+    return _create_openai_llm(
+        settings.vision_model,
+        reasoning_effort=settings.vision_llm_reasoning_effort,
+        max_completion_tokens=settings.vision_max_output_tokens,
         timeout=120,
-        extra_body={"reasoning": {"effort": settings.vision_llm_reasoning_effort}},
-        http_client=httpx.Client(proxy=settings.http_proxy),
     )

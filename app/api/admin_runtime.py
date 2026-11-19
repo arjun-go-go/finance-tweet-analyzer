@@ -3,11 +3,13 @@ from datetime import datetime, timedelta, timezone
 from collections import Counter
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field
+from sqlalchemy import BigInteger, cast, func, select
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_admin
 from app.core.deps import engine, get_db
+from app.models.agent_trace import AgentTrace
 from app.models.index_job import IndexJob
 from app.models.outbox_event import OutboxEvent
 from app.models.tweet import Tweet
@@ -20,9 +22,25 @@ from app.services.market_verification_service import (
     PREDICTION_RUNTIME_SOURCE_PREFIX,
     PREDICTION_RUNTIME_TASK_KEY,
 )
+from app.services.analysis_control_service import (
+    analysis_backlog,
+    analysis_ingest_cutoff,
+    get_analysis_control,
+    pause_analysis_manually,
+    requeue_waiting_media_analysis,
+    resume_analysis_manually,
+)
 
 
 router = APIRouter(prefix="/api/admin/runtime", tags=["admin-runtime"])
+
+
+class AnalysisPauseRequest(BaseModel):
+    reason: str = Field(default="管理员手动暂停", max_length=500)
+
+
+class AnalysisResumeRequest(BaseModel):
+    include_backlog: bool = True
 
 
 def _redis_hash(redis_client, key: str) -> dict:
@@ -122,6 +140,16 @@ def runtime_stats(
     db: Session = Depends(get_db),
 ) -> dict:
     redis_client = _get_redis()
+    analysis_control = get_analysis_control(db)
+    analysis_control["backlog"] = analysis_backlog(db, analysis_control)
+    text_usage = db.execute(select(
+        func.coalesce(func.sum(cast(AgentTrace.input["tweet_count"].astext, BigInteger)), 0),
+        func.coalesce(func.sum(cast(AgentTrace.output["calls"].astext, BigInteger)), 0),
+        func.coalesce(func.sum(cast(AgentTrace.output["total_tokens"].astext, BigInteger)), 0),
+    ).where(
+        AgentTrace.node_name == "analysis_model_usage",
+        AgentTrace.created_at >= datetime.now(timezone.utc) - timedelta(hours=24),
+    )).one()
     queue_names = ["analysis", "prediction", "ingest", "vision", "embed", "default"]
     outbox_rows = db.execute(
         select(OutboxEvent.status, func.count()).group_by(OutboxEvent.status)
@@ -171,6 +199,8 @@ def runtime_stats(
         ) / len(completed_vision)
 
     return {
+        "analysis_control": analysis_control,
+        "text_model_usage_24h": dict(zip(("tweet_attempts", "calls", "total_tokens"), text_usage)),
         "celery_pipeline_heartbeat": redis_client.get("health:celery_pipeline"),
         "queues": {name: int(redis_client.llen(name)) for name in queue_names},
         "outbox": {
@@ -192,3 +222,51 @@ def runtime_stats(
         "prediction_verification": _prediction_verification_runtime(redis_client),
         "database_pool": engine.pool.status(),
     }
+
+
+@router.get("/analysis-control")
+def analysis_control_status(
+    _admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    control = get_analysis_control(db)
+    control["backlog"] = analysis_backlog(db, control)
+    return control
+
+
+@router.post("/analysis-control/pause")
+def pause_analysis_control(
+    request: AnalysisPauseRequest,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    control = pause_analysis_manually(
+        db,
+        reason=request.reason,
+        updated_by=str(admin.id),
+    )
+    control["backlog"] = analysis_backlog(db, control)
+    return control
+
+
+@router.post("/analysis-control/resume")
+def resume_analysis_control(
+    request: AnalysisResumeRequest | None = None,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    control = resume_analysis_manually(
+        db, updated_by=str(admin.id), include_backlog=request.include_backlog if request else True
+    )
+    media_requeued = requeue_waiting_media_analysis(db, ingested_after=analysis_ingest_cutoff(control))
+
+    # Kick the text backlog immediately; the periodic scan remains the fallback.
+    from app.scheduler.tasks import auto_analysis_task
+
+    task = auto_analysis_task.apply_async(queue="analysis")
+    control["backlog"] = analysis_backlog(db, control)
+    control["resume_dispatch"] = {
+        "media_requeued": media_requeued,
+        "text_task_id": task.id,
+    }
+    return control

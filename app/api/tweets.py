@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -15,7 +16,7 @@ from app.models.tweet import Tweet
 from app.models.tweet_media_asset import TweetMediaAsset
 from app.rag.storage import TweetMediaStorage
 from app.schemas.tweet import TweetImportRequest, TweetImportResponse, TweetMediaItem
-from app.services.tweet_service import import_tweets
+from app.services.tweet_service import import_tweets, latest_tweet_analysis_id
 from app.services.instrument_claim_service import (
     analysis_payload_with_claims,
     claims_by_analysis_ids,
@@ -64,13 +65,14 @@ def list_tweets(
     ),
     blogger: str | None = Query(None),
     ticker: str | None = Query(None, max_length=64),
+    analysis_kind: Literal["instrument", "market"] | None = Query(None),
     include_analysis: bool = Query(False, description="Include latest tweet_analysis result"),
-    limit: int = Query(20, le=100),
-    offset: int = Query(0),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     _current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = select(Tweet).order_by(Tweet.published_at.desc())
+    query = select(Tweet).order_by(Tweet.published_at.desc(), Tweet.id.desc())
     count_query = select(func.count()).select_from(Tweet)
     normalized_ticker = ticker.strip().upper() if ticker else None
 
@@ -95,6 +97,22 @@ def list_tweets(
         )
         query = query.where(Tweet.id.in_(matching_tweet_ids))
         count_query = count_query.where(Tweet.id.in_(matching_tweet_ids))
+    if analysis_kind == "instrument":
+        has_analysis_kind = select(InstrumentClaim.id).where(
+            InstrumentClaim.analysis_result_id == latest_tweet_analysis_id()
+        ).correlate(Tweet).exists()
+    elif analysis_kind == "market":
+        views = AnalysisResult.result["market_views"]
+        has_analysis_kind = select(AnalysisResult.id).where(
+            AnalysisResult.id == latest_tweet_analysis_id(),
+            func.jsonb_typeof(views) == "array",
+            views != [],
+        ).correlate(Tweet).exists()
+    else:
+        has_analysis_kind = None
+    if has_analysis_kind is not None:
+        query = query.where(has_analysis_kind)
+        count_query = count_query.where(has_analysis_kind)
 
     total = db.execute(count_query).scalar() or 0
     rows = db.execute(query.limit(limit).offset(offset)).scalars().all()
@@ -155,26 +173,16 @@ def list_tweets(
     if include_analysis and rows:
         tweet_ids = [t.id for t in rows]
         analysis_rows = db.execute(
-            select(AnalysisResult).where(
-                AnalysisResult.tweet_id.in_(tweet_ids),
-                AnalysisResult.analysis_type == "tweet_analysis",
-            )
+            select(AnalysisResult).select_from(Tweet)
+            .join(AnalysisResult, AnalysisResult.id == latest_tweet_analysis_id())
+            .where(Tweet.id.in_(tweet_ids))
         ).scalars().all()
-        # Keep the latest analysis per tweet (by created_at desc)
-        latest_by_tweet: dict[str, AnalysisResult] = {}
-        for ar in analysis_rows:
-            tid = str(ar.tweet_id)
-            current = latest_by_tweet.get(tid)
-            if current is None or (
-                ar.created_at
-                and (current.created_at is None or current.created_at < ar.created_at)
-            ):
-                latest_by_tweet[tid] = ar
         claim_map = claims_by_analysis_ids(
             db,
-            [analysis.id for analysis in latest_by_tweet.values()],
+            [analysis.id for analysis in analysis_rows],
         )
-        for tid, ar in latest_by_tweet.items():
+        for ar in analysis_rows:
+            tid = str(ar.tweet_id)
             claims = claim_map.get(ar.id, [])
             if normalized_ticker:
                 claims = [

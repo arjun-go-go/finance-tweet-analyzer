@@ -1,4 +1,27 @@
+from copy import deepcopy
+
 from app.agents.model_review_agent import critical_conflicts
+
+
+def test_forecast_disagreement_compares_attribution_and_numeric_target():
+    claim = {
+        "instrument": {"symbol": "NVDA", "asset_type": "equity", "market_hint": "US"},
+        "direction": "bullish", "opinion_source": "author", "claim_type": "prediction",
+        "forecast": {
+            "prediction_type": "price_target", "forecast_source": "author",
+            "target_value": "120", "target_unit": "USD", "target_operator": "gte",
+        },
+    }
+    primary = {"claims": [claim]}
+    review = deepcopy(primary)
+    review["claims"][0]["forecast"]["target_value"] = "120.00"
+    review["claims"].append(deepcopy(review["claims"][0]))
+    assert not critical_conflicts(primary, review)
+    review["claims"][0]["forecast"]["target_value"] = "121"
+    assert critical_conflicts(primary, review) == ["instrument_claims"]
+    review = deepcopy(primary)
+    review["claims"][0]["forecast"]["forecast_source"] = "quoted"
+    assert critical_conflicts(primary, review) == ["instrument_claims"]
 
 
 def test_claim_asset_type_difference_requires_arbitration():

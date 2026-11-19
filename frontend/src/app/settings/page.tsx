@@ -33,6 +33,7 @@ export default function SettingsPage() {
         {tab === "profile" && <>
           <section className="settings-prototype-section"><h2>个人资料</h2><div className="settings-account-row"><span>{user.username.slice(0, 2).toUpperCase()}</span><div><strong>{user.username}</strong><small>{user.email}</small></div><b>{user.status === "active" ? "账户正常" : user.status}</b></div></section>
           <section className="settings-prototype-section"><h2>产品边界</h2><p>Signal 只整理已关注 Twitter 博主发布的投资观点。市场价格仅用于预测验证，内容不构成投资建议。</p></section>
+          {user.is_admin && <section className="settings-prototype-section"><h2>系统管理</h2><p>查看大模型分析总开关、等待任务、Worker 队列以及外部服务运行状态。</p><div className="settings-scope-list"><Link href="/admin/runtime"><AppIcon name="admin" /><span><strong>系统运行监控</strong><small>暂停或恢复大模型分析，并检查任务积压</small></span><AppIcon name="arrow" /></Link></div></section>}
         </>}
 
         {tab === "scope" && <>

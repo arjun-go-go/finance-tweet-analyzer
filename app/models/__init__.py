@@ -18,6 +18,7 @@ from app.models.outbox_event import OutboxEvent
 from app.models.intelligence_event import IntelligenceEvent, IntelligenceTopic
 from app.models.intelligence_correction import IntelligenceCorrection
 from app.models.user_alert import UserAlert
+from app.models.runtime_control import RuntimeControl
 
 __all__ = [
     "Base",
@@ -41,4 +42,5 @@ __all__ = [
     "IntelligenceTopic",
     "IntelligenceCorrection",
     "UserAlert",
+    "RuntimeControl",
 ]

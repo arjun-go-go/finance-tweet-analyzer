@@ -12,6 +12,7 @@ from app.schemas.blogger import BloggerListItem
 from app.schemas.me import FollowedBloggerListResponse, FollowResponse
 from app.services.blogger_service import blogger_ingestion_summary, get_blogger_processing_counts
 from app.services.credibility import score_profile
+from app.services.opinion_change_service import list_opinion_changes
 from app.services.user_resource_service import (
     ResourceLimitExceeded,
     ResourceNotFound,
@@ -23,6 +24,14 @@ from app.services.user_resource_service import (
 
 
 router = APIRouter(prefix="/api/me", tags=["me"])
+
+
+@router.get("/opinion-changes")
+def get_opinion_changes(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return list_opinion_changes(db, current_user.id)
 
 
 def _followed_blogger_item(

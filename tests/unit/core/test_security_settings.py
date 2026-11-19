@@ -5,7 +5,7 @@ from app.core.config import Settings
 
 def _settings(**overrides):
     values = {
-        "openrouter_api_key": "test-openrouter",
+        "openai_api_key": "test-openai",
         "dashscope_api_key": "test-dashscope",
         "jwt_secret_key": "test-jwt-secret",
         "_env_file": None,
@@ -52,7 +52,7 @@ def test_create_app_uses_configured_cors_origins(monkeypatch):
 
 def test_settings_repr_redacts_secrets():
     configured = _settings(
-        openrouter_api_key="openrouter-secret-value",
+        openai_api_key="openai-secret-value",
         dashscope_api_key="dashscope-secret-value",
         jwt_secret_key="jwt-secret-value",
         twitter_auth_token="twitter-secret-value",
@@ -60,7 +60,7 @@ def test_settings_repr_redacts_secrets():
 
     rendered = repr(configured)
 
-    assert "openrouter-secret-value" not in rendered
+    assert "openai-secret-value" not in rendered
     assert "dashscope-secret-value" not in rendered
     assert "jwt-secret-value" not in rendered
     assert "twitter-secret-value" not in rendered

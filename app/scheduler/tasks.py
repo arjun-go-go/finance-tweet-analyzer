@@ -26,12 +26,27 @@ from app.scheduler.locks import (
     release_fetch_lock,
 )
 from app.services.tweet_state_service import (
-    ANALYSIS_READY_STATES,
     TweetProcessingState,
     transition_tweet_state,
 )
+from app.services.analysis_control_service import (
+    AnalysisPausedError,
+    analysis_ingest_cutoff,
+    require_analysis_enabled,
+)
 
 logger = get_task_logger(__name__)
+
+
+def _analysis_pause_result(db, *, task: str, tweet: Tweet | None = None) -> dict | None:
+    try:
+        cutoff = analysis_ingest_cutoff(require_analysis_enabled(db))
+        if tweet is not None and cutoff is not None and tweet.created_at < cutoff:
+            return {"status": "held_history", "reason": "new_ingest_only"}
+        return None
+    except AnalysisPausedError as exc:
+        logger.info("[Celery] %s paused: %s", task, exc)
+        return {"status": "paused", "reason": str(exc)}
 
 
 @shared_task(
@@ -41,7 +56,7 @@ logger = get_task_logger(__name__)
 )
 def analyze_tweet_task(self, tweet_id: str) -> dict:
     """Run the text and media-fused analysis for one ready tweet."""
-    from app.services.analysis_service import analyze_single_tweet
+    from app.services.analysis_service import analysis_eligible_clause, analyze_single_tweet
 
     db = SessionLocal()
     try:
@@ -50,13 +65,29 @@ def analyze_tweet_task(self, tweet_id: str) -> dict:
             return {"tweet_id": tweet_id, "status": "skipped", "reason": "not_found"}
         if tweet.status == "analyzed":
             return {"tweet_id": tweet_id, "status": "skipped", "reason": "already_analyzed"}
-        if TweetProcessingState(tweet.status) not in ANALYSIS_READY_STATES:
-            return {
-                "tweet_id": tweet_id,
-                "status": "skipped",
-                "reason": f"not_analysis_ready:{tweet.status}",
-            }
-        return analyze_single_tweet(db, tweet_id)
+        paused = _analysis_pause_result(db, task="tweet_analysis", tweet=tweet)
+        if paused:
+            from app.services.outbox_service import ensure_pending_tweet_analysis_event
+
+            ensure_pending_tweet_analysis_event(
+                db,
+                event_type="tweet.analysis_requested",
+                tweet_id=tweet_id,
+            )
+            db.commit()
+            return {"tweet_id": tweet_id, **paused}
+        acquired, lock_token = try_acquire(tweet.author_handle)
+        if not acquired:
+            return {"tweet_id": tweet_id, "status": "deferred", "reason": "blogger_analysis_locked"}
+        try:
+            ready = db.execute(select(Tweet.id).where(
+                Tweet.id == tweet.id, analysis_eligible_clause()
+            )).scalar_one_or_none()
+            if ready is None:
+                return {"tweet_id": tweet_id, "status": "skipped", "reason": "not_analysis_ready"}
+            return analyze_single_tweet(db, tweet_id, reanalyze=False)
+        finally:
+            release(tweet.author_handle, lock_token)
     finally:
         db.close()
 
@@ -77,6 +108,20 @@ def analyze_tweet_media_task(self, tweet_id: str) -> dict:
 
     db = SessionLocal()
     try:
+        tweet = db.get(Tweet, UUID(tweet_id))
+        if tweet is None:
+            return {"tweet_id": tweet_id, "status": "skipped", "reason": "not_found"}
+        paused = _analysis_pause_result(db, task="tweet_media_analysis", tweet=tweet)
+        if paused:
+            from app.services.outbox_service import ensure_pending_tweet_analysis_event
+
+            ensure_pending_tweet_analysis_event(
+                db,
+                event_type="tweet.media_analyze_requested",
+                tweet_id=tweet_id,
+            )
+            db.commit()
+            return {"tweet_id": tweet_id, **paused}
         return analyze_tweet_media(db, tweet_id)
     finally:
         db.close()
@@ -98,6 +143,9 @@ def recover_stale_media_analysis_task(
 
     db = SessionLocal()
     try:
+        paused = _analysis_pause_result(db, task="recover_stale_media_analysis")
+        if paused:
+            return {"requeued": 0, "tweet_ids": [], **paused}
         result = recover_stale_tweet_media_analyses(
             db,
             batch_size=batch_size,
@@ -360,11 +408,15 @@ def auto_analysis_task(self) -> dict:
     }
 
     try:
+        try:
+            cutoff = analysis_ingest_cutoff(require_analysis_enabled(db))
+        except AnalysisPausedError as exc:
+            return {**stats, "status": "paused", "reason": str(exc)}
         handles = [
             row[0]
             for row in db.execute(
                 select(Tweet.author_handle)
-                .where(analysis_eligible_clause())
+                .where(analysis_eligible_clause(ingested_after=cutoff))
                 .group_by(Tweet.author_handle)
             ).all()
         ]
@@ -384,7 +436,7 @@ def auto_analysis_task(self) -> dict:
                 continue
             try:
                 logger.info("[Celery] Analyzing: %s", handle)
-                result = analyze_by_blogger(db, handle)
+                result = analyze_by_blogger(db, handle, ingested_after=cutoff)
                 logger.info(
                     "[Celery] Done %s: analyzed=%d",
                     handle, result["analyzed"],

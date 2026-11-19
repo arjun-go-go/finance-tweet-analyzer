@@ -112,16 +112,7 @@ async def _run_analysis(state: dict) -> dict:
         if c.get("category") == "non_financial"
     }
 
-    # 批量获取涉及博主的历史画像
-    handles = list({t["author_handle"] for t in tweets})
-    blogger_contexts = fetch_blogger_contexts(handles)
-    context_block = build_blogger_context_block(blogger_contexts)
-
-    # 构建 structured LLM（prompt 通过 get_chat_prompt 加载）
-    llm = get_signal_llm()
-    structured_llm = llm.with_structured_output(TweetAnalysis)
-
-    tasks = []
+    candidates = []
     skipped = []
     for tweet in tweets:
         if tweet["id"] in non_financial_ids:
@@ -140,12 +131,23 @@ async def _run_analysis(state: dict) -> dict:
                 **TweetAnalysis(**skipped[-1]).model_dump(),
                 "tweet_id": tweet["id"],
                 "author_handle": tweet["author_handle"],
+                "skip_reason": "non_financial",
             }
         else:
-            tasks.append(analyze_tweet_with_llm(structured_llm, tweet, context_block))
+            candidates.append(tweet)
+
+    if not candidates:
+        return {"partial_analyses": skipped}
+
+    handles = list({tweet["author_handle"] for tweet in candidates})
+    context_block = build_blogger_context_block(fetch_blogger_contexts(handles))
+    structured_llm = get_signal_llm().with_structured_output(TweetAnalysis)
 
     # 并发执行所有 LLM 调用
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*(
+        analyze_tweet_with_llm(structured_llm, tweet, context_block)
+        for tweet in candidates
+    ))
     successful = [r for r in results if r is not None]
     partial_analyses = skipped + successful
 

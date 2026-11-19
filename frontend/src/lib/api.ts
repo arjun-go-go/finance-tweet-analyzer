@@ -220,21 +220,62 @@ export async function fetchTweets(params?: {
   status?: string;
   blogger?: string;
   ticker?: string;
+  analysis_kind?: "instrument" | "market";
   include_analysis?: boolean;
   limit?: number;
   offset?: number;
-}) {
+}, signal?: AbortSignal) {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.blogger) sp.set("blogger", params.blogger);
   if (params?.ticker) sp.set("ticker", params.ticker);
+  if (params?.analysis_kind) sp.set("analysis_kind", params.analysis_kind);
   if (params?.include_analysis) sp.set("include_analysis", "true");
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.offset) sp.set("offset", String(params.offset));
   const res = await authFetch(`${API_BASE}/api/tweets?${sp.toString()}`, {
     cache: "no-store",
+    signal,
   });
   if (!res.ok) throw new Error("Failed to fetch tweets");
+  return res.json();
+}
+
+export interface OpinionSource {
+  tweet_id: string;
+  source_id: string;
+  author_handle: string;
+  author_name: string;
+  published_at: string;
+  direction: "bullish" | "bearish" | "neutral";
+  thesis: string;
+  excerpt: string;
+  evidence: string[];
+  media_evidence: string[];
+  media: Array<{ id: string; width?: number | null; height?: number | null; content_type?: string | null }>;
+}
+
+export interface OpinionChange {
+  id: string;
+  kind: "first_opinion" | "direction_changed" | "new_evidence";
+  symbol: string;
+  market: string;
+  horizon: string;
+  new_factors: string[];
+  current: OpinionSource;
+  previous: OpinionSource | null;
+}
+
+export interface OpinionChangesResponse {
+  items: OpinionChange[];
+  followed_count: number;
+  display_days: number;
+  comparison_days: number;
+}
+
+export async function fetchOpinionChanges(signal?: AbortSignal): Promise<OpinionChangesResponse> {
+  const res = await authFetch(`${API_BASE}/api/me/opinion-changes`, { cache: "no-store", signal });
+  if (!res.ok) throw new Error("关注变化加载失败");
   return res.json();
 }
 
@@ -916,6 +957,8 @@ export interface EsAdminStats {
 }
 
 export interface RuntimeStats {
+  analysis_control: AnalysisControl;
+  text_model_usage_24h: { tweet_attempts: number; calls: number; total_tokens: number };
   queues: Record<string, number>;
   outbox: {
     statuses: Record<string, number>;
@@ -970,10 +1013,79 @@ export interface RuntimeStats {
   database_pool: string;
 }
 
+export interface AnalysisControl {
+  key: string;
+  mode: "enabled" | "paused_manual" | "paused_budget" | "paused_auth" | "cooldown";
+  enabled: boolean;
+  reason: string | null;
+  provider: string | null;
+  model: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  last_failure_at: string | null;
+  paused_at: string | null;
+  resume_after: string | null;
+  analysis_ingested_after: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+  backlog: {
+    text: number;
+    vision: number;
+    total: number;
+    held_outbox: number;
+    held_history: number;
+  };
+  resume_dispatch?: {
+    media_requeued: number;
+    text_task_id: string;
+  };
+}
+
+export interface AnalysisStatus {
+  enabled: boolean;
+  mode: AnalysisControl["mode"];
+  message: string | null;
+  paused_at: string | null;
+  resume_after: string | null;
+  analysis_ingested_after: string | null;
+}
+
+export async function fetchAnalysisStatus(): Promise<AnalysisStatus> {
+  const res = await authFetch(`${API_BASE}/api/analysis/status`, { cache: "no-store" });
+  if (!res.ok) throw new Error("无法加载分析服务状态");
+  return res.json() as Promise<AnalysisStatus>;
+}
+
 export async function fetchRuntimeStats(): Promise<RuntimeStats> {
   const res = await authFetch(`${API_BASE}/api/admin/runtime/stats`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch runtime stats");
   return res.json() as Promise<RuntimeStats>;
+}
+
+export async function pauseAnalysis(reason = "管理员手动暂停"): Promise<AnalysisControl> {
+  const res = await authFetch(`${API_BASE}/api/admin/runtime/analysis-control/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(payload, "暂停大模型分析失败"));
+  }
+  return res.json() as Promise<AnalysisControl>;
+}
+
+export async function resumeAnalysis(includeBacklog: boolean): Promise<AnalysisControl> {
+  const res = await authFetch(`${API_BASE}/api/admin/runtime/analysis-control/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ include_backlog: includeBacklog }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(payload, "恢复大模型分析失败"));
+  }
+  return res.json() as Promise<AnalysisControl>;
 }
 
 export interface IndexJobItem {

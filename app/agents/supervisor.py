@@ -188,66 +188,35 @@ def supervisor_classify_node(state: SupervisorState) -> dict:
 # 路由 1：route_after_classification —— 分类后扇出
 # ------------------------------------------------------------
 # 基于分类结果，决定将哪些推文分别路由到：
-#   - analysis_agent：所有非 non_financial 推文
+#   - analysis_agent：所有输入，非金融推文在节点内直接生成跳过结果
 #   - risk_agent：明确需要风险分析且置信度 >= 0.5 的推文
-# 没有任何金融内容时，直接跳到 supervisor_finalize 收尾。
 # 使用 Send 列表实现 LangGraph 的并行 fan-out。
 # ============================================================
 def route_after_classification(state: SupervisorState) -> list[Send]:
     classification = state.get("classification", {})
     classifications = classification.get("classifications", [])
-    has_investment = classification.get("has_investment_content", False)
     trace_id = state.get("_trace_conv_id", "")
+    tweets = state["tweets"]
+    if not tweets:
+        return [Send("supervisor_finalize", state)]
 
-    # 整批非金融内容仍交给 analysis_agent 生成明确的跳过结果，
-    # 否则上层无法把推文从 pending 终结为 analyzed。
-    if not has_investment:
-        return [Send("analysis_agent", {
-            "tweets": state["tweets"],
-            "classifications": classifications,
-            "_trace_conv_id": trace_id,
-        })]
-
-    # 通过 id 快速回查原始推文
-    tweet_map = {t["id"]: t for t in state["tweets"]}
-
-    # 分析路径：剔除非金融
-    analysis_ids = {
-        c["tweet_id"] for c in classifications
-        if c.get("category") != "non_financial"
-    }
-    # 风险路径：仅在分类器明确指定且置信度足够时进入，避免误报
     risk_ids = {
         c["tweet_id"] for c in classifications
-        if c.get("needs_risk_analysis") and c.get("confidence", 0) >= 0.5
+        if c.get("category") != "non_financial"
+        and c.get("needs_risk_analysis") and c.get("confidence", 0) >= 0.5
     }
-
-    sends = []
-
-    # 构造 analysis_agent 的输入子状态
-    analysis_tweets = [tweet_map[tid] for tid in analysis_ids if tid in tweet_map]
-    analysis_classifications = [c for c in classifications if c["tweet_id"] in analysis_ids]
-    if analysis_tweets:
-        sends.append(Send("analysis_agent", {
-            "tweets": analysis_tweets,
-            "classifications": analysis_classifications,
-            "_trace_conv_id": trace_id,
-        }))
-
-    # 构造 risk_agent 的输入子状态（与 analysis 并行执行）
-    risk_tweets = [tweet_map[tid] for tid in risk_ids if tid in tweet_map]
-    risk_classifications = [c for c in classifications if c["tweet_id"] in risk_ids]
+    sends = [Send("analysis_agent", {
+        "tweets": tweets,
+        "classifications": classifications,
+        "_trace_conv_id": trace_id,
+    })]
+    risk_tweets = [tweet for tweet in tweets if tweet["id"] in risk_ids]
     if risk_tweets:
         sends.append(Send("risk_agent", {
             "tweets": risk_tweets,
-            "classifications": risk_classifications,
+            "classifications": [c for c in classifications if c["tweet_id"] in risk_ids],
             "_trace_conv_id": trace_id,
         }))
-
-    # 兜底：分类说有金融内容，但置信度全部不达标 → 直接收尾
-    if not sends:
-        return [Send("supervisor_finalize", state)]
-
     return sends
 
 
@@ -368,7 +337,7 @@ def _enrich_claims_with_risks(analysis: dict) -> None:
 
 @traced_node("model_review")
 def model_review_node(state: SupervisorState) -> dict:
-    """对高价值/高歧义结果做跨模型复核，冲突时再进入 Max 仲裁。"""
+    """独立复核关键或有歧义的结果，关键字段冲突时调用仲裁模型。"""
     result = model_review_agent_node(state)
     for analysis in result.get("analyses") or []:
         _enrich_claims_with_risks(analysis)
@@ -431,7 +400,7 @@ def build_supervisor_graph():
     graph.add_edge("analysis_agent", "supervisor_merge")
     graph.add_edge("risk_agent", "supervisor_merge")
 
-    # merge 后复核关键结果；只有语义冲突才会调用 Max 仲裁。
+    # 合并后复核关键结果，语义冲突时调用仲裁模型。
     graph.add_edge("supervisor_merge", "model_review")
     graph.add_edge("model_review", "supervisor_finalize")
     graph.add_edge("supervisor_finalize", END)

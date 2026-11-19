@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.outbox_event import OutboxEvent
+from app.models.tweet import Tweet
+from app.services.analysis_control_service import (
+    PAID_ANALYSIS_EVENTS,
+    analysis_ingest_cutoff,
+    get_analysis_control,
+)
 
 
 EVENT_TASKS: dict[str, tuple[str, str]] = {
@@ -28,6 +34,28 @@ def enqueue_outbox_event(db: Session, event_type: str, payload: dict) -> OutboxE
     db.add(event)
     db.flush()
     return event
+
+
+def ensure_pending_tweet_analysis_event(
+    db: Session,
+    *,
+    event_type: str,
+    tweet_id: str,
+) -> bool:
+    """Keep one durable event when an already-dispatched task meets a pause."""
+    if event_type not in PAID_ANALYSIS_EVENTS:
+        raise ValueError(f"Unsupported analysis event type: {event_type}")
+    exists = db.execute(
+        select(OutboxEvent.id).where(
+            OutboxEvent.status == "pending",
+            OutboxEvent.event_type == event_type,
+            OutboxEvent.payload["tweet_id"].astext == tweet_id,
+        ).limit(1)
+    ).scalar_one_or_none()
+    if exists is not None:
+        return False
+    enqueue_outbox_event(db, event_type, {"tweet_id": tweet_id})
+    return True
 
 
 def _task_message(event: OutboxEvent) -> tuple[str, str, list, dict, str]:
@@ -60,20 +88,36 @@ def dispatch_pending_outbox_events(
     send_task: Callable[..., object],
     batch_size: int | None = None,
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    # Use the same clock that sets OutboxEvent.available_at in PostgreSQL.
+    now = db.scalar(select(func.clock_timestamp()))
+    control = get_analysis_control(db)
+    conditions = [
+        OutboxEvent.status == "pending",
+        OutboxEvent.available_at <= now,
+    ]
+    if not control["enabled"]:
+        conditions.append(OutboxEvent.event_type.not_in(PAID_ANALYSIS_EVENTS))
+    elif cutoff := analysis_ingest_cutoff(control):
+        in_scope = select(Tweet.id).where(
+            cast(Tweet.id, String) == OutboxEvent.payload["tweet_id"].astext,
+            Tweet.created_at >= cutoff,
+        ).exists()
+        conditions.append(or_(OutboxEvent.event_type.not_in(PAID_ANALYSIS_EVENTS), in_scope))
     rows = list(
         db.execute(
             select(OutboxEvent)
-            .where(
-                OutboxEvent.status == "pending",
-                OutboxEvent.available_at <= now,
-            )
+            .where(*conditions)
             .order_by(OutboxEvent.created_at.asc())
             .limit(batch_size or settings.outbox_dispatch_batch_size)
             .with_for_update(skip_locked=True)
         ).scalars().all()
     )
-    stats = {"selected": len(rows), "dispatched": 0, "failed": 0}
+    stats = {
+        "selected": len(rows),
+        "dispatched": 0,
+        "failed": 0,
+        "analysis_paused": not control["enabled"],
+    }
 
     for event in rows:
         try:

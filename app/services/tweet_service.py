@@ -4,11 +4,24 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from datetime import datetime, timezone
 
+from app.models.analysis import AnalysisResult
 from app.models.tweet import Tweet
 from app.schemas.blogger import BloggerProfile
 from app.schemas.tweet import TweetImportItem
 from app.services.blogger_service import ensure_blogger, upsert_blogger
 from app.services.outbox_service import enqueue_outbox_event
+
+
+def latest_tweet_analysis_id():
+    """Correlated query for the latest analysis of the outer Tweet row."""
+    return (
+        select(AnalysisResult.id)
+        .where(AnalysisResult.tweet_id == Tweet.id, AnalysisResult.analysis_type == "tweet_analysis")
+        .order_by(AnalysisResult.created_at.desc(), AnalysisResult.id.desc())
+        .limit(1)
+        .correlate(Tweet)
+        .scalar_subquery()
+    )
 
 
 def import_tweets(

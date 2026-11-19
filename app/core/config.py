@@ -9,21 +9,22 @@ class Settings(BaseSettings):
     db_max_overflow: int = 20
     db_pool_recycle: int = 1800
 
-    # ----- OpenRouter LLM -----
-    openrouter_api_key: str = ""
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # ----- OpenAI LLM -----
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     http_proxy: str = ""
 
     # ----- Models -----
-    signal_model: str = "qwen/qwen3.7-plus"
-    review_model: str = "openai/gpt-5.6-luna"
-    report_model: str = "qwen/qwen3.8-max"
-    vision_model: str = "openai/gpt-5.6-luna"
+    signal_model: str = "gpt-6-luna"
+    review_model: str = "gpt-6.1-terra"
+    report_model: str = "gpt-6.2-sol"
+    vision_model: str = "gpt-6.1-terra"
     model_review_confidence_threshold: float = 0.8
     signal_llm_timeout_seconds: float = 75.0
     signal_llm_max_completion_tokens: int = 6000
     signal_llm_reasoning_effort: str = "none"
     signal_llm_max_retries: int = 1
+    review_llm_reasoning_effort: str = "low"
     report_llm_timeout_seconds: float = 150.0
     report_llm_max_completion_tokens: int = 6000
     report_llm_reasoning_effort: str = "low"
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     vision_max_image_dimension: int = 1600
     vision_jpeg_quality: int = 85
     vision_max_output_tokens: int = 5000
-    vision_llm_reasoning_effort: str = "none"
+    vision_llm_reasoning_effort: str = "low"
 
     # ----- LangSmith -----
     langsmith_api_key: str = ""
@@ -47,6 +48,11 @@ class Settings(BaseSettings):
     analysis_retry_base_seconds: int = 60
     analysis_retry_max_seconds: int = 900
     analysis_processing_timeout_seconds: int = 600
+    llm_analysis_default_enabled: bool = True
+    llm_auto_pause_enabled: bool = True
+    llm_rate_limit_failure_threshold: int = 3
+    llm_transient_failure_threshold: int = 5
+    llm_transient_cooldown_seconds: int = 600
 
     # ----- Redis & Celery -----
     redis_url: str = "redis://localhost:6379/0"
@@ -202,14 +208,18 @@ class Settings(BaseSettings):
     log_body_max_bytes: int = 4096
     log_sensitive_keys: list[str] = [
         "password", "passwd", "token", "access_token", "refresh_token",
-        "authorization", "api_key", "apikey", "secret", "openrouter_api_key",
+        "authorization", "api_key", "apikey", "secret", "openai_api_key", "openrouter_api_key",
         "openfigi_api_key",
         "minio_access_key", "minio_secret_key",
         "cookie", "set-cookie",
     ]
     log_skip_paths: list[str] = ["/health", "/api/health", "/docs", "/openapi.json", "/favicon.ico"]
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "dotenv_filtering": "only_existing",
+    }
 
     @field_validator("jwt_secret_key")
     @classmethod
@@ -218,11 +228,11 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY must be set (non-empty) in .env")
         return v
 
-    @field_validator("openrouter_api_key")
+    @field_validator("openai_api_key")
     @classmethod
-    def _validate_openrouter_key(cls, v: str) -> str:
-        if not v:
-            raise ValueError("OPENROUTER_API_KEY must be set (non-empty) in .env")
+    def _validate_openai_key(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("OPENAI_API_KEY must be set (non-empty) in .env")
         return v
 
     @field_validator("dashscope_api_key")
@@ -238,7 +248,7 @@ class Settings(BaseSettings):
             "redis_url",
             "celery_broker_url",
             "celery_result_backend",
-            "openrouter_api_key",
+            "openai_api_key",
             "dashscope_api_key",
             "langsmith_api_key",
             "jwt_secret_key",

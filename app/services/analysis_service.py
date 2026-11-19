@@ -2,7 +2,9 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 
+from langchain_core.callbacks.usage import UsageMetadataCallbackHandler
 from loguru import logger
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
@@ -24,6 +26,11 @@ from app.services.analysis_business_validator import (
     normalize_before_resolution,
     validate_after_resolution,
 )
+from app.services.analysis_control_service import (
+    AnalysisPausedError,
+    record_model_success,
+    require_analysis_enabled,
+)
 from app.services.trace_service import write_trace_immediate
 from app.services.tweet_context_service import build_tweet_contexts
 from app.services.tweet_state_service import (
@@ -34,13 +41,33 @@ from app.services.tweet_state_service import (
 BATCH_SIZE = 10
 
 
-def analysis_eligible_clause(now: datetime | None = None):
+class _BatchModelUsage(UsageMetadataCallbackHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+        self._calls_lock = Lock()
+
+    def on_chat_model_start(self, serialized, messages, **kwargs) -> None:
+        with self._calls_lock:
+            self.calls += 1
+
+    def summary(self) -> dict:
+        return {
+            "calls": self.calls,
+            "total_tokens": sum(usage.get("total_tokens", 0) for usage in self.usage_metadata.values()),
+            "by_model": self.usage_metadata,
+        }
+
+
+def analysis_eligible_clause(
+    now: datetime | None = None, *, ingested_after: datetime | None = None
+):
     """Return the SQL condition for analysis work that can run now."""
     current = now or datetime.now(timezone.utc)
     stale_before = current - timedelta(
         seconds=settings.analysis_processing_timeout_seconds
     )
-    return or_(
+    eligible = or_(
         Tweet.status == TweetProcessingState.ANALYSIS_PENDING.value,
         and_(
             Tweet.status == TweetProcessingState.RETRYING.value,
@@ -57,6 +84,7 @@ def analysis_eligible_clause(now: datetime | None = None):
             ),
         ),
     )
+    return and_(eligible, Tweet.created_at >= ingested_after) if ingested_after else eligible
 
 
 def reset_analysis_state(tweet: Tweet) -> None:
@@ -68,8 +96,9 @@ def reset_analysis_state(tweet: Tweet) -> None:
     tweet.analysis_completed_at = None
 
 
-def analyze_single_tweet(db: Session, tweet_id: str) -> dict:
+def analyze_single_tweet(db: Session, tweet_id: str, *, reanalyze: bool = True) -> dict:
     """分析单条推文（支持重新分析已分析过的推文）。"""
+    require_analysis_enabled(db)
     batch_id = uuid.uuid4()
 
     tweet = db.execute(
@@ -85,9 +114,9 @@ def analyze_single_tweet(db: Session, tweet_id: str) -> dict:
             "error": f"Tweet {tweet_id} not found",
         }
 
-    # Allow re-analysis: reset status to pending so _run_analysis picks it up
-    reset_analysis_state(tweet)
-    db.commit()
+    if reanalyze:
+        reset_analysis_state(tweet)
+        db.commit()
 
     return _run_analysis(db, [tweet], batch_id)
 
@@ -96,18 +125,21 @@ def analyze_by_blogger(
     db: Session,
     blogger_handle: str,
     since: datetime | None = None,
+    *,
+    ingested_after: datetime | None = None,
 ) -> dict:
+    require_analysis_enabled(db)
     batch_id = uuid.uuid4()
 
     query = select(Tweet).where(
             Tweet.author_handle == blogger_handle,
-            analysis_eligible_clause(),
+            analysis_eligible_clause(ingested_after=ingested_after),
         )
     if since is not None:
         query = query.where(Tweet.published_at >= since)
     tweets = db.execute(
         query
-        .order_by(Tweet.published_at.desc())
+        .order_by(Tweet.created_at.desc(), Tweet.published_at.desc())
         .limit(50)
     ).scalars().all()
 
@@ -117,6 +149,7 @@ def analyze_by_blogger(
 
 
 def analyze_by_bloggers(db: Session, blogger_handles: list[str]) -> dict:
+    require_analysis_enabled(db)
     batch_id = uuid.uuid4()
 
     tweets = db.execute(
@@ -134,6 +167,7 @@ def analyze_by_bloggers(db: Session, blogger_handles: list[str]) -> dict:
 
 
 def trigger_analysis(db: Session) -> dict:
+    require_analysis_enabled(db)
     batch_id = uuid.uuid4()
 
     pending_tweets = db.execute(
@@ -230,6 +264,24 @@ def _mark_analysis_failed(
     return retrying, failed
 
 
+def _mark_analysis_paused(db: Session, tweets: list[Tweet]) -> None:
+    """Return interrupted work to the waiting state without consuming an attempt."""
+    from app.services.outbox_service import ensure_pending_tweet_analysis_event
+
+    for tweet in tweets:
+        transition_tweet_state(tweet, TweetProcessingState.ANALYSIS_PENDING)
+        tweet.analysis_attempts = max(0, (tweet.analysis_attempts or 1) - 1)
+        tweet.analysis_last_error = None
+        tweet.analysis_next_retry_at = None
+        tweet.analysis_started_at = None
+        tweet.analysis_completed_at = None
+        ensure_pending_tweet_analysis_event(
+            db,
+            event_type="tweet.analysis_requested",
+            tweet_id=str(tweet.id),
+        )
+
+
 def _enqueue_analysis_indexing(db: Session, analysis_result_ids: list[uuid.UUID]) -> None:
     from app.services.outbox_service import enqueue_outbox_event
     for analysis_result_id in analysis_result_ids:
@@ -251,12 +303,14 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
     预测由 Celery 后台任务异步完成，此处仅写入 analysis_results
     并标记 prediction_status='pending' 供后台任务消费。
     """
+    require_analysis_enabled(db)
     all_analyses = []
     total_claims = 0
     analyzed_tweets = []
     attempted_count = 0
     retrying_count = 0
     failed_count = 0
+    paused_reason: str | None = None
     overall_start = time.perf_counter()
 
     write_trace_immediate(
@@ -293,11 +347,25 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
 
         batch_start = time.perf_counter()
         try:
-            state = supervisor.invoke({
-                "tweets": tweet_dicts,
-                "analyses": [],
-                "_trace_conv_id": str(batch_id),
-            })
+            usage = _BatchModelUsage()
+            try:
+                state = supervisor.invoke({
+                    "tweets": tweet_dicts,
+                    "analyses": [],
+                    "_trace_conv_id": str(batch_id),
+                }, config={"callbacks": [usage]})
+            finally:
+                if usage.calls:
+                    write_trace_immediate(
+                        conversation_id=batch_id,
+                        node_name="analysis_model_usage",
+                        input={"tweet_count": len(batch_tweets)},
+                        output=usage.summary(),
+                    )
+            # A provider error can be handled locally by an Agent fallback. Re-read
+            # the global control before accepting a degraded result.
+            require_analysis_enabled(db)
+            record_model_success(db)
             source_tweet_by_id = {
                 str(tweet.id): tweet for tweet in batch_tweets
             }
@@ -348,7 +416,45 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
                 )
                 for analysis in state.get("analyses", [])
             ]
+        except AnalysisPausedError as exc:
+            paused_reason = str(exc)
+            logger.warning(
+                "Batch {}-{} paused by analysis control: {}",
+                i,
+                i + len(batch_tweets),
+                exc,
+            )
+            _mark_analysis_paused(db, batch_tweets)
+            db.commit()
+            write_trace_immediate(
+                conversation_id=batch_id,
+                node_name="analysis_service",
+                status="paused",
+                latency_ms=int((time.perf_counter() - batch_start) * 1000),
+                error_detail=str(exc)[:300],
+            )
+            break
         except Exception as e:
+            try:
+                require_analysis_enabled(db)
+            except AnalysisPausedError as paused_exc:
+                paused_reason = str(paused_exc)
+                logger.warning(
+                    "Batch {}-{} stopped after automatic pause: {}",
+                    i,
+                    i + len(batch_tweets),
+                    paused_exc,
+                )
+                _mark_analysis_paused(db, batch_tweets)
+                db.commit()
+                write_trace_immediate(
+                    conversation_id=batch_id,
+                    node_name="analysis_service",
+                    status="paused",
+                    latency_ms=int((time.perf_counter() - batch_start) * 1000),
+                    error_detail=str(paused_exc)[:300],
+                )
+                break
             logger.error("Batch {}-{} supervisor failed: {}", i, i + len(batch_tweets), e)
             retrying, failed = _mark_analysis_failed(
                 batch_tweets,
@@ -480,11 +586,11 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
             "analyses_count": len(all_analyses),
             "claims_count": total_claims,
         },
-        status="success",
+        status="paused" if paused_reason else "success",
         latency_ms=int((time.perf_counter() - overall_start) * 1000),
     )
 
-    return {
+    result = {
         "batch_id": str(batch_id),
         "analyzed": len(analyzed_tweets),
         "attempted": attempted_count,
@@ -493,3 +599,7 @@ def _run_analysis(db: Session, tweets: list[Tweet], batch_id: uuid.UUID) -> dict
         "analyses": all_analyses,
         "claims_created": total_claims,
     }
+    if paused_reason:
+        result["status"] = "paused"
+        result["reason"] = paused_reason
+    return result

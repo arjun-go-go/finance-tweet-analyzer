@@ -25,6 +25,11 @@ from app.services.tweet_state_service import (
     TweetProcessingState,
     transition_tweet_state,
 )
+from app.services.analysis_control_service import (
+    AnalysisPausedError,
+    record_model_success,
+    require_analysis_enabled,
+)
 
 
 def _prepare_image(content: bytes) -> bytes:
@@ -81,6 +86,7 @@ def get_tweet_media_context(db: Session, tweet_id: UUID | str) -> dict | None:
 
 
 def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
+    require_analysis_enabled(db)
     tweet = db.get(Tweet, UUID(str(tweet_id)))
     if tweet is None:
         raise ValueError(f"Tweet not found: {tweet_id}")
@@ -170,6 +176,7 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
         if response is None:
             raise RuntimeError("Vision model returned no structured result")
 
+        record_model_success(db)
         result = response.model_dump()
         result["asset_ids"] = [str(asset.id) for asset in assets]
         record.result = result
@@ -187,8 +194,53 @@ def analyze_tweet_media(db: Session, tweet_id: UUID | str) -> dict:
             "image_count": len(assets),
             "confidence": result.get("confidence", 0.0),
         }
+    except AnalysisPausedError as exc:
+        db.rollback()
+        from app.services.outbox_service import ensure_pending_tweet_analysis_event
+
+        record = db.execute(
+            select(TweetMediaAnalysis).where(TweetMediaAnalysis.tweet_id == tweet.id)
+        ).scalar_one()
+        tweet = db.get(Tweet, tweet.id)
+        record.status = "pending"
+        record.error_detail = None
+        transition_tweet_state(tweet, TweetProcessingState.MEDIA_ANALYSIS_PENDING)
+        ensure_pending_tweet_analysis_event(
+            db,
+            event_type="tweet.media_analyze_requested",
+            tweet_id=str(tweet.id),
+        )
+        db.commit()
+        return {
+            "tweet_id": str(tweet.id),
+            "status": "paused",
+            "reason": str(exc),
+        }
     except Exception as exc:
         db.rollback()
+        try:
+            require_analysis_enabled(db)
+        except AnalysisPausedError as paused_exc:
+            from app.services.outbox_service import ensure_pending_tweet_analysis_event
+
+            record = db.execute(
+                select(TweetMediaAnalysis).where(TweetMediaAnalysis.tweet_id == tweet.id)
+            ).scalar_one()
+            tweet = db.get(Tweet, tweet.id)
+            record.status = "pending"
+            record.error_detail = None
+            transition_tweet_state(tweet, TweetProcessingState.MEDIA_ANALYSIS_PENDING)
+            ensure_pending_tweet_analysis_event(
+                db,
+                event_type="tweet.media_analyze_requested",
+                tweet_id=str(tweet.id),
+            )
+            db.commit()
+            return {
+                "tweet_id": str(tweet.id),
+                "status": "paused",
+                "reason": str(paused_exc),
+            }
         record = db.execute(
             select(TweetMediaAnalysis).where(TweetMediaAnalysis.tweet_id == tweet.id)
         ).scalar_one()
